@@ -1,6 +1,6 @@
 {
   "name": "fleetcomm",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "FleetComm \u2014 multi-net voice radio for the 22nd Expeditionary Fleet (QLink successor). Mumble-protocol backbone, radio-rack UI.",
   "main": "main.js",
   "scripts": {

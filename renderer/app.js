@@ -42,6 +42,8 @@ function normMod(label) {
   return null;
 }
 const heldMods = new Set(); // maintained from the global stream
+let gActive = false; // becomes true once the global hook delivers its first event —
+                     // from then on the DOM handlers stand down so keys never double-fire
 function modsEqual(a, b) { return a.length === b.length && a.every(m => b.includes(m)); }
 function bindLabel(mods, label) { return (mods.length ? mods.join("+") + "+" : "") + label; }
 function matchDown(bind, src, code, label, mods) {
@@ -307,6 +309,7 @@ function onKeyUp(src, code, label) {
   nets.forEach((n, i) => { if (n.tx && matchUp(n.bind, src, code, label)) endTX(i); });
 }
 ipcRenderer.on("gkey", (ev, k) => {
+  gActive = true;
   const mod = normMod(k.label);
   if (mod) { k.down ? heldMods.add(mod) : heldMods.delete(mod); if (capturing) return; }
   if (k.down && !mod) onKeyDown("g", k.type + ":" + k.code, k.label, [...heldMods]);
@@ -314,12 +317,16 @@ ipcRenderer.on("gkey", (ev, k) => {
 });
 window.addEventListener("keydown", (e) => {
   if (e.repeat) return;
+  if (gActive) { // global hook owns all binds; just stop the page reacting to bound keys
+    if (e.key === "PageUp" || e.key === "PageDown") e.preventDefault();
+    return;
+  }
   const mods = MODS.filter(m => ({ ALT: e.altKey, CTRL: e.ctrlKey, SHIFT: e.shiftKey, META: e.metaKey })[m]);
   if (normMod(e.key)) return; // bare modifier press
   if (capturing) e.preventDefault();
   onKeyDown("dom", e.code, e.code.replace(/^Key|^Digit/, ""), mods);
 });
-window.addEventListener("keyup", (e) => onKeyUp("dom", e.code, e.code.replace(/^Key|^Digit/, "")));
+window.addEventListener("keyup", (e) => { if (!gActive) onKeyUp("dom", e.code, e.code.replace(/^Key|^Digit/, "")); });
 
 /* ── RX / roster from main ── */
 ipcRenderer.on("rx", (ev, r) => {
