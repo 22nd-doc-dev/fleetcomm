@@ -1,0 +1,31 @@
+name: Build & Release
+on:
+  push:
+    tags: ['v*']
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npm ci
+      - run: npx electron-builder --win --x64 --publish never
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.exe
+          fail_on_unmatched_files: false
+  mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npm ci
+      - run: npx electron-builder --mac zip --publish never
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.zip
+          fail_on_unmatched_files: false

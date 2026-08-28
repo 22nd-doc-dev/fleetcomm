@@ -1,0 +1,58 @@
+{
+  "name": "fleetcomm",
+  "version": "0.3.0",
+  "description": "FleetComm \u2014 multi-net voice radio for the 22nd Expeditionary Fleet (QLink successor). Mumble-protocol backbone, radio-rack UI.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "seed": "node scripts/seed-channels.js",
+    "test": "node test/integration.js && node test/stack-test.js && node test/permissions-test.js",
+    "admin-token": "node scripts/set-admin-token.js",
+    "dist:win": "electron-builder --win --x64 --publish never",
+    "dist:mac": "electron-builder --mac zip --publish never"
+  },
+  "dependencies": {
+    "opusscript": "^0.1.1",
+    "protobufjs": "^7.4.0",
+    "selfsigned": "^5.5.0",
+    "uiohook-napi": "^1.5.4"
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.3.0",
+    "electron": "^44.0.0",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "space.fleetcomm.app",
+    "productName": "FleetComm",
+    "files": [
+      "main.js",
+      "renderer/**",
+      "src/**",
+      "scripts/**",
+      "config/**",
+      "proto/**",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "**/node_modules/uiohook-napi/**"
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "deleteAppDataOnUninstall": false
+    },
+    "mac": {
+      "target": [
+        "zip"
+      ],
+      "category": "public.app-category.games"
+    }
+  }
+}

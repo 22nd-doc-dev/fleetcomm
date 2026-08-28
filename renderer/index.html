@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>FleetComm</title>
+<link rel="stylesheet" href="app.css">
+<style>
+  /* ── v0.2 compact stacked rack ── */
+  .rack{display:flex;flex-direction:column;gap:7px;margin-top:14px;max-width:880px}
+  .rrow{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:11px;
+    background:var(--panel);border:1px solid var(--line);box-shadow:var(--shadow);
+    transition:border-color .12s,box-shadow .12s}
+  .rrow.rx{border-color:var(--holo);box-shadow:0 0 0 2px var(--holo-tint),var(--shadow)}
+  .rrow.tx{border-color:var(--tx);box-shadow:0 0 0 2px var(--tx-tint),var(--shadow)}
+  .rrow.active{border-left:4px solid var(--holo-bright);padding-left:9px}
+  .rmain{display:flex;flex-direction:column;align-items:flex-start;gap:1px;border:none;
+    background:none;padding:2px 4px;min-width:128px;text-align:left;border-radius:7px}
+  .rmain:hover{background:var(--tint)}
+  .rmain b{font-size:13.5px;letter-spacing:.3px;line-height:1.15;white-space:nowrap}
+  .rfreq{font-size:11.5px;color:var(--muted);letter-spacing:1px;font-weight:700}
+  .rrow .who{flex:1 1 90px;min-width:70px;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .rrow input[type=range]{height:18px}
+  .rvol{width:84px;flex:0 0 auto}
+  .rpan{width:56px;flex:0 0 auto}
+  .rrow .keybadge{padding:6px 9px;font-size:11.5px;min-width:48px}
+  .rrow .pttbtn{flex:0 0 auto;padding:7px 13px;font-size:12px;letter-spacing:.6px}
+  .rrow .monbtn{padding:6px 8px;font-size:10.5px}
+  .rrow .close{font-size:14px;padding:1px 4px}
+  .rcount{font-size:10.5px;color:var(--muted);font-weight:800;min-width:20px;text-align:center}
+  .enc-dot{font-size:11px;color:var(--amber)}
+  .activetag{font-size:9px;font-weight:900;letter-spacing:1px;color:var(--holo-bright);display:none}
+  .rrow.active .activetag{display:inline}
+  @media (max-width:700px){ .rrow{flex-wrap:wrap} .rrow .who{order:9;flex-basis:100%} }
+
+  .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:80;
+    background:var(--panel);border:1px solid var(--amber);color:var(--ink);border-radius:10px;
+    padding:10px 16px;font-size:13.5px;box-shadow:var(--shadow);display:none;max-width:90vw}
+  .pill .dot.err{background:var(--red);box-shadow:0 0 6px var(--red)}
+  .pill .dot.off{background:var(--lamp-off);box-shadow:none}
+  .kv{display:flex;flex-direction:column;gap:4px;margin-bottom:12px}
+  .kv label{font-size:12px;font-weight:800;letter-spacing:.8px;color:var(--muted)}
+  .kv input{border:1px solid var(--line);border-radius:9px;padding:11px 12px;background:var(--panel);font-size:15px}
+  .relaychip{display:flex;align-items:center;gap:8px;border:1px solid var(--ok);background:var(--ok-tint);
+    border-radius:10px;padding:10px 13px;font-weight:800;font-size:13.5px;margin-bottom:12px}
+  .relaychip a{color:var(--muted);font-size:11.5px;font-weight:600;cursor:pointer;margin-left:auto;text-decoration:underline}
+  .bindrow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 2px;border-bottom:1px solid var(--line)}
+  .bindrow .tl b{display:block;font-size:13.5px}
+  .bindrow .tl span{font-size:12px;color:var(--muted)}
+  .iconbtn.onov{border-color:var(--holo);color:var(--holo);background:var(--holo-tint)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="glass">
+    <div style="display:flex;align-items:center;gap:11px">
+      <div class="crest"></div>
+      <div class="brand">
+        <div class="t1">FLEETCOMM</div>
+        <div class="t2" id="orglbl">QUANTUM LINK COMMS · MK II</div>
+      </div>
+    </div>
+    <div class="spacer"></div>
+    <select class="orgsel mono" id="cssel" title="Active callsign" style="max-width:230px"></select>
+    <span class="pill"><span class="dot off" id="conndot"></span><span id="connlbl">OFFLINE</span></span>
+    <button class="iconbtn" id="ovbtn" title="Toggle game overlay">▣ Overlay</button>
+    <button class="iconbtn" id="themebtn" title="Toggle light / dark">◐</button>
+    <button class="iconbtn" id="setbtn">⚙ Settings</button>
+  </header>
+
+  <div class="bar glass">
+    <label>TUNE&nbsp;NET</label>
+    <input id="freqIn" class="mono" placeholder="Frequency" maxlength="8" style="width:110px">
+    <input id="nameIn" placeholder="Net label" style="flex:0 1 170px">
+    <button class="btn" id="tuneBtn">TUNE ▸</button>
+    <span class="hint" id="hintlbl">PgUp / PgDn selects the active net · hold its key or any net's own key to transmit.</span>
+  </div>
+
+  <div id="updbar" style="display:none;align-items:center;gap:10px;margin-top:12px;padding:10px 14px;
+       border:1px solid var(--holo);background:var(--holo-tint);border-radius:11px;font-weight:800;font-size:13.5px">
+    ⬆ <span id="updtext"></span>
+    <button class="btn" id="updgo" style="margin-left:auto;padding:6px 14px">Download</button>
+    <button class="iconbtn" id="upddismiss" style="padding:6px 10px">✕</button>
+  </div>
+  <div class="rack" id="rack"></div>
+  <div class="ribbon">FLEETCOMM v0.2 · click a net's name to make it active · ⚙ for cycle &amp; master-PTT keys</div>
+</div>
+
+<!-- Connect screen -->
+<div class="overlay" id="connectOv">
+  <div class="glass modal">
+    <h2>FleetComm</h2>
+    <p class="sub">Your fleet relay is pre-configured. Enter your callsign for this session and connect.</p>
+    <div class="relaychip" id="relaychip">⬤ RELAY · <span id="relayname">22ND EXPEDITIONARY FLEET</span><a id="relayedit">change</a></div>
+    <div class="kv" id="hostrow" style="display:none"><label>SERVER ADDRESS</label><input id="hostIn" class="mono"></div>
+    <div class="kv"><label>CALLSIGN</label><input id="csIn" class="mono" placeholder="e.g. TIBER DOC 1"></div>
+    <div class="wnav"><button class="btn big" id="connectBtn">Connect ▸</button></div>
+    <p class="hint" id="connErr" style="color:var(--red);margin-top:10px"></p>
+  </div>
+</div>
+
+<!-- Settings -->
+<div class="overlay hidden" id="settings">
+  <div class="glass modal">
+    <h2>Settings</h2>
+    <div class="miniheading">MASTER KEYS</div>
+    <div class="bindrow"><div class="tl"><b>Talk on active net</b><span>One key that transmits on whatever net is selected</span></div><button class="keybadge" id="bindActive">set key</button></div>
+    <div class="bindrow"><div class="tl"><b>Cycle active net up / down</b><span>Defaults: Page Up / Page Down</span></div>
+      <span><button class="keybadge" id="bindCycUp">PageUp</button> <button class="keybadge" id="bindCycDn">PageDown</button></span></div>
+    <div class="miniheading" style="margin-top:16px">SOUND</div>
+    <div class="togrow"><div class="tl"><b>Radio chirp</b><span>Squelch click on key-up / key-down</span></div><button class="switch on" id="sfx"></button></div>
+    <div class="togrow"><div class="tl"><b>Radio voice effect</b><span>How much "over the net" character incoming voices get</span></div>
+      <select class="orgsel" id="fxsel" style="max-width:150px">
+        <option value="clean">Clean</option>
+        <option value="standard">Standard</option>
+        <option value="heavy">Heavy</option>
+      </select></div>
+    <div class="togrow"><div class="tl"><b>Overlay edit mode</b><span>Unlock the overlay to move / resize / set opacity, then LOCK it</span></div><button class="switch" id="sovedit"></button></div>
+    <div class="togrow"><div class="tl"><b>Dark theme</b><span>Cockpit default; light for daylight</span></div><button class="switch on" id="sdark"></button></div>
+    <div class="miniheading" style="margin-top:16px">COMMAND AUTHORITY</div>
+    <div class="kv" style="margin-top:6px"><label>COMMAND TOKEN (optional)</label><input id="tokenIn" type="password" placeholder="grants create-net authority — applied on next connect"></div>
+    <p class="hint" style="margin:-4px 0 12px">Issued by fleet command. With it, TUNE can create nets that don't exist yet. Without it, the relay refuses — server-enforced.</p>
+    <div class="miniheading" style="margin-top:16px">UPDATES</div>
+    <div class="togrow"><div class="tl"><b>FleetComm <span id="verlbl"></span></b><span>Also checks automatically at startup</span></div><button class="iconbtn" id="updcheck">Check for updates</button></div>
+    <div class="wnav"><button class="btn ghost" id="disconnBtn">Disconnect</button><button class="btn big" id="closeSet">Done</button></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<script src="app.js"></script>
+</body>
+</html>
