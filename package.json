@@ -1,6 +1,6 @@
 {
   "name": "fleetcomm",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "FleetComm \u2014 multi-net voice radio for the 22nd Expeditionary Fleet (QLink successor). Mumble-protocol backbone, radio-rack UI.",
   "main": "main.js",
   "scripts": {
@@ -39,7 +39,6 @@
     ],
     "win": {
       "target": [
-        "nsis",
         "portable"
       ]
     },
@@ -53,6 +52,7 @@
         "zip"
       ],
       "category": "public.app-category.games"
-    }
+    },
+    "artifactName": "${productName}-${version}.${ext}"
   }
 }

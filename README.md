@@ -13,6 +13,24 @@ in 10 minutes from `server/setup.sh`.
 - **Client** (this app): Electron. For every net you tune, the app opens one lightweight connection ("one receiver per net", like a real rack) — that gives perfect per-net attribution, volume, pan, and later per-net access control. Voice is Opus over the TCP tunnel (v0.2 moves to UDP with OCB2 crypto for lower latency).
 - **Global PTT**: `uiohook-napi` keyboard/mouse hooks — works while Star Citizen is focused. In-window keys work even without it.
 
+## Installing (fleet members)
+
+**Windows** — download `FleetComm-<version>.exe` from the
+[releases page](https://github.com/22nd-doc-dev/fleetcomm/releases), run it.
+SmartScreen will say "Windows protected your PC" because the exe is unsigned:
+click **More info → Run anyway**. That's expected until the project buys a
+code-signing certificate.
+
+**Mac** — download the zip, unzip it, then run this one command in Terminal
+before the first open (macOS quarantines unsigned downloads and misleadingly
+calls them "damaged"):
+
+    xattr -cr ~/Downloads/FleetComm.app
+
+Adjust the path if you unzipped elsewhere, then open the app normally.
+(A $99/yr Apple Developer signature makes this step disappear — planned once
+the fleet's Mac population justifies it.)
+
 ## Run it (dev)
 
 1. Install Node 20+ (`brew install node` / nodejs.org).

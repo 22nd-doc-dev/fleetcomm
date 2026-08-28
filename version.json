@@ -1,4 +1,4 @@
 {
-  "version": "0.3.1",
-  "notes": "Fix: PgUp/PgDn cycled two nets instead of one while the FleetComm window was focused."
+  "version": "0.3.2",
+  "notes": "One Windows exe (no more Setup variant), overlay no longer survives app close, saner reconnect errors, Mac install instructions."
 }

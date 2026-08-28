@@ -378,7 +378,13 @@ $("connectBtn").addEventListener("click", async () => {
   const res = await ipcRenderer.invoke("connect", { host, port: pkg.server.port, callsign: cs, nets: wanted, token: cmdToken || null });
   $("connectBtn").textContent = "Connect ▸";
   const okCount = res.filter(r => r.ok).length;
-  if (!okCount) { $("connErr").textContent = "Could not tune any nets: " + (res[0] && res[0].error || "unknown"); return; }
+  if (!okCount) {
+    const raw = (res[0] && res[0].error) || "unknown";
+    $("connErr").textContent = /ECONNRESET|ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH/.test(raw)
+      ? "The relay dropped the attempt — usually its rapid-reconnect guard after several tries in a row. Wait about a minute, then Connect again."
+      : "Could not tune any nets: " + raw;
+    return;
+  }
   nets = [];
   res.forEach((r, i) => {
     if (!r.ok) { toast("Couldn't tune " + wanted[i].name + ": " + r.error); return; }
@@ -521,7 +527,11 @@ function toast(msg) {
 }
 
 /* init */
-try { $("verlbl").textContent = "v" + require("../package.json").version; } catch (e) {}
+try {
+  const _v = "v" + require("../package.json").version;
+  $("verlbl").textContent = _v;
+  $("ribver").textContent = _v;
+} catch (e) {}
 $("sfx").classList.toggle("on", fx);
 $("fxsel").value = fxPreset;
 setTheme(dark);

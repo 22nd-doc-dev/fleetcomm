@@ -7,7 +7,16 @@ const https = require("https");
 const { RadioStack } = require("./src/radio-stack");
 const { loadOrCreate } = require("./src/identity");
 
+/* Only one FleetComm at a time — a second launch just focuses the first. */
+if (!app.requestSingleInstanceLock()) app.quit();
+app.on("second-instance", () => {
+  if (win && !win.isDestroyed()) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
+});
+
 let win = null, stack = null, uio = null, identity = null, keyLabel = (c) => "KEY " + c;
+/* every message to a window goes through these guards — windows can be gone */
+function sendWin(ch, data) { if (win && !win.isDestroyed()) win.webContents.send(ch, data); }
+function sendOverlay(ch, data) { if (overlay && !overlay.isDestroyed()) overlay.webContents.send(ch, data); }
 let overlay = null, ovEditing = false, ovCfg = null, lastOvState = [];
 const ovCfgPath = () => path.join(app.getPath("userData"), "overlay.json");
 function loadOvCfg() {
@@ -33,8 +42,8 @@ function createOverlay() {
   overlay.setIgnoreMouseEvents(true, { forward: true });
   overlay.loadFile(path.join(__dirname, "renderer", "overlay.html"));
   overlay.webContents.on("did-finish-load", () => {
-    overlay.webContents.send("ov-config", { opacity: c.opacity, scale: c.scale });
-    overlay.webContents.send("ov-state", lastOvState);
+    sendOverlay("ov-config", { opacity: c.opacity, scale: c.scale });
+    sendOverlay("ov-state", lastOvState);
   });
   const persistBounds = () => { if (overlay) { ovCfg.bounds = overlay.getBounds(); saveOvCfg(); } };
   overlay.on("moved", persistBounds);
@@ -44,22 +53,23 @@ function createOverlay() {
 function setOvEdit(on) {
   if (!overlay) return;
   ovEditing = on;
+  if (overlay.isDestroyed()) { overlay = null; return; }
   overlay.setIgnoreMouseEvents(!on, { forward: true });
   overlay.setFocusable(on);
-  overlay.webContents.send("ov-edit", on);
-  if (win) win.webContents.send("ov-edit-state", on);
+  sendOverlay("ov-edit", on);
+  sendWin("ov-edit-state", on);
 }
 ipcMain.on("ov-toggle", () => {
-  if (overlay) { setOvEdit(false); overlay.close(); }
+  if (overlay) { setOvEdit(false); try { overlay.destroy(); } catch (e) {} overlay = null; }
   else createOverlay();
-  if (win) win.webContents.send("ov-shown", !!overlay);
+  sendWin("ov-shown", !!overlay);
 });
 ipcMain.on("ov-edit", (ev, on) => setOvEdit(on));
 ipcMain.on("ov-lock", () => setOvEdit(false));
 ipcMain.on("ov-set", (ev, c) => { ovCfg.opacity = c.opacity; ovCfg.scale = c.scale; saveOvCfg(); });
 ipcMain.on("ov-state", (ev, nets) => {
   lastOvState = nets;
-  if (overlay) overlay.webContents.send("ov-state", nets);
+  sendOverlay("ov-state", nets);
 });
 
 /* ── update check ── */
@@ -105,6 +115,11 @@ function createWindow() {
   });
   win.loadFile(path.join(__dirname, "renderer", "index.html"));
   win.removeMenu && win.removeMenu();
+  win.on("closed", () => {
+    win = null;
+    if (overlay) { try { setOvEdit(false); overlay.destroy(); } catch (e) {} overlay = null; }
+    if (stack) { try { stack.destroy(); } catch (e) {} stack = null; }
+  });
 }
 
 app.whenReady().then(async () => {
@@ -119,10 +134,10 @@ app.whenReady().then(async () => {
     for (const [name, code] of Object.entries(UiohookKey)) if (!(code in rev)) rev[code] = name;
     keyLabel = (c) => rev[c] || "KEY " + c;
     uio = uIOhook;
-    uio.on("keydown", (e) => win && win.webContents.send("gkey", { type: "key", code: e.keycode, label: keyLabel(e.keycode), down: true }));
-    uio.on("keyup", (e) => win && win.webContents.send("gkey", { type: "key", code: e.keycode, label: keyLabel(e.keycode), down: false }));
-    uio.on("mousedown", (e) => { if (e.button > 2) win && win.webContents.send("gkey", { type: "mouse", code: e.button, label: "MOUSE " + e.button, down: true }); });
-    uio.on("mouseup", (e) => { if (e.button > 2) win && win.webContents.send("gkey", { type: "mouse", code: e.button, label: "MOUSE " + e.button, down: false }); });
+    uio.on("keydown", (e) => sendWin("gkey", { type: "key", code: e.keycode, label: keyLabel(e.keycode), down: true }));
+    uio.on("keyup", (e) => sendWin("gkey", { type: "key", code: e.keycode, label: keyLabel(e.keycode), down: false }));
+    uio.on("mousedown", (e) => { if (e.button > 2) sendWin("gkey", { type: "mouse", code: e.button, label: "MOUSE " + e.button, down: true }); });
+    uio.on("mouseup", (e) => { if (e.button > 2) sendWin("gkey", { type: "mouse", code: e.button, label: "MOUSE " + e.button, down: false }); });
     uio.start();
     console.log("[fleetcomm] global PTT hooks active");
   } catch (e) {
@@ -135,10 +150,10 @@ ipcMain.handle("connect", async (ev, { host, port, callsign, nets, token }) => {
   stack = new RadioStack({ host, port: port || 64738, callsign,
     tokens: token ? [token] : [],
     cert: identity && identity.cert, key: identity && identity.key });
-  stack.on("rx", (r) => win && win.webContents.send("rx", { idx: r.idx, session: r.session, name: r.name, opus: r.opus, last: r.last }));
-  stack.on("roster", (r) => win && win.webContents.send("roster", r));
-  stack.on("net-down", (r) => win && win.webContents.send("net-down", r));
-  stack.on("net-error", (r) => win && win.webContents.send("net-error", r));
+  stack.on("rx", (r) => sendWin("rx", { idx: r.idx, session: r.session, name: r.name, opus: r.opus, last: r.last }));
+  stack.on("roster", (r) => sendWin("roster", r));
+  stack.on("net-down", (r) => sendWin("net-down", r));
+  stack.on("net-error", (r) => sendWin("net-error", r));
   const results = [];
   for (const n of nets) {
     try { results.push({ ok: true, idx: await stack.tune(n) }); }
@@ -164,7 +179,7 @@ ipcMain.on("disconnect", () => { if (stack) { stack.destroy(); stack = null; } }
 app.whenReady().then(() => {
   setTimeout(async () => {
     const r = await checkUpdates();
-    if (r.status === "update" && win) win.webContents.send("update-available", r);
+    if (r.status === "update") sendWin("update-available", r);
   }, 3500);
 });
 
