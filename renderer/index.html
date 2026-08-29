@@ -37,7 +37,23 @@
   }
   *{box-sizing:border-box}
   html,body{height:100%}
-  body{margin:0;font:13.5px/1.45 "Segoe UI",-apple-system,Roboto,Helvetica,Arial,sans-serif;
+  /* ── typography ──
+     Atkinson Hyperlegible is bundled (SIL OFL, Braille Institute): its letter
+     shapes are drawn so characters that usually collapse into each other —
+     I/l/1, O/0, b/d — stay distinguishable. It is the default here because a
+     radio board is read at a glance, mid-op, often peripherally.
+     "System" stays available for anyone who prefers it. */
+  @font-face{font-family:"Atkinson Hyperlegible";src:url("fonts/atkinson-400.woff2") format("woff2");
+    font-weight:400;font-style:normal;font-display:swap}
+  @font-face{font-family:"Atkinson Hyperlegible";src:url("fonts/atkinson-700.woff2") format("woff2");
+    font-weight:700;font-style:normal;font-display:swap}
+  :root{
+    --ui-system:"Segoe UI",-apple-system,Roboto,Helvetica,Arial,sans-serif;
+    --ui-legible:"Atkinson Hyperlegible","Segoe UI",-apple-system,Roboto,Helvetica,Arial,sans-serif;
+    --ui-font:var(--ui-legible);
+  }
+  :root[data-font="system"]{--ui-font:var(--ui-system)}
+  body{margin:0;font:14.5px/1.55 var(--ui-font);
     color:var(--ink);background:var(--bez);display:flex;flex-direction:column;overflow:hidden}
   body.ovr{box-shadow:inset 0 0 0 3px var(--amber)}
   .mono{font-family:ui-monospace,Menlo,Consolas,monospace}
@@ -49,16 +65,16 @@
   ::-webkit-scrollbar-track{background:transparent}
 
   #titlebar{height:30px;flex:0 0 auto;-webkit-app-region:drag;display:flex;align-items:center;justify-content:center;
-    font-size:10px;letter-spacing:4px;font-weight:700;color:var(--muted);user-select:none;background:var(--bez)}
+    font-size:11.5px;letter-spacing:4px;font-weight:700;color:var(--muted);user-select:none;background:var(--bez)}
 
   /* ── bezel row: page keys + readouts ── */
   #bezel{flex:0 0 auto;display:flex;align-items:stretch;gap:8px;padding:6px 10px 8px;background:var(--bez);
     border-bottom:2px solid var(--bezline)}
   #logo{display:flex;flex-direction:column;justify-content:center;padding:0 12px;border-right:1px solid var(--bezline)}
-  #logo b{font-size:14px;letter-spacing:2.5px}
-  #logo span{font-size:8.5px;letter-spacing:1.6px;color:var(--muted);font-weight:700}
+  #logo b{font-size:15px;letter-spacing:2.5px}
+  #logo span{font-size:10.5px;letter-spacing:1.6px;color:var(--muted);font-weight:700}
   .pkey{min-width:76px;border:1px solid var(--bezline);border-bottom-width:3px;border-radius:5px;
-    background:linear-gradient(var(--bez2),var(--bez));font-size:11px;font-weight:800;letter-spacing:1.6px;
+    background:linear-gradient(var(--bez2),var(--bez));font-size:12px;font-weight:800;letter-spacing:1.6px;
     color:var(--muted);padding:8px 12px}
   .pkey:active{transform:translateY(1px);border-bottom-width:2px}
   .pkey.on{color:var(--ink);border-color:var(--holo);background:linear-gradient(var(--bez2),var(--bez2));
@@ -66,18 +82,18 @@
   #bezel .sp{flex:1}
   .rd{display:flex;flex-direction:column;justify-content:center;min-width:74px;padding:3px 10px;
     border:1px solid var(--bezline);border-radius:5px;background:var(--bg)}
-  .rd label{font-size:8px;font-weight:800;letter-spacing:1.4px;color:var(--muted)}
-  .rd .v{font-size:12px;font-weight:800;letter-spacing:.5px;white-space:nowrap}
+  .rd label{font-size:10px;font-weight:800;letter-spacing:1.4px;color:var(--muted)}
+  .rd .v{font-size:13px;font-weight:800;letter-spacing:.5px;white-space:nowrap}
   .rd .v.ok{color:var(--grn)} .rd .v.warn{color:var(--amber)} .rd .v.dim{color:var(--muted)}
-  .rd .v .role{color:var(--amber);font-size:9px;letter-spacing:1px;margin-left:5px}
+  .rd .v .role{color:var(--amber);font-size:10.5px;letter-spacing:1px;margin-left:5px}
   .icobtn{border:1px solid var(--bezline);border-bottom-width:3px;border-radius:5px;
-    background:linear-gradient(var(--bez2),var(--bez));padding:6px 11px;font-size:12px;color:var(--muted)}
+    background:linear-gradient(var(--bez2),var(--bez));padding:6px 11px;font-size:13px;color:var(--muted)}
   .icobtn:active{transform:translateY(1px)}
   .icobtn.onov{color:var(--grn);box-shadow:inset 0 -3px 0 var(--grn)}
 
   #updbar{display:none;align-items:center;gap:10px;padding:7px 14px;background:var(--amber-tint);
-    border-bottom:1px solid var(--amber);color:var(--ink);font-weight:700;font-size:12.5px;flex:0 0 auto}
-  #updbar::before{content:"MAINT";font-size:9px;font-weight:900;letter-spacing:1px;color:var(--amber);
+    border-bottom:1px solid var(--amber);color:var(--ink);font-weight:700;font-size:13.5px;flex:0 0 auto}
+  #updbar::before{content:"MAINT";font-size:10.5px;font-weight:900;letter-spacing:1px;color:var(--amber);
     border:1px solid var(--amber);padding:2px 6px;border-radius:3px}
 
   /* ── screen ── */
@@ -86,12 +102,12 @@
   .page{display:none;flex:1;min-width:0;min-height:0}
   .page.on{display:flex}
   /* section headers = instrument labels */
-  .ph{display:flex;align-items:center;gap:8px;padding:6px 10px;font-size:9.5px;font-weight:900;
+  .ph{display:flex;align-items:center;gap:8px;padding:6px 10px;font-size:11px;font-weight:900;
     letter-spacing:2px;color:var(--muted);border-bottom:1px solid var(--line);flex:0 0 auto;background:var(--tint)}
   .ph .r{margin-left:auto;letter-spacing:1px}
 
   /* annunciators — dark until LIT (filled block, dark text) */
-  .ann{border:1px solid var(--line2);border-radius:3px;padding:3px 8px;font-size:9px;font-weight:900;
+  .ann{border:1px solid var(--line2);border-radius:3px;padding:3px 8px;font-size:10.5px;font-weight:900;
     letter-spacing:1.2px;color:var(--muted);background:transparent;text-align:center}
   .ann.lit-g{background:var(--grn);border-color:var(--grn);color:#06130b}
   .ann.lit-a{background:var(--amber);border-color:var(--amber);color:#1d1300}
@@ -105,57 +121,59 @@
   #split::after{content:"";position:absolute;inset:0 -4px}
   #netlist{flex:1;overflow-y:auto;padding:6px}
   .net{border:1px solid var(--line);border-radius:4px;margin-bottom:5px;background:var(--panel);padding:7px 9px}
-  .net.sub{margin-left:20px;position:relative}
+  /* indent scales with real nest depth (--lvl), so nests deeper than one
+     level read correctly instead of all sitting at the same offset */
+  .net.sub{margin-left:calc(var(--lvl,1) * 20px);position:relative}
   .net.sub::before{content:"";position:absolute;left:-11px;top:-4px;bottom:50%;width:1px;background:var(--line2)}
   .net.sub::after{content:"";position:absolute;left:-11px;top:50%;width:8px;height:1px;background:var(--line2)}
   .net.sub.lastchild::before{bottom:50%}
-  .chev{border:none;background:none;color:var(--muted);font-size:10px;padding:0 3px;width:16px;flex:0 0 auto}
+  .chev{border:none;background:none;color:var(--muted);font-size:11.5px;padding:0 3px;width:16px;flex:0 0 auto}
   .chev:hover{color:var(--holo)}
   .net.parent{border-left:3px solid var(--line2)}
   .net.parent.hasnest{border-left-color:var(--holo)}
-  .nestcount{font-size:8.5px;font-weight:900;letter-spacing:1px;color:var(--muted);
+  .nestcount{font-size:10.5px;font-weight:900;letter-spacing:1px;color:var(--muted);
     border:1px solid var(--line2);border-radius:3px;padding:1px 5px}
   .net.parent.bcast{border-left-color:var(--amber)}
-  .shipbadge{font-size:8px;font-weight:900;letter-spacing:1px;color:var(--holo);
+  .shipbadge{font-size:10px;font-weight:900;letter-spacing:1px;color:var(--holo);
     border:1px solid var(--holo);border-radius:3px;padding:1px 4px}
   .net.sel{border-color:var(--holo);box-shadow:0 0 0 1px var(--holo)}
   .net.untuned{opacity:.55}
   .nt{display:flex;align-items:baseline;gap:8px;cursor:pointer}
-  .nt .fq{font-size:17px;font-weight:700;letter-spacing:1px}
+  .nt .fq{font-size:18px;font-weight:700;letter-spacing:1px}
   .net.rx-live .fq{color:var(--grn)}
   .net.tx-live .fq{color:var(--amber)}
-  .nt b{font-size:11px;font-weight:800;letter-spacing:.8px;flex:1;min-width:0;white-space:nowrap;
+  .nt b{font-size:12px;font-weight:800;letter-spacing:.8px;flex:1;min-width:0;white-space:nowrap;
     overflow:hidden;text-overflow:ellipsis;color:var(--muted)}
   .net.sel .nt b{color:var(--ink)}
-  .nt .cnt{font-size:10px;color:var(--muted)}
-  .nt .enc{color:var(--amber);font-size:10px}
+  .nt .cnt{font-size:11.5px;color:var(--muted)}
+  .nt .enc{color:var(--amber);font-size:11.5px}
   .nrow{display:flex;align-items:center;gap:5px;margin-top:6px}
   .nrow .keyb{margin-left:auto;border:1px dashed var(--line2);border-radius:3px;padding:2px 7px;
-    font-size:9px;font-weight:800;color:var(--muted);background:transparent}
+    font-size:10.5px;font-weight:800;color:var(--muted);background:transparent}
   .nrow .keyb.listen{border-color:var(--amber);color:var(--amber);border-style:solid}
-  .nrow .x{border:none;background:none;color:var(--muted);font-size:11px;padding:0 3px}
+  .nrow .x{border:none;background:none;color:var(--muted);font-size:12px;padding:0 3px}
   .nrow .x:hover{color:var(--red)}
   .srow{display:flex;align-items:center;gap:6px;margin-top:5px}
-  .srow label{font-size:8px;font-weight:900;letter-spacing:1px;color:var(--muted);width:22px}
+  .srow label{font-size:10px;font-weight:900;letter-spacing:1px;color:var(--muted);width:22px}
   .srow input[type=range]{flex:1;height:13px;accent-color:var(--holo)}
   .srow input.pan{max-width:60px}
   .tunebtn{width:100%;margin-top:6px;border:1px solid var(--line2);background:transparent;color:var(--muted);
-    border-radius:3px;padding:4px;font-size:9.5px;font-weight:900;letter-spacing:1.5px}
+    border-radius:3px;padding:4px;font-size:11px;font-weight:900;letter-spacing:1.5px}
   .tunebtn:hover{border-color:var(--grn);color:var(--grn)}
   .addbtn{width:calc(100% - 12px);margin:0 6px 8px;border:1px dashed var(--line2);background:transparent;
-    border-radius:4px;padding:6px;font-size:9.5px;font-weight:800;letter-spacing:1px;color:var(--muted)}
+    border-radius:4px;padding:6px;font-size:11px;font-weight:800;letter-spacing:1px;color:var(--muted)}
   .addbtn:hover{border-color:var(--holo);color:var(--holo)}
 
   #commsMain{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0}
   #rosterChips{display:flex;gap:6px;flex-wrap:wrap;padding:8px 10px;min-height:46px;border-bottom:1px solid var(--line)}
   .rchip{border:1px solid var(--line2);border-radius:3px;padding:4px 9px;background:var(--panel)}
-  .rchip b{font-size:11.5px;letter-spacing:.5px;display:block}
-  .rchip span{font-size:8px;color:var(--muted);letter-spacing:1px;font-weight:900}
+  .rchip b{font-size:12.5px;letter-spacing:.5px;display:block}
+  .rchip span{font-size:10px;color:var(--muted);letter-spacing:1px;font-weight:900}
   .rchip.speaking{border-color:var(--grn);background:var(--grn-tint)}
   .rchip.speaking b{color:var(--grn)}
   .rchip.me{border-style:dashed}
   #logFeed{flex:1;overflow-y:auto;padding:7px 10px;font-family:ui-monospace,Menlo,Consolas,monospace;
-    font-size:11.5px;line-height:1.75}
+    font-size:12.5px;line-height:1.75}
   .le{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .le .t{color:var(--muted)}
   .le .n{color:var(--holo);font-weight:700}
@@ -165,18 +183,18 @@
   #pgChat{flex-direction:column}
   #chatTabs{display:flex;gap:5px;padding:7px 10px;border-bottom:1px solid var(--line);overflow-x:auto;flex:0 0 auto}
   .ctab{border:1px solid var(--line2);border-radius:3px;background:transparent;color:var(--muted);
-    padding:5px 12px;font-size:10px;font-weight:800;letter-spacing:1px;white-space:nowrap}
+    padding:5px 12px;font-size:11.5px;font-weight:800;letter-spacing:1px;white-space:nowrap}
   .ctab.on{border-color:var(--holo);color:var(--ink);background:var(--holo-tint)}
-  #chatFeed{flex:1;overflow-y:auto;padding:10px 12px;font-size:13px;line-height:1.65}
+  #chatFeed{flex:1;overflow-y:auto;padding:10px 12px;font-size:13.5px;line-height:1.65}
   .cm{margin-bottom:4px;word-wrap:break-word}
-  .cm b{color:var(--holo);font-size:12px;letter-spacing:.5px;margin-right:8px}
-  .cm .t{color:var(--muted);font-size:10px;margin-right:8px;font-family:ui-monospace,Menlo,Consolas,monospace}
+  .cm b{color:var(--holo);font-size:13px;letter-spacing:.5px;margin-right:8px}
+  .cm .t{color:var(--muted);font-size:11.5px;margin-right:8px;font-family:ui-monospace,Menlo,Consolas,monospace}
   .cm.mine b{color:var(--amber)}
   #chatBar{flex:0 0 auto;display:flex;gap:8px;padding:9px 12px;border-top:1px solid var(--line)}
   #chatIn{flex:1;border:1px solid var(--line2);border-radius:4px;padding:9px 12px;background:var(--panel)}
   #chatIn:disabled{opacity:.5}
   #chatSend{border:1px solid var(--line2);background:var(--tint);border-radius:4px;
-    padding:9px 18px;font-weight:900;font-size:11px;letter-spacing:1.5px;color:var(--muted)}
+    padding:9px 18px;font-weight:900;font-size:12px;letter-spacing:1.5px;color:var(--muted)}
   #chatSend:hover{border-color:var(--holo);color:var(--holo)}
 
   /* ═ ATC page ═ */
@@ -184,38 +202,38 @@
   #atcGrid{flex:1;overflow-y:auto;display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));
     gap:8px;padding:10px;align-content:start}
   .atcbox{border:1px solid var(--line2);border-radius:4px;background:var(--panel)}
-  .atcbox h4{margin:0;padding:6px 9px;font-size:10px;letter-spacing:1.4px;border-bottom:1px solid var(--line);
+  .atcbox h4{margin:0;padding:6px 9px;font-size:11.5px;letter-spacing:1.4px;border-bottom:1px solid var(--line);
     display:flex;justify-content:space-between}
   .atcbox h4 .c{color:var(--muted)}
   .atcbox .who{padding:7px 9px;display:flex;flex-wrap:wrap;gap:5px;min-height:28px}
-  .atcbox .who i{font-style:normal;font-size:10.5px;font-weight:700;border:1px solid var(--line2);border-radius:3px;padding:2px 7px}
+  .atcbox .who i{font-style:normal;font-size:12px;font-weight:700;border:1px solid var(--line2);border-radius:3px;padding:2px 7px}
   .atcbox .who .empty{color:var(--muted);border:none}
-  .atcbox .tunelink{display:block;width:100%;border:none;background:none;color:var(--muted);font-size:9px;
+  .atcbox .tunelink{display:block;width:100%;border:none;background:none;color:var(--muted);font-size:10.5px;
     letter-spacing:1.2px;font-weight:900;padding:5px;border-top:1px solid var(--line)}
   .atcbox .tunelink:hover{color:var(--grn)}
 
   /* ═ SYS page ═ */
   #settings{flex-direction:column}
   #sysScroll{flex:1;overflow-y:auto;padding:14px 18px;max-width:660px}
-  .miniheading{font-size:9.5px;font-weight:900;letter-spacing:2px;color:var(--muted);margin:16px 0 6px}
+  .miniheading{font-size:11px;font-weight:900;letter-spacing:2px;color:var(--muted);margin:16px 0 6px}
   .togrow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 2px;border-bottom:1px solid var(--line)}
-  .togrow .tl b{display:block;font-size:13px}
-  .togrow .tl span{font-size:11.5px;color:var(--muted)}
-  .orgsel{border:1px solid var(--line2);background:var(--panel);border-radius:4px;padding:7px 9px;font-weight:700;font-size:12px}
+  .togrow .tl b{display:block;font-size:13.5px}
+  .togrow .tl span{font-size:12.5px;color:var(--muted)}
+  .orgsel{border:1px solid var(--line2);background:var(--panel);border-radius:4px;padding:7px 9px;font-weight:700;font-size:13px}
   .keybadge{border:1px dashed var(--line2);background:transparent;border-radius:4px;padding:7px 12px;
-    font-weight:800;font-size:11px;color:var(--muted)}
+    font-weight:800;font-size:12px;color:var(--muted)}
   .keybadge.listen{border-color:var(--amber);color:var(--amber);border-style:solid}
   .switch{position:relative;width:44px;height:24px;flex:0 0 auto;border:1px solid var(--line2);border-radius:3px;background:var(--tint);transition:background .15s}
   .switch::after{content:"";position:absolute;top:3px;left:4px;width:16px;height:16px;border-radius:2px;background:var(--muted);transition:left .15s,background .15s}
   .switch.on{background:var(--grn-tint);border-color:var(--grn)}
   .switch.on::after{left:22px;background:var(--grn)}
   .kv{display:flex;flex-direction:column;gap:4px;margin:8px 0 12px}
-  .kv label{font-size:9.5px;font-weight:900;letter-spacing:1.5px;color:var(--muted)}
-  .kv input{border:1px solid var(--line2);border-radius:4px;padding:10px 12px;background:var(--panel);font-size:14px}
+  .kv label{font-size:11px;font-weight:900;letter-spacing:1.5px;color:var(--muted)}
+  .kv input{border:1px solid var(--line2);border-radius:4px;padding:10px 12px;background:var(--panel);font-size:15px}
   .btn{border:1px solid var(--line2);background:var(--tint);color:var(--ink);
-    border-radius:4px;padding:10px 18px;font-weight:900;letter-spacing:1px;font-size:11.5px}
+    border-radius:4px;padding:10px 18px;font-weight:900;letter-spacing:1px;font-size:12.5px}
   .btn:hover{border-color:var(--holo)}
-  .btn.big{width:100%;font-size:12.5px;padding:12px}
+  .btn.big{width:100%;font-size:13.5px;padding:12px}
   .btn.ghost{color:var(--muted)}
   .wnav{display:flex;gap:10px;margin-top:16px}
   .wnav .btn{flex:1}
@@ -223,83 +241,86 @@
   /* ═ radio head (persistent right rail) ═ */
   #head{width:236px;flex:0 0 auto;border-left:1px solid var(--line);background:var(--tint);
     display:flex;flex-direction:column;min-height:0;overflow-y:auto;padding:10px;gap:9px}
-  .txh{font-size:9px;font-weight:900;letter-spacing:2px;color:var(--muted)}
+  .txh{font-size:10.5px;font-weight:900;letter-spacing:2px;color:var(--muted)}
   #txTargets{display:flex;flex-wrap:wrap;gap:5px;min-height:22px}
-  #txTargets .ann{font-size:9.5px}
+  #txTargets .ann{font-size:11px}
   #ptt{height:104px;border:1px solid var(--line2);border-bottom-width:4px;border-radius:6px;
     background:linear-gradient(var(--panel),var(--tint));
-    font-size:13px;font-weight:900;letter-spacing:3px;color:var(--muted);user-select:none;-webkit-user-select:none;touch-action:none}
+    font-size:13.5px;font-weight:900;letter-spacing:3px;color:var(--muted);user-select:none;-webkit-user-select:none;touch-action:none}
   #ptt:active{transform:translateY(1px)}
   #ptt.hot{border-color:var(--amber);color:var(--amber);background:var(--amber-tint);box-shadow:inset 0 0 0 1px var(--amber)}
-  .hint{font-size:10px;color:var(--muted);text-align:center;line-height:1.5}
-  .hint .keyb2{border:1px solid var(--line2);border-radius:3px;padding:1px 7px;font-weight:900;font-size:9.5px}
+  .hint{font-size:11.5px;color:var(--muted);text-align:center;line-height:1.5}
+  .hint .keyb2{border:1px solid var(--line2);border-radius:3px;padding:1px 7px;font-weight:900;font-size:11px}
   .hint a{color:var(--muted);text-decoration:underline;cursor:pointer}
   .wide{width:100%;border:1px solid var(--line2);background:var(--panel);border-radius:4px;padding:8px;
-    font-size:10px;font-weight:900;letter-spacing:1px;color:var(--muted);text-align:center}
+    font-size:11.5px;font-weight:900;letter-spacing:1px;color:var(--muted);text-align:center}
   .wide.ok{border-color:var(--grn);color:var(--grn);background:var(--grn-tint)}
   .wide.latched{border-color:var(--amber);color:var(--amber);background:var(--amber-tint)}
   .wide.cmd{border-color:var(--amber);color:var(--amber)}
   .authbox{border:1px solid var(--line);border-radius:4px;padding:8px;background:var(--panel)}
   .authbox .cs{font-size:13.5px;font-weight:900;letter-spacing:.5px}
-  .authbox .role{color:var(--amber);font-size:9px;font-weight:900;letter-spacing:1.5px;margin-left:6px}
-  .foot{font-size:9px;color:var(--muted);line-height:1.6;text-align:center;margin-top:auto}
+  .authbox .role{color:var(--amber);font-size:10.5px;font-weight:900;letter-spacing:1.5px;margin-left:6px}
+  .foot{font-size:10.5px;color:var(--muted);line-height:1.6;text-align:center;margin-top:auto}
 
   /* boot / sign-in */
   .overlay{position:fixed;inset:0;background:var(--bez);display:flex;align-items:center;justify-content:center;padding:18px;z-index:50}
   .overlay.hidden{display:none}
   #connectOv .modal{width:min(430px,100%);background:var(--bg);border:1px solid var(--bezline);border-radius:6px;
     padding:26px 28px;box-shadow:var(--shadow)}
-  .bootline{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:var(--muted);line-height:1.9}
+  .bootline{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:var(--muted);line-height:1.9}
   .bootline .okk{color:var(--grn);font-weight:700}
-  #connectOv h2{margin:12px 0 2px;font-size:19px;letter-spacing:4px}
-  #connectOv .sub{color:var(--muted);font-size:10px;letter-spacing:2px;font-weight:800;margin:0 0 16px}
+  #connectOv h2{margin:12px 0 2px;font-size:20px;letter-spacing:4px}
+  #connectOv .sub{color:var(--muted);font-size:11.5px;letter-spacing:2px;font-weight:800;margin:0 0 16px}
   .relaychip{display:flex;align-items:center;gap:8px;border:1px solid var(--grn);background:var(--grn-tint);
-    border-radius:4px;padding:9px 12px;font-weight:800;font-size:12px;margin-bottom:12px;color:var(--grn)}
-  .relaychip a{color:var(--muted);font-size:10px;margin-left:auto;text-decoration:underline;cursor:pointer}
-  .signfoot{font-size:10.5px;color:var(--muted);line-height:1.6;margin-top:14px;border-top:1px solid var(--line);padding-top:11px}
+    border-radius:4px;padding:9px 12px;font-weight:800;font-size:13px;margin-bottom:12px;color:var(--grn)}
+  .relaychip a{color:var(--muted);font-size:11.5px;margin-left:auto;text-decoration:underline;cursor:pointer}
+  .signfoot{font-size:12px;color:var(--muted);line-height:1.6;margin-top:14px;border-top:1px solid var(--line);padding-top:11px}
   .acctrow{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:4px;
     background:var(--panel);padding:8px 11px;margin-bottom:6px}
-  .acctrow .nm b{font-size:13px;letter-spacing:.5px}
-  .acctrow .nm span{display:block;font-size:10px;color:var(--muted)}
+  .acctrow .nm b{font-size:13.5px;letter-spacing:.5px}
+  .acctrow .nm span{display:block;font-size:11.5px;color:var(--muted)}
   .acctrow .rolelbl{margin-left:auto}
   .acctrow .ann{cursor:pointer}
   .narow{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:4px;
     background:var(--panel);padding:7px 11px;margin-bottom:5px}
-  .narow b{font-size:12px;letter-spacing:.5px;flex:1}
-  .narow .fq2{font-size:10.5px;color:var(--muted)}
+  .narow b{font-size:13px;letter-spacing:.5px;flex:1}
+  .narow .fq2{font-size:12px;color:var(--muted)}
   /* modal dialog (replaces window.prompt, which Electron doesn't implement) */
   #dlg{position:fixed;inset:0;background:rgba(3,8,11,.72);display:none;align-items:center;justify-content:center;z-index:80;padding:20px}
   #dlg.on{display:flex}
   #dlgBox{width:min(460px,100%);background:var(--panel);border:1px solid var(--bezline);border-radius:6px;
     padding:22px 24px;box-shadow:var(--shadow)}
-  #dlgBox h3{margin:0 0 14px;font-size:15px;letter-spacing:1.5px}
+  #dlgBox h3{margin:0 0 14px;font-size:16px;letter-spacing:1.5px}
   #dlgBox .kv{margin-bottom:10px}
   #dlgBox .row{display:flex;align-items:center;gap:8px;margin:10px 0}
-  #dlgBox .row label{font-size:11.5px;color:var(--muted)}
+  #dlgBox .row label{font-size:12.5px;color:var(--muted)}
   /* soundboard */
   #sbPanel{border-top:1px solid var(--line);padding:9px 10px}
-  #sbHead{display:flex;align-items:center;gap:8px;font-size:9px;font-weight:900;letter-spacing:1.5px;color:var(--muted);margin-bottom:7px}
+  #sbHead{display:flex;align-items:center;gap:8px;font-size:10.5px;font-weight:900;letter-spacing:1.5px;color:var(--muted);margin-bottom:7px}
   #sbHead .addsb{margin-left:auto;border:1px solid var(--line2);background:transparent;color:var(--muted);
-    border-radius:3px;padding:2px 8px;font-size:9px;font-weight:900;letter-spacing:1px}
+    border-radius:3px;padding:2px 8px;font-size:10.5px;font-weight:900;letter-spacing:1px}
   #sbHead .addsb:hover{border-color:var(--holo);color:var(--holo)}
   #sbList{display:flex;flex-wrap:wrap;gap:5px}
   .sbBtn{border:1px solid var(--line2);background:var(--panel);border-radius:3px;padding:5px 9px;
-    font-size:10.5px;font-weight:700;color:var(--ink);max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    font-size:12px;font-weight:700;color:var(--ink);max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .sbBtn:hover{border-color:var(--amber);color:var(--amber)}
   .sbBtn.playing{border-color:var(--amber);background:var(--amber-tint);color:var(--amber)}
-  .sbBtn .del{color:var(--muted);margin-left:6px;font-size:10px}
+  .sbBtn .del{color:var(--muted);margin-left:6px;font-size:11.5px}
   .sbBtn .del:hover{color:var(--red)}
   .ctxi{display:block;width:100%;text-align:left;border:none;background:none;color:var(--ink);
-    padding:7px 11px;font-size:12px;border-radius:3px}
+    padding:7px 11px;font-size:13px;border-radius:3px}
   .ctxi:hover{background:var(--tint);color:var(--holo)}
   .ctxi:disabled{opacity:.4;cursor:default}
+  #scalerow{display:flex;align-items:center;gap:6px}
+  #scalerow .btn{padding:4px 9px}
+  #scaleval{min-width:46px;text-align:center;color:var(--muted)}
   #themeGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;padding:10px 2px}
-  #themeGrid label{display:flex;flex-direction:column;gap:4px;font-size:9px;font-weight:900;
+  #themeGrid label{display:flex;flex-direction:column;gap:4px;font-size:10.5px;font-weight:900;
     letter-spacing:1px;color:var(--muted)}
   #themeGrid input[type=color]{width:100%;height:30px;border:1px solid var(--line2);border-radius:3px;background:none;padding:2px}
   .toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);z-index:90;
     background:var(--panel);border:1px solid var(--amber);border-radius:5px;padding:10px 16px;
-    font-size:13px;box-shadow:var(--shadow);display:none;max-width:90vw}
+    font-size:13.5px;box-shadow:var(--shadow);display:none;max-width:90vw}
 </style>
 </head>
 <body>
@@ -321,7 +342,7 @@
   <button class="icobtn" id="themebtn" title="Day / night">◐</button>
 </div>
 <div id="updbar"><span id="updtext"></span>
-  <button class="btn" id="updgo" style="margin-left:auto;padding:5px 14px;font-size:11px">Install &amp; restart</button>
+  <button class="btn" id="updgo" style="margin-left:auto;padding:5px 14px;font-size:12px">Install &amp; restart</button>
   <button class="icobtn" id="upddismiss">✕</button>
 </div>
 
@@ -388,6 +409,13 @@
       <div class="togrow"><div class="tl"><b>Radio voice effect</b><span>How much "over the net" character voices get</span></div>
         <select class="orgsel" id="fxsel"><option value="clean">Clean</option><option value="standard">Standard</option><option value="heavy">Heavy</option></select></div>
       <div class="miniheading">DISPLAY</div>
+      <div class="togrow"><div class="tl"><b>Typeface</b><span>Atkinson Hyperlegible is drawn so I/l/1 and O/0 stay apart</span></div>
+        <select class="orgsel" id="sfontsel"><option value="legible">High legibility</option><option value="system">System</option></select></div>
+      <div class="togrow"><div class="tl"><b>Text size</b><span>Scales the whole board — Ctrl + and Ctrl - also work</span></div>
+        <div id="scalerow"><button class="btn" id="scaledn" title="Smaller">A−</button>
+          <span class="num" id="scaleval">100%</span>
+          <button class="btn" id="scaleup" title="Larger">A+</button>
+          <button class="btn" id="scalereset" title="Back to 100%">RESET</button></div></div>
       <div class="togrow"><div class="tl"><b>Mode</b><span>Night, day, or custom palette</span></div>
         <select class="orgsel" id="sthemesel"><option value="dark">Night</option><option value="light">Day</option><option value="custom">Custom</option></select></div>
       <div id="customcolors" style="display:none">
@@ -443,17 +471,17 @@
       <p class="hint" style="margin-top:10px;text-align:left">Discord confirms who you are — username only, nothing else.
         Whether you may use FleetComm is decided separately, by COMMAND.</p>
       <div id="pendingBox" style="display:none;border:1px solid var(--amber);background:var(--amber-tint);border-radius:4px;padding:12px;margin-top:12px;text-align:left">
-        <b style="color:var(--amber);letter-spacing:1px;font-size:11px">AWAITING COMMAND APPROVAL</b>
+        <b style="color:var(--amber);letter-spacing:1px;font-size:12px">AWAITING COMMAND APPROVAL</b>
         <p class="hint" style="text-align:left;margin:6px 0 10px">Your sign-in is registered. A COMMAND operator must clear you before the relay will accept you.</p>
         <button class="btn" id="recheckBtn">RE-CHECK STATUS</button>
       </div>
       <div class="kv" id="csRow2" style="display:none;margin-top:12px"><label>CALLSIGN FOR THIS SESSION</label>
-        <input id="csIn" class="mono" placeholder="e.g. TIBER DOC 1" list="csList" style="font-size:16px;letter-spacing:1px"><datalist id="csList"></datalist></div>
+        <input id="csIn" class="mono" placeholder="e.g. TIBER DOC 1" list="csList" style="font-size:17px;letter-spacing:1px"><datalist id="csList"></datalist></div>
       <button class="btn big" id="connectBtn" style="display:none;margin-top:10px">CONNECT ▸</button>
     </div>
     <div id="signLegacy">
       <p class="sub">OPERATOR CALLSIGN</p>
-      <div class="kv"><input id="csInLegacy" class="mono" placeholder="e.g. TIBER DOC 1" style="font-size:16px;letter-spacing:1px"></div>
+      <div class="kv"><input id="csInLegacy" class="mono" placeholder="e.g. TIBER DOC 1" style="font-size:17px;letter-spacing:1px"></div>
       <button class="btn big" id="connectLegacyBtn">CONNECT ▸</button>
     </div>
     <div class="kv" id="hostrow" style="display:none;margin-top:10px"><label>SERVER ADDRESS</label><input id="hostIn" class="mono"></div>

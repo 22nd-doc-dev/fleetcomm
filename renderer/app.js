@@ -1,6 +1,6 @@
 "use strict";
 /* FleetComm v0.5 renderer — command console. */
-const { ipcRenderer } = require("electron");
+const { ipcRenderer, webFrame } = require("electron");
 const OpusScript = require("opusscript");
 const pkg = require("../config/22nd-package.json");
 
@@ -17,6 +17,27 @@ const THEME_DEFAULTS = { bg: "#0b0f13", panel: "#11161b", bez: "#1c2126", ink: "
   muted: "#8b979f", line: "#242b32", accent: "#4fd4e8", grn: "#49d17c", amber: "#ffb648", red: "#ff5a5a" };
 let customTheme = Object.assign({}, THEME_DEFAULTS, store.get("customTheme", {}));
 let autoUpdate = store.get("autoUpdate", true);
+
+/* ══ legibility ══
+   Two separate levers, because they fix different problems: the typeface helps
+   with character confusion at a glance, the scale helps when the type is simply
+   too small for the screen you're on. Both persist, and the scale is applied
+   with the frame zoom so every part of the board grows together — panels,
+   spacing and controls, not just the text. */
+let uiFont = store.get("uiFont", "legible");
+let uiScale = Math.min(1.6, Math.max(0.8, Number(store.get("uiScale", 1)) || 1));
+function applyFont() {
+  document.documentElement.setAttribute("data-font", uiFont);
+  const el = $("sfontsel"); if (el) el.value = uiFont;
+  store.set("uiFont", uiFont);
+}
+function applyScale() {
+  uiScale = Math.min(1.6, Math.max(0.8, uiScale));
+  try { webFrame.setZoomFactor(uiScale); } catch (e) {}
+  const el = $("scaleval"); if (el) el.textContent = Math.round(uiScale * 100) + "%";
+  store.set("uiScale", uiScale);
+}
+function bumpScale(d) { uiScale = Math.round((uiScale + d) * 20) / 20; applyScale(); }
 let myCallsigns = store.get("callsigns", []);
 let callsign = store.get("callsign", "");
 let cmdToken = store.get("cmdToken", "");
@@ -52,8 +73,25 @@ function savePrefs() {
   store.set("collapsed", collapsed);
 }
 const sel = () => nets[selectedI];
+const { buildTree, validParents } = require("../src/net-tree");
+/* The display order is derived from parentage every render — see src/net-tree.js.
+   `tree` is rebuilt by renderNets and read by anything that needs to know the
+   shape of the board (PgUp/PgDn order, the parent dropdown, nest counts). */
+let tree = { rows: [], kids: [], parentIdx: [], depth: [], roots: [] };
+function rebuildTree() {
+  pruneCollapsed();
+  tree = buildTree(nets.map(n => ({ name: n.cfg.name, parent: n.parent })), collapsed);
+  nets.forEach((n, i) => {           /* keep the stored depth in step with the real one */
+    n.depth = tree.depth[i];
+    if (tree.parentIdx[i] === -1) n.parent = null;   /* an orphan really is top level now */
+  });
+  return tree;
+}
 const kidsOf = (name) => nets.filter(x => x.parent === name);
-const isParent = (n) => n.depth === 0 && (kidsOf(n.cfg.name).length > 0 || (n.cfg.subnets || []).length > 0);
+const isParent = (n) => {
+  const i = nets.indexOf(n);
+  return (i >= 0 && tree.kids[i] && tree.kids[i].length > 0) || (n.cfg.subnets || []).length > 0;
+};
 const isShip = (n) => !!n.cfg.ship;
 
 /* ══ color helpers + theme engine ══ */
@@ -335,19 +373,22 @@ function setOverride(on) {
 const netlist = $("netlist");
 function renderNets() {
   netlist.innerHTML = "";
-  nets.forEach((n, i) => {
-    if (n.depth && collapsed[n.parent]) return; /* hidden by collapsed parent */
-    const par = isParent(n), kids = par ? kidsOf(n.cfg.name) : [];
+  rebuildTree();
+  tree.rows.forEach((row) => {
+    const i = row.i, n = nets[i];
+    const kids = row.kids.map(k => nets[k]);
+    const par = kids.length > 0 || (n.cfg.subnets || []).length > 0;
     const anyKidTuned = kids.some(k => k.tuned);
     const d = document.createElement("div");
-    d.className = "net" + (n.depth ? " sub" : "") + (par ? " parent" : "") +
+    d.style.setProperty("--lvl", row.depth);
+    d.className = "net" + (row.depth ? " sub" : "") + (par ? " parent" : "") +
       (par && anyKidTuned ? " hasnest" : "") + (par && n.bcast ? " bcast" : "") +
       (i === selectedI ? " sel" : "") + (n.tuned ? "" : " untuned") +
       (n.tx ? " tx-live" : (n.speaking.size ? " rx-live" : ""));
     d.dataset.i = i;
     let h = '<div class="nt" data-sel>' +
       (par ? '<button class="chev" data-chev title="collapse / expand nest">' + (collapsed[n.cfg.name] ? "▸" : "▾") + '</button>' : "") +
-      '<span class="fq num">' + n.cfg.freq + '</span><b>' + n.cfg.name +
+      '<span class="fq num">' + esc(n.cfg.freq) + '</span><b>' + esc(n.cfg.name) +
       (n.cfg.enc ? ' <span class="enc">⚿</span>' : "") + '</b>' +
       (isShip(n) ? '<span class="shipbadge">SHIP</span>' : "") +
       (par ? '<span class="nestcount">' + kids.filter(k => k.tuned).length + "/" + kids.length + " NEST</span>" : "") +
@@ -465,6 +506,36 @@ function renameLocal(oldName, newName) {
   }
   nets.forEach(x => { if (x.parent === oldName) x.parent = newName; });
 }
+
+/* Collapse flags are keyed by net name, so names that no longer exist keep
+   folding things away long after the net is gone — that's how a nest could
+   swallow a net that wasn't even in it. Sweep them whenever the tree changes. */
+/* The relay is the authority on the shape of the tree. After any edit we ask it
+   what actually happened rather than trusting our own optimistic update — that
+   is what let the board show a net still nested under TIBER when the server had
+   already moved it somewhere else. */
+async function syncTreeFromRelay() {
+  let view;
+  try { view = await ipcRenderer.invoke("atc-view"); } catch (e) { return false; }
+  if (!Array.isArray(view) || !view.length) return false;
+  const byId = new Map(view.map(c => [c.id, c]));
+  let changed = false;
+  nets.forEach(n => {
+    const ch = view.find(c => c.name === n.cfg.name);
+    if (!ch) return;                                  /* not on the relay (local-only net) */
+    const par = byId.get(ch.parent);
+    /* the relay's root is not one of our nets, so it reads as top level */
+    const parentName = par && nets.some(x => x.cfg.name === par.name) ? par.name : null;
+    if ((n.parent || null) !== parentName) { n.parent = parentName; changed = true; }
+  });
+  if (changed) { savePrefs(); renderNets(); }
+  return changed;
+}
+
+function pruneCollapsed() {
+  const live = new Set(nets.map(n => n.cfg.name));
+  Object.keys(collapsed).forEach(k => { if (!live.has(k)) delete collapsed[k]; });
+}
 function normFreq(raw) {
   const s = String(raw == null ? "" : raw).trim().replace(",", ".");
   if (!s) return "";
@@ -495,7 +566,9 @@ function armTxExclusive(i) {
   renderTxTargets();
 }
 function cycleSel(dir) {
-  const tuned = nets.map((n, i) => i).filter(i => nets[i].tuned);
+  /* walk the board in the order it's displayed — array order stopped matching
+     the list the moment nets could be re-homed */
+  const tuned = tree.rows.map(r => r.i).filter(i => nets[i].tuned);
   if (!tuned.length) return;
   const pos = Math.max(0, tuned.indexOf(selectedI));
   selectedI = tuned[(pos + dir + tuned.length) % tuned.length];
@@ -585,9 +658,14 @@ function openNetDialog(mode, i) {
   $("dlgShip").parentElement.style.display = "";
   $("dlgName").placeholder = "e.g. STRIKE TWO";
   $("dlgErr").textContent = "";
+  /* any net may be a parent, at any depth — except the net being edited and
+     its own descendants, which would orphan that whole branch */
+  const legal = mode === "edit" && i != null
+    ? validParents(nets.map(x => ({ name: x.cfg.name, parent: x.parent })), i)
+    : nets.map((x, j) => j);
   const opts = ['<option value="">— top level —</option>'].concat(
-    nets.filter(n => n.depth === 0 && (mode !== "edit" || n !== nets[i]))
-        .map(n => '<option value="' + esc(n.cfg.name) + '">under ' + esc(n.cfg.name) + "</option>"));
+    legal.map(j => nets[j]).map(n => '<option value="' + esc(n.cfg.name) + '">under ' +
+      "  ".repeat(n.depth || 0) + esc(n.cfg.name) + "</option>"));
   $("dlgParent").innerHTML = opts.join("");
   if (mode === "edit") {
     const n = nets[i];
@@ -645,6 +723,8 @@ $("dlgOk").addEventListener("click", async function () {
     this.disabled = false; this.textContent = "CREATE ▸";
     if (!r.ok) { $("dlgErr").textContent = r.error || "The relay refused that change."; return; }
     savePrefs(); $("dlg").classList.remove("on"); renderNets(); renderSoundboard();
+    /* confirm against the relay, so the board shows where the net really is */
+    if (await syncTreeFromRelay()) addLog("sys", n.cfg.name, "tree re-synced from the relay");
     return;
   }
   const name = $("dlgName").value.trim().toUpperCase();
@@ -655,7 +735,10 @@ $("dlgOk").addEventListener("click", async function () {
   const freq = normFreq(freqRaw) || "———.———";
   this.disabled = true; this.textContent = "CREATING…";
   const cfg = { name, freq, enc: false, ship: $("dlgShip").checked, subnets: [] };
-  const p = parent ? nets.find(n => n.cfg.name === parent && n.depth === 0) : null;
+  /* any net can be a parent — requiring depth 0 here silently dropped the
+     parent when you nested under a subnet, and the new net was created at the
+     org root instead of where you asked for it */
+  const p = parent ? nets.find(n => n.cfg.name === parent) : null;
   nets.push({ cfg, depth: p ? 1 : 0, parent: p ? p.cfg.name : null, tuned: false, idx: null,
     mon: true, txOn: false, vol: 75, pan: 0, bind: null, bcast: false,
     roster: new Map(), speaking: new Map(), chat: [], tx: false });
@@ -666,6 +749,7 @@ $("dlgOk").addEventListener("click", async function () {
   if (!ok) { nets.splice(i, 1); renderNets(); $("dlgErr").textContent = "The relay refused to create that net."; return; }
   $("dlg").classList.remove("on");
   selectedI = i; renderNets();
+  if (await syncTreeFromRelay()) addLog("sys", name, "tree re-synced from the relay");
 });
 
 /* ══ NET CONTEXT MENU + PROPERTIES (COMMAND only) ══ */
@@ -998,6 +1082,16 @@ function pollOps() {
 }
 
 /* ══ header / settings / theme wiring ══ */
+$("sfontsel").addEventListener("change", function () { uiFont = this.value; applyFont(); });
+$("scaleup").addEventListener("click", () => bumpScale(0.1));
+$("scaledn").addEventListener("click", () => bumpScale(-0.1));
+$("scalereset").addEventListener("click", () => { uiScale = 1; applyScale(); });
+window.addEventListener("keydown", (e) => {
+  if (!(e.ctrlKey || e.metaKey)) return;
+  if (e.key === "=" || e.key === "+") { bumpScale(0.1); e.preventDefault(); }
+  else if (e.key === "-" || e.key === "_") { bumpScale(-0.1); e.preventDefault(); }
+  else if (e.key === "0") { uiScale = 1; applyScale(); e.preventDefault(); }
+});
 $("themebtn").addEventListener("click", () => { themeMode = dark ? "light" : "dark"; applyTheme(); });
 $("sthemesel").addEventListener("change", function () { themeMode = this.value; applyTheme(); });
 Object.keys(THEME_DEFAULTS).forEach(k => {
@@ -1105,7 +1199,7 @@ try {
 $("sfx").classList.toggle("on", fx);
 $("sautoupd").classList.toggle("on", autoUpdate);
 $("fxsel").value = fxPreset;
-applyTheme(); renderCsList(); renderMasterBinds(); renderMic(); renderNets(); refreshSounds();
+applyFont(); applyScale(); applyTheme(); renderCsList(); renderMasterBinds(); renderMic(); renderNets(); refreshSounds();
 $("signDiscord").style.display = discordMode ? "block" : "none";
 $("signLegacy").style.display = discordMode ? "none" : "block";
 if (discordMode) $("signFoot").textContent = "Access is gated: Discord confirms who you are, COMMAND decides who gets in, and the relay itself refuses anyone unapproved.";
@@ -1212,6 +1306,23 @@ if (process.env.FLEETCOMM_AUTOTEST) {
     L("edit-gated-without-token", (openNetDialog("edit", tunedIdx[0] != null ? tunedIdx[0] : 0),
         !document.getElementById("dlg").classList.contains("on")));
     cmdToken = "autotest-token";
+    /* typography actually applied? */
+    document.fonts.ready.then(() => {
+      L("font-loaded", document.fonts.check('16px "Atkinson Hyperlegible"'));
+      L("body-font", getComputedStyle(document.body).fontFamily.split(",")[0]);
+      L("body-size", getComputedStyle(document.body).fontSize);
+      const tiny = [...document.querySelectorAll("*")]
+        .map(el => parseFloat(getComputedStyle(el).fontSize))
+        .filter(v => v && v < 10);
+      L("elements-under-10px", tiny.length);
+    });
+
+    /* the net tree: order must follow parentage, not array order */
+    const shown = [...document.querySelectorAll("#netlist .net")]
+      .map(el => nets[+el.dataset.i].cfg.name + "@" + (el.style.getPropertyValue("--lvl") || "0"));
+    L("tree-order", shown.join(" | "));
+    L("tree-rows-vs-nets", tree.rows.length + "/" + nets.length);
+
     L("normfreq", ["250","290.5","118.25","290,500","junk",""]
         .map(v => v + "->" + (normFreq(v) || "-")).join(" "));
 

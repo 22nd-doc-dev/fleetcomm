@@ -1,4 +1,4 @@
 {
-  "version": "0.9.2",
-  "notes": "Fixes the auto-updater restart loop. The swap script used `timeout`, which exits instantly when the app launches it detached, so it raced the still-running app, failed the swap, and relaunched the old build \u2014 forever. It now waits for the app to actually exit, verifies the new exe is in place before relaunching, restores the old one if anything goes wrong, and will only ever attempt one automatic install per version. If that attempt doesn't take, you get the banner and the reason instead of a loop."
+  "version": "0.9.3",
+  "notes": "Nesting is fixed. The net list was drawn in array order with the parent used only as an indent, so a re-homed net landed wherever it happened to sit in the list and a net whose parent was gone could vanish entirely. Order now follows actual parentage: children always render under their parent, nests can go deeper than one level, orphans surface at top level instead of disappearing, collapsing a nest folds only that nest, and every edit is confirmed against the relay. Also: bigger, more legible type throughout, Atkinson Hyperlegible as the default typeface, and a text size control (Ctrl + / Ctrl -)."
 }

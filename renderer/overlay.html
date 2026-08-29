@@ -14,7 +14,12 @@
   }
   *{box-sizing:border-box;margin:0;padding:0}
   html,body{background:transparent;overflow:hidden;height:100%}
-  body{font:12px/1.35 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:var(--ink);
+  @font-face{font-family:"Atkinson Hyperlegible";src:url("fonts/atkinson-400.woff2") format("woff2");
+    font-weight:400;font-style:normal;font-display:swap}
+  @font-face{font-family:"Atkinson Hyperlegible";src:url("fonts/atkinson-700.woff2") format("woff2");
+    font-weight:700;font-style:normal;font-display:swap}
+  /* the overlay sits over the game, where legibility matters most */
+  body{font:13px/1.4 "Atkinson Hyperlegible",-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:var(--ink);
     display:flex;flex-direction:column;justify-content:flex-start}
   #box{transform-origin:top left;padding:6px}
   .row{display:flex;align-items:center;gap:7px;background:var(--panel);
@@ -27,10 +32,10 @@
   .rx .lamp{background:var(--holo);box-shadow:0 0 6px var(--holo)}
   .tx .lamp{background:var(--tx);box-shadow:0 0 6px var(--tx)}
   .nm{font-weight:800;letter-spacing:.4px;white-space:nowrap}
-  .nm small{color:var(--muted);font-weight:600;margin-left:5px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10px}
-  .act{color:var(--holo);font-size:8.5px;font-weight:900;letter-spacing:1px;display:none}
+  .nm small{color:var(--muted);font-weight:600;margin-left:5px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px}
+  .act{color:var(--holo);font-size:10.5px;font-weight:900;letter-spacing:1px;display:none}
   .row.active .act{display:inline}
-  .who{margin-left:auto;font-family:ui-monospace,Menlo,Consolas,monospace;font-weight:700;font-size:11px;
+  .who{margin-left:auto;font-family:ui-monospace,Menlo,Consolas,monospace;font-weight:700;font-size:12px;
     color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:150px}
   .rx .who{color:var(--holo)} .tx .who{color:var(--tx)}
   /* edit chrome */
@@ -38,13 +43,13 @@
     padding:8px 10px;margin:0 0 4px;-webkit-app-region:drag}
   body.editing #edit{display:block}
   body.editing{outline:2px dashed var(--holo);outline-offset:-2px}
-  #edit .t{font-weight:800;font-size:11px;letter-spacing:1px;margin-bottom:6px}
+  #edit .t{font-weight:800;font-size:12px;letter-spacing:1px;margin-bottom:6px}
   #edit .ctl{display:flex;align-items:center;gap:6px;margin:4px 0;-webkit-app-region:no-drag}
-  #edit label{font-size:10px;font-weight:800;color:var(--muted);width:44px}
+  #edit label{font-size:11.5px;font-weight:800;color:var(--muted);width:44px}
   #edit input[type=range]{flex:1;accent-color:var(--holo)}
   #edit button{-webkit-app-region:no-drag;background:var(--holo);border:none;border-radius:6px;
-    padding:5px 12px;font-weight:800;font-size:11px;cursor:pointer;color:#08222c;width:100%;margin-top:4px}
-  #empty{color:var(--muted);font-size:11px;padding:6px;background:var(--panel);border-radius:8px;display:none}
+    padding:5px 12px;font-weight:800;font-size:12px;cursor:pointer;color:#08222c;width:100%;margin-top:4px}
+  #empty{color:var(--muted);font-size:12px;padding:6px;background:var(--panel);border-radius:8px;display:none}
 </style>
 </head>
 <body>
