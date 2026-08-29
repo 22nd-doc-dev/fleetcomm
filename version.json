@@ -1,4 +1,4 @@
 {
-  "version": "0.3.3",
-  "notes": "Custom themes with color pickers, theme-aware overlay, frameless window, labeled sliders, guaranteed clean exit."
+  "version": "0.5.0",
+  "notes": "Command console: all-new UI, net hierarchy with subnets, multi-net simulcast TX, per-net text chat, transmission log, live rosters, open mic, command override, ATC board."
 }

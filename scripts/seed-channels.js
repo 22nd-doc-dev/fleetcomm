@@ -22,6 +22,12 @@ async function seed(host, superPw, cfg, port) {
     let id = c.channelByName(nm);
     if (id == null) { id = await c.createChannel(nm, rootId, "Net " + net.freq + (net.enc ? " · ENCRYPTED" : "")); await pause(400); } // stay under the server's flood limiter
     ids[net.name] = id;
+    for (const sub of net.subnets || []) {
+      const sn = chanName(sub.name);
+      let sid = c.channelByName(sn);
+      if (sid == null) { sid = await c.createChannel(sn, id, "Subnet " + sub.freq); await pause(400); }
+      ids[net.name + "/" + sub.name] = sid;
+    }
   }
   c.disconnect();
   return ids;

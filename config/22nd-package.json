@@ -8,7 +8,7 @@
   "rootChannel": "22ND EXPEDITIONARY FLEET",
   "nets": [
     {
-      "name": "FLEET COMMAND",
+      "name": "COMMAND NET",
       "freq": "121.850",
       "enc": true,
       "defaultKey": "F1",
@@ -40,7 +40,7 @@
       "freq": "118.250",
       "enc": false,
       "defaultKey": "",
-      "monitor": true
+      "monitor": false
     },
     {
       "name": "LOGISTICS",
@@ -48,10 +48,59 @@
       "enc": false,
       "defaultKey": "",
       "monitor": true
+    },
+    {
+      "name": "UEES TIBER",
+      "freq": "265.000",
+      "enc": false,
+      "defaultKey": "",
+      "monitor": false,
+      "subnets": [
+        {
+          "name": "BRIDGE",
+          "freq": "265.100",
+          "enc": false
+        },
+        {
+          "name": "FLIGHT DECK",
+          "freq": "265.200",
+          "enc": false
+        },
+        {
+          "name": "ENGINEERING",
+          "freq": "265.300",
+          "enc": false
+        },
+        {
+          "name": "DECK",
+          "freq": "265.400",
+          "enc": false
+        },
+        {
+          "name": "SECURITY",
+          "freq": "265.500",
+          "enc": false
+        }
+      ]
+    },
+    {
+      "name": "51ST SHOCK REGIMENT",
+      "freq": "271.000",
+      "enc": false,
+      "defaultKey": "",
+      "monitor": false,
+      "subnets": [
+        {
+          "name": "REAPER 1",
+          "freq": "271.100",
+          "enc": false
+        }
+      ]
     }
   ],
   "updates": {
     "url": "https://raw.githubusercontent.com/22nd-doc-dev/fleetcomm/main/version.json",
-    "releases": "https://github.com/22nd-doc-dev/fleetcomm/releases/latest"
+    "releases": "https://github.com/22nd-doc-dev/fleetcomm/releases/latest",
+    "exeTemplate": "https://github.com/22nd-doc-dev/fleetcomm/releases/download/v{v}/FleetComm-{v}.exe"
   }
 }

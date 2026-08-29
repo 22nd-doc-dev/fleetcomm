@@ -2,9 +2,9 @@
 /*
  * End-to-end proof of the FleetComm architecture against a real mumble-server:
  *  1. SuperUser seeds the 22nd channel tree.
- *  2. alice joins FLEET COMMAND; bob stays in Root but LISTENS to it (multi-net RX).
+ *  2. alice joins COMMAND NET; bob stays in Root but LISTENS to it (multi-net RX).
  *  3. alice speaks (target 0) → bob must hear her through the listener.
- *  4. bob registers Voice Target 1 → FLEET COMMAND and keys it from Root
+ *  4. bob registers Voice Target 1 → COMMAND NET and keys it from Root
  *     (per-net PTT without changing channels) → alice must hear him.
  */
 const assert = require("assert");
@@ -32,15 +32,15 @@ function collectVoice(client, ms) {
   console.log("1) seeding channel tree as SuperUser…");
   const ids = await seed(HOST, SUPW, cfg);
   console.log("   channels:", JSON.stringify(ids));
-  assert(ids["FLEET COMMAND"] != null, "FLEET COMMAND created");
+  assert(ids["COMMAND NET"] != null, "COMMAND NET created");
 
   const alice = new MumbleClient({ host: HOST, username: "alice" });
   const bob = new MumbleClient({ host: HOST, username: "bob" });
   await alice.connect(); await bob.connect();
   console.log("2) alice session", alice.session, "· bob session", bob.session);
 
-  alice.joinChannel(ids["FLEET COMMAND"]);
-  bob.listen([ids["FLEET COMMAND"]]);          // bob stays in Root, listener only
+  alice.joinChannel(ids["COMMAND NET"]);
+  bob.listen([ids["COMMAND NET"]]);          // bob stays in Root, listener only
   await new Promise(r => setTimeout(r, 400));
 
   const enc = new OpusScript(48000, 1, OpusScript.Application.VOIP);
@@ -53,8 +53,8 @@ function collectVoice(client, ms) {
   console.log("   bob received", heard.length, "frames; contexts:", [...new Set(heard.map(v => v.context))], "; from:", [...new Set(heard.map(v => bob.userName(v.session)))]);
   assert(heard.length >= 8 && heard.every(v => v.session === alice.session), "listener RX works");
 
-  console.log("4) bob registers VoiceTarget 1 → FLEET COMMAND, keys from Root…");
-  bob.setVoiceTarget(1, ids["FLEET COMMAND"]);
+  console.log("4) bob registers VoiceTarget 1 → COMMAND NET, keys from Root…");
+  bob.setVoiceTarget(1, ids["COMMAND NET"]);
   await new Promise(r => setTimeout(r, 200));
   const aliceHears = collectVoice(alice, 900);
   for (const [i, f] of frames.entries()) { bob.sendVoice(f, 1, i === frames.length - 1); await new Promise(r => setTimeout(r, 20)); }

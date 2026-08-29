@@ -35,6 +35,10 @@ class RadioStack extends EventEmitter {
       if (net.muted) return;
       this.emit("rx", { idx, session: v.session, name: this._shortName(client, v.session), opus: v.opus, last: v.last });
     });
+    client.on("TextMessage", (m) => {
+      const from = this._shortName(client, m.actor);
+      this.emit("chat", { idx, from, message: String(m.message || "").slice(0, 2000) });
+    });
     const rosterEv = () => this.emit("roster", { idx, users: this.roster(idx) });
     client.on("UserState", rosterEv);
     client.on("UserRemove", rosterEv);
@@ -69,12 +73,31 @@ class RadioStack extends EventEmitter {
     const net = this.nets[idx];
     if (!net || net.channelId == null) return [];
     const out = [];
-    for (const [, u] of net.client.users) {
+    for (const [sess, u] of net.client.users) {
       if (u.channelId === net.channelId || (u.channelId == null && net.channelId === 0)) {
-        out.push(this._stripFreq(u.name));
+        out.push({ session: sess, name: this._stripFreq(u.name) });
       }
     }
     return out;
+  }
+
+  sendText(idx, message) {
+    const net = this.nets[idx];
+    if (!net || net.dead || net.channelId == null) return false;
+    net.client.text(String(message).slice(0, 2000), [net.channelId]);
+    return true;
+  }
+
+  /* org-wide view for the ATC board: every channel with its occupants */
+  atcView() {
+    const c = this._anyClient(); if (!c) return [];
+    const chans = [];
+    for (const [id, ch] of c.channels) {
+      const users = [];
+      for (const [, u] of c.users) if (u.channelId === id || (u.channelId == null && id === 0)) users.push(this._stripFreq(u.name));
+      chans.push({ id, name: ch.name || "?", parent: ch.parent, users });
+    }
+    return chans;
   }
   _shortName(client, session) { return this._stripFreq(client.userName(session)); }
   _stripFreq(name) { return String(name).replace(/\|\d{3}\.\d{3}$/, ""); }
@@ -85,11 +108,11 @@ class RadioStack extends EventEmitter {
     const c = this._anyClient(); if (!c) return [];
     return [...c.channels.values()].map(ch => ch.name).filter(Boolean);
   }
-  async createNet(name, rootChannelName) {
+  async createNet(name, parentChannelName) {
     const c = this._anyClient(); if (!c) throw new Error("not connected");
-    const rootId = c.channelByName(rootChannelName);
-    if (rootId == null) throw new Error("org root channel not found");
-    return c.createChannel(name, rootId);
+    const parentId = c.channelByName(parentChannelName);
+    if (parentId == null) throw new Error("parent channel not found: " + parentChannelName);
+    return c.createChannel(name, parentId);
   }
 
   destroy() { this.nets.forEach(n => { try { n.client.disconnect(); } catch (e) {} }); }

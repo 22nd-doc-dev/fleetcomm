@@ -105,6 +105,61 @@ async function checkUpdates() {
   } catch (e) { return { status: "error", error: e.message }; }
 }
 ipcMain.handle("check-updates", () => checkUpdates());
+
+/* ── self-update (Windows portable) ──
+   Downloads the new exe straight from the release, then hands off to a tiny
+   script that waits for us to exit, swaps the file on disk, and relaunches.
+   No installer involved, and app-downloaded files carry no mark-of-the-web,
+   so there's no SmartScreen prompt on the way back up. */
+function downloadFile(url, dest, onPct, depth) {
+  return new Promise((resolve, reject) => {
+    if ((depth || 0) > 5) return reject(new Error("too many redirects"));
+    const req = https.get(url, { timeout: 30000, headers: { "User-Agent": "FleetComm" } }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume();
+        return downloadFile(res.headers.location, dest, onPct, (depth || 0) + 1).then(resolve, reject);
+      }
+      if (res.statusCode !== 200) { res.resume(); return reject(new Error("HTTP " + res.statusCode)); }
+      const total = parseInt(res.headers["content-length"] || "0", 10);
+      let got = 0;
+      const out = fs.createWriteStream(dest);
+      res.on("data", (ch) => { got += ch.length; if (total && onPct) onPct(Math.round(got / total * 100)); });
+      res.pipe(out);
+      out.on("finish", () => out.close(() => resolve(got)));
+      out.on("error", reject);
+      res.on("error", reject);
+    });
+    req.on("error", reject);
+    req.on("timeout", () => { req.destroy(); reject(new Error("download timeout")); });
+  });
+}
+ipcMain.handle("do-update", async (ev, info) => {
+  const pkgCfg = require("./config/22nd-package.json");
+  const origExe = process.env.PORTABLE_EXECUTABLE_FILE;
+  const tpl = pkgCfg.updates && pkgCfg.updates.exeTemplate;
+  if (process.platform !== "win32" || !origExe || !tpl) return { ok: false, fallback: true };
+  try {
+    const url = tpl.split("{v}").join(info.version);
+    const fresh = path.join(app.getPath("temp"), "FleetComm-" + info.version + ".exe");
+    const bytes = await downloadFile(url, fresh, (pct) => sendWin("update-progress", pct));
+    if (bytes < 50 * 1024 * 1024) throw new Error("download looks incomplete (" + bytes + " bytes)");
+    const script = path.join(app.getPath("temp"), "fleetcomm-update.cmd");
+    fs.writeFileSync(script, [
+      "@echo off",
+      "timeout /t 2 /nobreak >nul",
+      'move /y "' + origExe + '" "' + origExe + '.old" >nul',
+      'move /y "' + fresh + '" "' + origExe + '" >nul',
+      'start "" "' + origExe + '"',
+      'del "' + origExe + '.old" >nul 2>&1',
+      'del "%~f0"'
+    ].join("\r\n"));
+    require("child_process").spawn("cmd.exe", ["/c", script], { detached: true, stdio: "ignore", windowsHide: true }).unref();
+    setTimeout(shutdown, 300);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
 ipcMain.on("open-external", (ev, url) => { if (/^https?:/.test(url)) shell.openExternal(url); });
 let curTheme = null;
 ipcMain.on("theme", (ev, t) => {
@@ -128,18 +183,7 @@ function createWindow() {
   });
   win.loadFile(path.join(__dirname, "renderer", "index.html"));
   win.removeMenu && win.removeMenu();
-  win.on("closed", () => {
-    win = null;
-    if (overlay) { try { setOvEdit(false); overlay.destroy(); } catch (e) {} overlay = null; }
-    if (stack) { try { stack.destroy(); } catch (e) {} stack = null;
-    }
-    app.quit();
-    /* dead-man's switch: if anything (a wedged native hook, a stuck teardown)
-       keeps the process alive past this point, force-exit. Nothing of FleetComm
-       may outlive its window. */
-    const t = setTimeout(() => { try { app.exit(0); } catch (e) { process.exit(0); } }, 2000);
-    if (t.unref) t.unref();
-  });
+  win.on("closed", () => { win = null; shutdown(); });
 }
 
 app.whenReady().then(async () => {
@@ -171,6 +215,7 @@ ipcMain.handle("connect", async (ev, { host, port, callsign, nets, token }) => {
     tokens: token ? [token] : [],
     cert: identity && identity.cert, key: identity && identity.key });
   stack.on("rx", (r) => sendWin("rx", { idx: r.idx, session: r.session, name: r.name, opus: r.opus, last: r.last }));
+  stack.on("chat", (m) => sendWin("chat", m));
   stack.on("roster", (r) => sendWin("roster", r));
   stack.on("net-down", (r) => sendWin("net-down", r));
   stack.on("net-error", (r) => sendWin("net-error", r));
@@ -189,6 +234,8 @@ ipcMain.handle("tune", async (ev, net) => {
 ipcMain.on("detune", (ev, idx) => stack && stack.detune(idx));
 ipcMain.on("tx-frame", (ev, { idx, frame, last }) => stack && stack.txFrame(idx, Buffer.from(frame), last));
 ipcMain.on("net-mute", (ev, { idx, muted }) => stack && stack.setMuted(idx, muted));
+ipcMain.on("send-text", (ev, { idx, message }) => stack && stack.sendText(idx, message));
+ipcMain.handle("atc-view", () => stack ? stack.atcView() : []);
 ipcMain.handle("create-net", async (ev, { name, rootChannel }) => {
   if (!stack) return { ok: false, error: "not connected" };
   try { return { ok: true, id: await stack.createNet(name, rootChannel) }; }
@@ -203,11 +250,19 @@ app.whenReady().then(() => {
   }, 3500);
 });
 
-app.on("will-quit", () => { if (uio) { try { uio.stop(); } catch (e) {} uio = null; } });
-
-app.on("window-all-closed", () => {
-  if (overlay) { try { overlay.close(); } catch (e) {} }
-  if (stack) stack.destroy();
-  if (uio) { try { uio.stop(); } catch (e) {} }
-  app.quit();
-});
+/* ── unconditional shutdown ──
+   Deliberately never calls uio.stop(): the input-hook library can wedge the
+   main thread mid-stop, and the OS removes hooks at process death anyway.
+   Teardown what matters (overlay window, relay sockets), then exit — with an
+   absolute backstop. Nothing of FleetComm may outlive its window. */
+let exiting = false;
+function shutdown() {
+  if (exiting) return;
+  exiting = true;
+  try { if (overlay) { overlay.destroy(); overlay = null; } } catch (e) {}
+  try { if (stack) { stack.destroy(); stack = null; } } catch (e) {}
+  setTimeout(() => { try { app.exit(0); } catch (e) { process.exit(0); } }, 200);
+  setTimeout(() => process.exit(0), 1500);
+}
+app.on("window-all-closed", shutdown);
+app.on("before-quit", shutdown);
