@@ -1,4 +1,4 @@
 {
-  "version": "0.7.0",
-  "notes": "Discord sign-in gate with COMMAND approval queue, operator profiles and roles, relay-enforced per-net access (open / members / command), ACCOUNTS admin page."
+  "version": "0.7.1",
+  "notes": "Discord sign-in enabled for the 22nd. Approval queue, roles, and relay-enforced net access are live."
 }
