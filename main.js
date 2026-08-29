@@ -43,6 +43,7 @@ function createOverlay() {
   overlay.loadFile(path.join(__dirname, "renderer", "overlay.html"));
   overlay.webContents.on("did-finish-load", () => {
     sendOverlay("ov-config", { opacity: c.opacity, scale: c.scale });
+    if (curTheme) sendOverlay("ov-theme", curTheme);
     sendOverlay("ov-state", lastOvState);
   });
   const persistBounds = () => { if (overlay) { ovCfg.bounds = overlay.getBounds(); saveOvCfg(); } };
@@ -105,12 +106,24 @@ async function checkUpdates() {
 }
 ipcMain.handle("check-updates", () => checkUpdates());
 ipcMain.on("open-external", (ev, url) => { if (/^https?:/.test(url)) shell.openExternal(url); });
+let curTheme = null;
+ipcMain.on("theme", (ev, t) => {
+  curTheme = t;
+  sendOverlay("ov-theme", t);
+  if (process.platform !== "darwin" && win && !win.isDestroyed()) {
+    try { win.setTitleBarOverlay({ color: t.bg, symbolColor: t.ink }); } catch (e) {}
+  }
+});
 
 function createWindow() {
+  const frameOpts = process.platform === "darwin"
+    ? { titleBarStyle: "hidden", trafficLightPosition: { x: 12, y: 12 } }
+    : { titleBarStyle: "hidden", titleBarOverlay: { color: "#0b141f", symbolColor: "#93a7ba", height: 38 } };
   win = new BrowserWindow({
     width: 1180, height: 800, minWidth: 760, minHeight: 500,
     backgroundColor: "#0b141f",
     title: "FleetComm",
+    ...frameOpts,
     webPreferences: { nodeIntegration: true, contextIsolation: false } // prototype; harden before wide release
   });
   win.loadFile(path.join(__dirname, "renderer", "index.html"));
@@ -118,7 +131,14 @@ function createWindow() {
   win.on("closed", () => {
     win = null;
     if (overlay) { try { setOvEdit(false); overlay.destroy(); } catch (e) {} overlay = null; }
-    if (stack) { try { stack.destroy(); } catch (e) {} stack = null; }
+    if (stack) { try { stack.destroy(); } catch (e) {} stack = null;
+    }
+    app.quit();
+    /* dead-man's switch: if anything (a wedged native hook, a stuck teardown)
+       keeps the process alive past this point, force-exit. Nothing of FleetComm
+       may outlive its window. */
+    const t = setTimeout(() => { try { app.exit(0); } catch (e) { process.exit(0); } }, 2000);
+    if (t.unref) t.unref();
   });
 }
 
@@ -182,6 +202,8 @@ app.whenReady().then(() => {
     if (r.status === "update") sendWin("update-available", r);
   }, 3500);
 });
+
+app.on("will-quit", () => { if (uio) { try { uio.stop(); } catch (e) {} uio = null; } });
 
 app.on("window-all-closed", () => {
   if (overlay) { try { overlay.close(); } catch (e) {} }

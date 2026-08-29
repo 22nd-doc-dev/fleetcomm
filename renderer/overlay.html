@@ -4,8 +4,13 @@
 <meta charset="utf-8">
 <style>
   :root{
-    --panel:rgba(13,22,33,var(--bgA,.72)); --line:rgba(63,198,228,.35);
+    --panelRGB:13,22,33; --holoRGB:63,198,228;
+    --panel:rgba(var(--panelRGB),var(--bgA,.72));
     --ink:#e9f1f8; --muted:#93a7ba; --holo:#3fc6e4; --tx:#fb923c; --off:#2b3c50;
+  }
+  body.light{
+    --panelRGB:236,242,247; --holoRGB:12,138,166;
+    --ink:#152232; --muted:#5b6e80; --holo:#0c8aa6; --off:#c8d4de;
   }
   *{box-sizing:border-box;margin:0;padding:0}
   html,body{background:transparent;overflow:hidden;height:100%}
@@ -13,9 +18,9 @@
     display:flex;flex-direction:column;justify-content:flex-start}
   #box{transform-origin:top left;padding:6px}
   .row{display:flex;align-items:center;gap:7px;background:var(--panel);
-    border:1px solid rgba(63,198,228,.18);border-radius:8px;padding:5px 9px;margin-bottom:4px;
+    border:1px solid rgba(var(--holoRGB),.18);border-radius:8px;padding:5px 9px;margin-bottom:4px;
     transition:border-color .1s;backdrop-filter:blur(2px)}
-  .row.rx{border-color:var(--holo);box-shadow:0 0 8px rgba(63,198,228,.35)}
+  .row.rx{border-color:var(--holo);box-shadow:0 0 8px rgba(var(--holoRGB),.35)}
   .row.tx{border-color:var(--tx);box-shadow:0 0 8px rgba(251,146,60,.4)}
   .row.inactive-muted{opacity:.5}
   .lamp{width:8px;height:8px;border-radius:50%;background:var(--off);flex:0 0 auto}
@@ -29,7 +34,7 @@
     color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:150px}
   .rx .who{color:var(--holo)} .tx .who{color:var(--tx)}
   /* edit chrome */
-  #edit{display:none;background:rgba(13,22,33,.92);border:1px dashed var(--holo);border-radius:8px;
+  #edit{display:none;background:rgba(var(--panelRGB),.92);border:1px dashed var(--holo);border-radius:8px;
     padding:8px 10px;margin:0 0 4px;-webkit-app-region:drag}
   body.editing #edit{display:block}
   body.editing{outline:2px dashed var(--holo);outline-offset:-2px}
@@ -64,6 +69,20 @@ function applyCfg() {
   $("op").value = cfg.opacity; $("sc").value = cfg.scale;
 }
 ipcRenderer.on("ov-config", (ev, c) => { cfg = Object.assign(cfg, c); applyCfg(); });
+ipcRenderer.on("ov-theme", (ev, t) => {
+  const r = document.documentElement;
+  ["--panelRGB","--holoRGB","--ink","--muted","--holo"].forEach(k => r.style.removeProperty(k));
+  if (t.palette) {
+    document.body.classList.remove("light");
+    r.style.setProperty("--panelRGB", t.palette.panelRGB);
+    r.style.setProperty("--holoRGB", t.palette.accentRGB);
+    r.style.setProperty("--ink", t.palette.ink);
+    r.style.setProperty("--muted", t.palette.muted);
+    r.style.setProperty("--holo", t.palette.accent);
+  } else {
+    document.body.classList.toggle("light", !t.dark);
+  }
+});
 ipcRenderer.on("ov-edit", (ev, on) => document.body.classList.toggle("editing", !!on));
 ipcRenderer.on("ov-state", (ev, nets) => {
   $("empty").style.display = nets.length ? "none" : "block";

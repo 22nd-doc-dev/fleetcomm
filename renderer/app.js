@@ -8,7 +8,18 @@ const store = {
   get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
 };
-let fx = store.get("fx", true), fxPreset = store.get("fxPreset", "standard"), dark = store.get("dark", true);
+let fx = store.get("fx", true), fxPreset = store.get("fxPreset", "standard");
+let themeMode = store.get("themeMode", "dark"); // dark | light | custom
+let customTheme = store.get("customTheme", { bg: "#0b141f", panel: "#121e2c", ink: "#e9f1f8", accent: "#3fc6e4" });
+let dark = themeMode !== "light";
+/* color helpers */
+function hexRgb(h) { h = h.replace("#", ""); return [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)]; }
+function mixHex(h1, h2, t) {
+  const a = hexRgb(h1), b = hexRgb(h2);
+  return "rgb(" + a.map((v,i) => Math.round(v + (b[i]-v)*t)).join(",") + ")";
+}
+function rgbaHex(h, al) { return "rgba(" + hexRgb(h).join(",") + "," + al + ")"; }
+function luminance(h) { const [r,g,b] = hexRgb(h); return (0.299*r + 0.587*g + 0.114*b) / 255; }
 const FXP = {
   clean:    { hp: 250, lp: 3400, stages: 1, drive: 0,    comp: null, noise: 0,     tail: 0 },
   standard: { hp: 300, lp: 3000, stages: 2, drive: 0.35, comp: { th: -28, ratio: 8,  atk: 0.003, rel: 0.12 }, noise: 0.006, tail: 0.05 },
@@ -228,8 +239,8 @@ function render() {
         '<span class="rfreq mono">' + n.cfg.freq + '</span></button>' +
       '<span class="who mono" data-who>' + whoText(n) + '</span>' +
       '<span class="rcount" data-roster title="On this net">' + (n.roster ? n.roster.length : 1) + '</span>' +
-      '<input type="range" class="rvol" min="0" max="100" value="' + n.vol + '" data-vol title="Volume">' +
-      '<input type="range" class="rpan" min="-100" max="100" value="' + n.pan + '" data-pan title="Pan L/R">' +
+      '<span class="sld"><i>VOL</i><input type="range" class="rvol" min="0" max="100" value="' + n.vol + '" data-vol title="This net\'s volume, for you only"></span>' +
+      '<span class="sld"><i>L·R</i><input type="range" class="rpan" min="-100" max="100" value="' + n.pan + '" data-pan title="Pan: place this net left or right in your headset"></span>' +
       '<button class="keybadge" data-key title="Click, then press a key or combo (ALT+D works)">' + (n.bind ? n.bind.label : "key") + '</button>' +
       '<button class="pttbtn" data-ptt>TX</button>' +
       '<button class="monbtn' + (n.mon ? " on" : "") + '" data-mon>' + (n.mon ? "RX" : "off") + '</button>' +
@@ -467,18 +478,52 @@ function renderMasterBinds() {
     this.classList.add("listen"); this.textContent = "press…";
   });
 });
-function setTheme(d) {
-  dark = d; store.set("dark", d);
-  document.documentElement.setAttribute("data-theme", d ? "dark" : "light");
-  $("sdark").classList.toggle("on", d);
+function applyTheme() {
+  const r = document.documentElement;
+  ["--bg","--panel","--tint","--line","--line2","--ink","--muted","--holo","--holo-bright","--holo-tint","--grid","--lamp-off"]
+    .forEach(k => r.style.removeProperty(k));
+  let msg;
+  if (themeMode === "custom") {
+    const { bg, panel, ink, accent } = customTheme;
+    dark = luminance(bg) < 0.5;
+    r.setAttribute("data-theme", dark ? "dark" : "light");
+    const set = (k, v) => r.style.setProperty(k, v);
+    set("--bg", bg); set("--panel", panel);
+    set("--tint", mixHex(panel, bg, 0.5));
+    set("--line", mixHex(panel, ink, 0.16)); set("--line2", mixHex(panel, ink, 0.28));
+    set("--ink", ink); set("--muted", mixHex(ink, bg, 0.42));
+    set("--holo", accent); set("--holo-bright", accent);
+    set("--holo-tint", rgbaHex(accent, 0.16));
+    set("--grid", rgbaHex(accent, 0.05));
+    set("--lamp-off", mixHex(panel, ink, 0.2));
+    msg = { dark, bg, ink, palette: {
+      panelRGB: hexRgb(panel).join(","), ink, muted: mixHex(ink, bg, 0.42),
+      accent, accentRGB: hexRgb(accent).join(",")
+    } };
+  } else {
+    dark = themeMode === "dark";
+    r.setAttribute("data-theme", dark ? "dark" : "light");
+    msg = { dark, bg: dark ? "#0b141f" : "#e9eff4", ink: dark ? "#e9f1f8" : "#152232", palette: null };
+  }
+  store.set("themeMode", themeMode); store.set("customTheme", customTheme);
+  const sel = $("sthemesel"); if (sel) sel.value = themeMode;
+  const cc = $("customcolors"); if (cc) cc.style.display = themeMode === "custom" ? "flex" : "none";
+  ["c_bg","c_panel","c_ink","c_accent"].forEach((id, i) => {
+    const el = $(id); if (el) el.value = [customTheme.bg, customTheme.panel, customTheme.ink, customTheme.accent][i];
+  });
+  ipcRenderer.send("theme", msg);
 }
-$("themebtn").addEventListener("click", () => setTheme(!dark));
+$("themebtn").addEventListener("click", () => { themeMode = dark ? "light" : "dark"; applyTheme(); });
+$("sthemesel").addEventListener("change", function () { themeMode = this.value; applyTheme(); });
+[["c_bg","bg"],["c_panel","panel"],["c_ink","ink"],["c_accent","accent"]].forEach(([id, key]) => {
+  $(id).addEventListener("input", function () { customTheme[key] = this.value; themeMode = "custom"; applyTheme(); });
+});
 $("setbtn").addEventListener("click", () => { $("tokenIn").value = cmdToken; $("settings").classList.remove("hidden"); });
 $("closeSet").addEventListener("click", () => {
   cmdToken = $("tokenIn").value.trim(); store.set("cmdToken", cmdToken);
   $("settings").classList.add("hidden");
 });
-$("sdark").addEventListener("click", () => setTheme(!dark));
+
 $("sfx").addEventListener("click", function () { fx = !fx; this.classList.toggle("on", fx); store.set("fx", fx); if (fx) chirpDown(); });
 $("fxsel").addEventListener("change", function () {
   fxPreset = this.value; store.set("fxPreset", fxPreset);
@@ -534,7 +579,7 @@ try {
 } catch (e) {}
 $("sfx").classList.toggle("on", fx);
 $("fxsel").value = fxPreset;
-setTheme(dark);
+applyTheme();
 renderCallsigns();
 renderMasterBinds();
 initConnect();

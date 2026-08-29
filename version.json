@@ -1,4 +1,4 @@
 {
-  "version": "0.3.2",
-  "notes": "One Windows exe (no more Setup variant), overlay no longer survives app close, saner reconnect errors, Mac install instructions."
+  "version": "0.3.3",
+  "notes": "Custom themes with color pickers, theme-aware overlay, frameless window, labeled sliders, guaranteed clean exit."
 }

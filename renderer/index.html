@@ -20,6 +20,8 @@
   .rfreq{font-size:11.5px;color:var(--muted);letter-spacing:1px;font-weight:700}
   .rrow .who{flex:1 1 90px;min-width:70px;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .rrow input[type=range]{height:18px}
+  .sld{display:flex;flex-direction:column;align-items:center;gap:1px;flex:0 0 auto}
+  .sld i{font-style:normal;font-size:8.5px;font-weight:900;letter-spacing:1.2px;color:var(--muted);line-height:1}
   .rvol{width:84px;flex:0 0 auto}
   .rpan{width:56px;flex:0 0 auto}
   .rrow .keybadge{padding:6px 9px;font-size:11.5px;min-width:48px}
@@ -47,9 +49,12 @@
   .bindrow .tl b{display:block;font-size:13.5px}
   .bindrow .tl span{font-size:12px;color:var(--muted)}
   .iconbtn.onov{border-color:var(--holo);color:var(--holo);background:var(--holo-tint)}
+  #titlebar{height:38px;-webkit-app-region:drag;display:flex;align-items:center;justify-content:center;
+    font-size:10.5px;letter-spacing:2.5px;font-weight:800;color:var(--muted);user-select:none}
 </style>
 </head>
 <body>
+<div id="titlebar">FLEETCOMM</div>
 <div class="wrap">
   <header class="glass">
     <div style="display:flex;align-items:center;gap:11px">
@@ -116,7 +121,18 @@
         <option value="heavy">Heavy</option>
       </select></div>
     <div class="togrow"><div class="tl"><b>Overlay edit mode</b><span>Unlock the overlay to move / resize / set opacity, then LOCK it</span></div><button class="switch" id="sovedit"></button></div>
-    <div class="togrow"><div class="tl"><b>Dark theme</b><span>Cockpit default; light for daylight</span></div><button class="switch on" id="sdark"></button></div>
+    <div class="togrow"><div class="tl"><b>Theme</b><span>Dark cockpit, daylight, or roll your own</span></div>
+      <select class="orgsel" id="sthemesel" style="max-width:130px">
+        <option value="dark">Dark</option>
+        <option value="light">Light</option>
+        <option value="custom">Custom</option>
+      </select></div>
+    <div id="customcolors" style="display:none;gap:14px;padding:10px 2px;flex-wrap:wrap;align-items:center">
+      <label class="hint" style="display:flex;flex-direction:column;align-items:center;gap:3px;font-weight:800">BACKGROUND<input type="color" id="c_bg"></label>
+      <label class="hint" style="display:flex;flex-direction:column;align-items:center;gap:3px;font-weight:800">PANELS<input type="color" id="c_panel"></label>
+      <label class="hint" style="display:flex;flex-direction:column;align-items:center;gap:3px;font-weight:800">TEXT<input type="color" id="c_ink"></label>
+      <label class="hint" style="display:flex;flex-direction:column;align-items:center;gap:3px;font-weight:800">ACCENT<input type="color" id="c_accent"></label>
+    </div>
     <div class="miniheading" style="margin-top:16px">COMMAND AUTHORITY</div>
     <div class="kv" style="margin-top:6px"><label>COMMAND TOKEN (optional)</label><input id="tokenIn" type="password" placeholder="grants create-net authority — applied on next connect"></div>
     <p class="hint" style="margin:-4px 0 12px">Issued by fleet command. With it, TUNE can create nets that don't exist yet. Without it, the relay refuses — server-enforced.</p>
