@@ -118,6 +118,28 @@ class RadioStack extends EventEmitter {
     const c = this._anyClient(); if (!c) return [];
     return [...c.channels.values()].map(ch => ch.name).filter(Boolean);
   }
+  renameNet(idx, newName) {
+    const net = this.nets[idx];
+    if (!net || net.dead || net.channelId == null) return false;
+    net.client.send("ChannelState", { channelId: net.channelId, name: newName });
+    return true;
+  }
+  moveNet(idx, newParentName) {
+    const net = this.nets[idx];
+    const c = this._anyClient();
+    if (!net || net.dead || !c) return false;
+    const parentId = newParentName ? c.channelByName(newParentName) : 0;
+    if (parentId == null) return false;
+    net.client.send("ChannelState", { channelId: net.channelId, parent: parentId });
+    return true;
+  }
+  removeNet(idx) {
+    const net = this.nets[idx];
+    if (!net || net.dead || net.channelId == null) return false;
+    net.client.send("ChannelRemove", { channelId: net.channelId });
+    return true;
+  }
+
   async createNet(name, parentChannelName) {
     const c = this._anyClient(); if (!c) throw new Error("not connected");
     const parentId = c.channelByName(parentChannelName);

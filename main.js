@@ -363,6 +363,9 @@ ipcMain.handle("arm-broadcast", (ev, idx) => stack ? stack.armBroadcast(idx) : f
 ipcMain.on("net-mute", (ev, { idx, muted }) => stack && stack.setMuted(idx, muted));
 ipcMain.on("send-text", (ev, { idx, message }) => stack && stack.sendText(idx, message));
 ipcMain.handle("atc-view", () => stack ? stack.atcView() : []);
+ipcMain.handle("net-rename", (ev, { idx, name }) => stack ? stack.renameNet(idx, name) : false);
+ipcMain.handle("net-move", (ev, { idx, parent }) => stack ? stack.moveNet(idx, parent) : false);
+ipcMain.handle("net-remove", (ev, idx) => stack ? stack.removeNet(idx) : false);
 ipcMain.handle("create-net", async (ev, { name, rootChannel }) => {
   if (!stack) return { ok: false, error: "not connected" };
   try { return { ok: true, id: await stack.createNet(name, rootChannel) }; }
@@ -373,8 +376,12 @@ ipcMain.on("disconnect", () => { if (stack) { stack.destroy(); stack = null; } }
 app.whenReady().then(() => {
   setTimeout(async () => {
     const r = await checkUpdates();
-    if (r.status === "update") sendWin("update-available", r);
-  }, 3500);
+    if (r.status !== "update") return;
+    sendWin("update-available", r);
+    /* Silent path: on Windows portable builds we can fetch and swap ourselves.
+       The renderer decides whether to allow it (SYS toggle) and calls back. */
+    sendWin("update-auto-offer", r);
+  }, 2500);
 });
 
 /* ── unconditional shutdown ──

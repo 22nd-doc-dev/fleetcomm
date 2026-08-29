@@ -11,7 +11,7 @@
 const path = require("path");
 const { MumbleClient } = require("../src/mumble-client");
 
-const PERM = { MakeChannel: 0x40, MakeTempChannel: 0x400 };
+const PERM = { Write: 0x01, MakeChannel: 0x40, MakeTempChannel: 0x400 };
 function chanName(name) { return name.replace(/[^ \-=\w#\[\]{}()@|]/g, "-"); }
 
 async function setToken(host, supw, token, cfg, port) {
@@ -27,7 +27,7 @@ async function setToken(host, supw, token, cfg, port) {
     acls: [{
       applyHere: true, applySubs: true,
       group: "#" + token,
-      grant: PERM.MakeChannel | PERM.MakeTempChannel
+      grant: PERM.Write | PERM.MakeChannel | PERM.MakeTempChannel
     }],
     query: false
   });

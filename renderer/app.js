@@ -13,7 +13,10 @@ const $ = (id) => document.getElementById(id);
 /* ── persisted prefs ── */
 let fx = store.get("fx", true), fxPreset = store.get("fxPreset", "standard");
 let themeMode = store.get("themeMode", "dark");
-let customTheme = store.get("customTheme", { bg: "#071219", panel: "#0c1b23", ink: "#d9edf4", accent: "#38d1e8" });
+const THEME_DEFAULTS = { bg: "#0b0f13", panel: "#11161b", bez: "#1c2126", ink: "#e8edf1",
+  muted: "#8b979f", line: "#242b32", accent: "#4fd4e8", grn: "#49d17c", amber: "#ffb648", red: "#ff5a5a" };
+let customTheme = Object.assign({}, THEME_DEFAULTS, store.get("customTheme", {}));
+let autoUpdate = store.get("autoUpdate", true);
 let myCallsigns = store.get("callsigns", []);
 let callsign = store.get("callsign", "");
 let cmdToken = store.get("cmdToken", "");
@@ -61,23 +64,32 @@ function luminance(h) { const [r,g,b] = hexRgb(h); return (0.299*r + 0.587*g + 0
 let dark = themeMode !== "light";
 function applyTheme() {
   const r = document.documentElement;
-  ["--bg","--panel","--tint","--line","--line2","--ink","--muted","--holo","--holo-bright","--holo-tint","--grid","--lamp-off"]
+  /* clear EVERY var custom mode can set, or switching back to night/day
+     leaves the bezel and status colors stuck on the old custom palette */
+  ["--bg","--panel","--tint","--bez","--bez2","--bezline","--line","--line2","--ink","--muted",
+   "--holo","--holo-bright","--holo-tint","--grn","--grn-tint","--amber","--amber-tint",
+   "--tx","--tx-tint","--ok","--ok-tint","--red","--red-tint","--grid","--lamp-off"]
     .forEach(k => r.style.removeProperty(k));
   let msg;
   if (themeMode === "custom") {
-    const { bg, panel, ink, accent } = customTheme;
-    dark = luminance(bg) < 0.5;
+    const t = customTheme;
+    dark = luminance(t.bg) < 0.5;
     r.setAttribute("data-theme", dark ? "dark" : "light");
     const set = (k, v) => r.style.setProperty(k, v);
-    set("--bg", bg); set("--panel", panel);
-    set("--tint", mixHex(panel, bg, 0.5));
-    set("--line", mixHex(panel, ink, 0.16)); set("--line2", mixHex(panel, ink, 0.28));
-    set("--ink", ink); set("--muted", mixHex(ink, bg, 0.42));
-    set("--holo", accent); set("--holo-bright", accent);
-    set("--holo-tint", rgbaHex(accent, 0.14));
-    set("--grid", rgbaHex(accent, 0.045));
-    set("--lamp-off", mixHex(panel, ink, 0.2));
-    msg = { dark, bg, ink, palette: { panelRGB: hexRgb(panel).join(","), ink, muted: mixHex(ink, bg, 0.42), accent, accentRGB: hexRgb(accent).join(",") } };
+    set("--bg", t.bg); set("--panel", t.panel);
+    set("--bez", t.bez); set("--bez2", mixHex(t.bez, t.ink, 0.06)); set("--bezline", mixHex(t.bez, t.ink, 0.22));
+    set("--tint", mixHex(t.panel, t.bg, 0.5));
+    set("--line", t.line); set("--line2", mixHex(t.line, t.ink, 0.22));
+    set("--ink", t.ink); set("--muted", t.muted);
+    set("--holo", t.accent); set("--holo-bright", t.accent); set("--holo-tint", rgbaHex(t.accent, 0.14));
+    set("--grn", t.grn); set("--grn-tint", rgbaHex(t.grn, 0.13));
+    set("--amber", t.amber); set("--amber-tint", rgbaHex(t.amber, 0.13));
+    set("--tx", t.amber); set("--tx-tint", rgbaHex(t.amber, 0.13));
+    set("--ok", t.grn); set("--ok-tint", rgbaHex(t.grn, 0.12));
+    set("--red", t.red); set("--red-tint", rgbaHex(t.red, 0.14));
+    set("--lamp-off", mixHex(t.panel, t.ink, 0.2));
+    msg = { dark, bg: t.bez, ink: t.ink,
+      palette: { panelRGB: hexRgb(t.panel).join(","), ink: t.ink, muted: t.muted, accent: t.grn, accentRGB: hexRgb(t.grn).join(",") } };
   } else {
     dark = themeMode === "dark";
     r.setAttribute("data-theme", dark ? "dark" : "light");
@@ -86,9 +98,7 @@ function applyTheme() {
   store.set("themeMode", themeMode); store.set("customTheme", customTheme);
   $("sthemesel").value = themeMode;
   $("customcolors").style.display = themeMode === "custom" ? "flex" : "none";
-  ["c_bg","c_panel","c_ink","c_accent"].forEach((id, i) => {
-    $(id).value = [customTheme.bg, customTheme.panel, customTheme.ink, customTheme.accent][i];
-  });
+  Object.keys(THEME_DEFAULTS).forEach(k => { const el = $("c_" + k); if (el) el.value = customTheme[k]; });
   ipcRenderer.send("theme", msg);
 }
 
@@ -441,12 +451,36 @@ function addLog(kind, netName, msg) {
   logFeed.scrollTop = logFeed.scrollHeight;
 }
 function utc() { return new Date().toISOString().slice(11, 19); }
+
+/* ══ TX arming ══
+   Cycling with PgUp/PgDn — or clicking a net's name — makes that net THE net
+   you talk on, and disarms the others. Simulcast still works the way it always
+   has: pick your primary here, then click the TX annunciator on any extra nets
+   to stack them on top. If you rotate while you're already keyed, the
+   transmission follows you — the net you left closes and the new one opens, so
+   the mic is never left hot on a net you've moved off. COMMAND OVERRIDE is
+   left alone entirely; while it's engaged PTT keys every tuned net by design. */
+function armTxExclusive(i) {
+  const n = nets[i];
+  if (!n || !n.tuned) return;
+  const keyed = pttHeld || openMic;
+  nets.forEach((x, j) => {
+    if (!x.tuned) return;
+    x.txOn = (j === i);
+    if (!x.txOn && x.tx && !override) endTX(j);
+  });
+  if (keyed && !override && !n.tx) startTX(i, openMic);
+  savePrefs();
+  renderTxTargets();
+}
 function cycleSel(dir) {
   const tuned = nets.map((n, i) => i).filter(i => nets[i].tuned);
   if (!tuned.length) return;
   const pos = Math.max(0, tuned.indexOf(selectedI));
   selectedI = tuned[(pos + dir + tuned.length) % tuned.length];
+  armTxExclusive(selectedI);   /* the net you cycle to becomes the one you talk on */
   renderNets(); chirpUp();
+  addLog("sys", nets[selectedI].cfg.name, "selected — TX armed");
 }
 function sendOv() {
   ipcRenderer.send("ov-state", nets.filter(n => n.tuned).map(n => {
@@ -472,7 +506,11 @@ netlist.addEventListener("click", async (e) => {
     });
     savePrefs(); renderNets(); return;
   }
-  if (e.target.closest("[data-sel]")) { selectedI = i; renderNets(); return; }
+  if (e.target.closest("[data-sel]")) {
+    selectedI = i;
+    if (n.tuned) armTxExclusive(i);
+    renderNets(); return;
+  }
   if (e.target.closest("[data-tune]")) { await tuneNet(i); return; }
   if (e.target.closest("[data-mon]")) { n.mon = !n.mon; ipcRenderer.send("net-mute", { idx: n.idx, muted: !n.mon }); savePrefs(); renderNets(); return; }
   if (e.target.closest("[data-txon]")) { n.txOn = !n.txOn; savePrefs(); renderNets(); return; }
@@ -515,20 +553,38 @@ async function tuneNet(i, silent) {
   renderNets();
   return true;
 }
-/* Electron has no window.prompt — everything goes through this dialog. */
-function openNewNetDialog() {
+/* Electron has no window.prompt — every net edit goes through this dialog. */
+let dlgMode = "new", dlgIdx = null;
+function openNetDialog(mode, i) {
   if (!connected) { toast("Connect first."); return; }
-  if (!cmdToken) { toast("Creating nets requires COMMAND authority."); return; }
-  $("dlgName").value = ""; $("dlgFreq").value = ""; $("dlgShip").checked = false; $("dlgErr").textContent = "";
+  if (!cmdToken) { toast("Editing nets requires COMMAND authority."); return; }
+  dlgMode = mode; dlgIdx = (i == null ? null : i);
+  $("dlgFreq").parentElement.style.display = "";
+  $("dlgParent").parentElement.style.display = "";
+  $("dlgShip").parentElement.style.display = "";
+  $("dlgName").placeholder = "e.g. STRIKE TWO";
+  $("dlgErr").textContent = "";
   const opts = ['<option value="">— top level —</option>'].concat(
-    nets.filter(n => n.depth === 0).map(n => '<option value="' + esc(n.cfg.name) + '">under ' + esc(n.cfg.name) + "</option>"));
+    nets.filter(n => n.depth === 0 && (mode !== "edit" || n !== nets[i]))
+        .map(n => '<option value="' + esc(n.cfg.name) + '">under ' + esc(n.cfg.name) + "</option>"));
   $("dlgParent").innerHTML = opts.join("");
-  const s = sel();
-  if (s) $("dlgParent").value = s.depth === 0 ? s.cfg.name : (s.parent || "");
+  if (mode === "edit") {
+    const n = nets[i];
+    $("dlgTitle").textContent = "NET PROPERTIES — " + n.cfg.name;
+    $("dlgName").value = n.cfg.name; $("dlgFreq").value = n.cfg.freq;
+    $("dlgParent").value = n.parent || ""; $("dlgShip").checked = !!n.cfg.ship;
+    $("dlgOk").textContent = "APPLY ▸";
+  } else {
+    const parentFrom = i != null ? (nets[i].depth === 0 ? nets[i].cfg.name : nets[i].parent) : (sel() ? (sel().depth === 0 ? sel().cfg.name : sel().parent) : "");
+    $("dlgTitle").textContent = "NEW NET";
+    $("dlgName").value = ""; $("dlgFreq").value = ""; $("dlgShip").checked = false;
+    $("dlgParent").value = parentFrom || "";
+    $("dlgOk").textContent = "CREATE ▸";
+  }
   $("dlg").classList.add("on");
   setTimeout(() => $("dlgName").focus(), 30);
 }
-$("addNetBtn").addEventListener("click", openNewNetDialog);
+$("addNetBtn").addEventListener("click", () => openNetDialog("new", null));
 $("dlgCancel").addEventListener("click", () => $("dlg").classList.remove("on"));
 $("dlg").addEventListener("keydown", (e) => {
   if (e.key === "Escape") $("dlg").classList.remove("on");
@@ -536,6 +592,38 @@ $("dlg").addEventListener("keydown", (e) => {
   e.stopPropagation();
 });
 $("dlgOk").addEventListener("click", async function () {
+  if (dlgMode === "delete") {
+    const n = nets[dlgIdx];
+    if ($("dlgName").value.trim().toUpperCase() !== n.cfg.name) { $("dlgErr").textContent = "Name doesn't match — nothing deleted."; return; }
+    const ok = await ipcRenderer.invoke("net-remove", n.idx);
+    $("dlg").classList.remove("on");
+    $("dlgOk").textContent = "CREATE ▸";
+    if (!ok) { toast("The relay refused the delete."); return; }
+    addLog("sys", n.cfg.name, "net DELETED from relay by " + callsign);
+    nets.splice(dlgIdx, 1); selectedI = Math.min(selectedI, nets.length - 1); renderNets();
+    return;
+  }
+  if (dlgMode === "edit") {
+    const n = nets[dlgIdx];
+    const newName = $("dlgName").value.trim().toUpperCase();
+    const newFreq = normFreq($("dlgFreq").value) || n.cfg.freq;
+    const newParent = $("dlgParent").value;
+    this.disabled = true; this.textContent = "APPLYING…";
+    let ok = true;
+    if (newName && newName !== n.cfg.name) {
+      ok = await ipcRenderer.invoke("net-rename", { idx: n.idx, name: newName });
+      if (ok) { addLog("sys", n.cfg.name, "renamed to " + newName); n.cfg.name = newName; }
+    }
+    if (ok && (newParent || "") !== (n.parent || "")) {
+      ok = await ipcRenderer.invoke("net-move", { idx: n.idx, parent: newParent });
+      if (ok) { n.parent = newParent || null; n.depth = newParent ? 1 : 0; addLog("sys", n.cfg.name, newParent ? "nested under " + newParent : "moved to top level"); }
+    }
+    n.cfg.freq = newFreq; n.cfg.ship = $("dlgShip").checked;
+    this.disabled = false; this.textContent = "CREATE ▸";
+    if (!ok) { $("dlgErr").textContent = "The relay refused part of that change."; return; }
+    savePrefs(); $("dlg").classList.remove("on"); renderNets(); renderSoundboard();
+    return;
+  }
   const name = $("dlgName").value.trim().toUpperCase();
   const freqRaw = $("dlgFreq").value.trim();
   const parent = $("dlgParent").value;
@@ -556,6 +644,49 @@ $("dlgOk").addEventListener("click", async function () {
   $("dlg").classList.remove("on");
   selectedI = i; renderNets();
 });
+
+/* ══ NET CONTEXT MENU + PROPERTIES (COMMAND only) ══ */
+let ctxNet = null;
+netlist.addEventListener("contextmenu", (e) => {
+  const card = e.target.closest(".net"); if (!card) return;
+  e.preventDefault();
+  if (!cmdToken) { toast("Editing nets requires COMMAND authority."); return; }
+  ctxNet = +card.dataset.i;
+  const m = $("ctx");
+  m.style.display = "block";
+  const vw = window.innerWidth, vh = window.innerHeight, r = m.getBoundingClientRect();
+  m.style.left = Math.min(e.clientX, vw - r.width - 8) + "px";
+  m.style.top = Math.min(e.clientY, vh - r.height - 8) + "px";
+  const tuned = nets[ctxNet].tuned;
+  m.querySelectorAll(".ctxi").forEach(b => { b.disabled = !tuned && b.dataset.act !== "props"; });
+});
+window.addEventListener("click", () => { $("ctx").style.display = "none"; });
+window.addEventListener("blur", () => { $("ctx").style.display = "none"; });
+$("ctx").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-act]"); if (!b || ctxNet == null) return;
+  const i = ctxNet, n = nets[i];
+  $("ctx").style.display = "none";
+  if (b.dataset.act === "props" || b.dataset.act === "rename") { openNetDialog("edit", i); return; }
+  if (b.dataset.act === "sub") { openNetDialog("new", i); return; }
+  if (b.dataset.act === "access") { showPage("pgAcct"); toast("Set access for " + n.cfg.name + " in the NET ACCESS list."); return; }
+  if (b.dataset.act === "delete") {
+    if (!n.tuned) { toast("Tune the net before deleting it."); return; }
+    openConfirmDelete(i);
+  }
+});
+function openConfirmDelete(i) {
+  const n = nets[i];
+  dlgMode = "delete"; dlgIdx = i;
+  $("dlgTitle").textContent = "DELETE " + n.cfg.name;
+  $("dlgName").value = ""; $("dlgName").placeholder = "type the net name to confirm";
+  $("dlgFreq").parentElement.style.display = "none";
+  $("dlgParent").parentElement.style.display = "none";
+  $("dlgShip").parentElement.style.display = "none";
+  $("dlgErr").textContent = "This removes the net from the relay for everyone.";
+  $("dlgOk").textContent = "DELETE ▸";
+  $("dlg").classList.add("on");
+  setTimeout(() => $("dlgName").focus(), 30);
+}
 
 /* ══ SOUNDBOARD (ship nets only) ══
    A clip is decoded, resampled to 48k mono, Opus-encoded and pushed down the
@@ -846,9 +977,11 @@ function pollOps() {
 /* ══ header / settings / theme wiring ══ */
 $("themebtn").addEventListener("click", () => { themeMode = dark ? "light" : "dark"; applyTheme(); });
 $("sthemesel").addEventListener("change", function () { themeMode = this.value; applyTheme(); });
-[["c_bg","bg"],["c_panel","panel"],["c_ink","ink"],["c_accent","accent"]].forEach(([id, key]) => {
-  $(id).addEventListener("input", function () { customTheme[key] = this.value; themeMode = "custom"; applyTheme(); });
+Object.keys(THEME_DEFAULTS).forEach(k => {
+  const el = $("c_" + k); if (!el) return;
+  el.addEventListener("input", function () { customTheme[k] = this.value; themeMode = "custom"; applyTheme(); });
 });
+$("themeReset").addEventListener("click", () => { customTheme = Object.assign({}, THEME_DEFAULTS); applyTheme(); toast("Palette reset to night defaults."); });
 $("closeSet").addEventListener("click", () => showPage("pgComms"));
 $("sfx").addEventListener("click", function () { fx = !fx; this.classList.toggle("on", fx); store.set("fx", fx); if (fx) chirpDown(); });
 $("fxsel").addEventListener("change", function () {
@@ -873,6 +1006,19 @@ function showUpdate(r) {
   $("updbar").dataset.url = r.url; $("updbar").dataset.version = r.version;
 }
 ipcRenderer.on("update-available", (ev, r) => showUpdate(r));
+ipcRenderer.on("update-auto-offer", async (ev, r) => {
+  if (!autoUpdate || connected) return;   /* never yank the app out from under a live op */
+  $("updtext").textContent = "Installing FleetComm v" + r.version + " automatically…";
+  $("updgo").style.display = "none";
+  const res = await ipcRenderer.invoke("do-update", { version: r.version });
+  if (res && res.ok) { $("updtext").textContent = "Update installed — restarting…"; return; }
+  $("updgo").style.display = "";
+  $("updtext").textContent = "FleetComm v" + r.version + " is available";
+});
+$("sautoupd").addEventListener("click", function () {
+  autoUpdate = !autoUpdate; this.classList.toggle("on", autoUpdate); store.set("autoUpdate", autoUpdate);
+  toast(autoUpdate ? "Updates will install automatically at launch." : "Automatic updates off — you'll get a banner instead.");
+});
 $("updgo").addEventListener("click", async function () {
   this.disabled = true; this.textContent = "Updating…";
   const r = await ipcRenderer.invoke("do-update", { version: $("updbar").dataset.version });
@@ -897,6 +1043,23 @@ function toast(msg) {
   const t = $("toast"); t.textContent = msg; t.style.display = "block";
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.style.display = "none", 4600);
 }
+/* channel-rail splitter */
+(function () {
+  const col = $("chanCol"), sp = $("split");
+  const saved = store.get("railWidth", 300);
+  col.style.width = saved + "px";
+  let dragging = false;
+  sp.addEventListener("pointerdown", (e) => { dragging = true; sp.classList.add("drag"); sp.setPointerCapture(e.pointerId); e.preventDefault(); });
+  sp.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    const w = Math.max(200, Math.min(560, e.clientX - col.getBoundingClientRect().left));
+    col.style.width = w + "px";
+  });
+  const stop = () => { if (!dragging) return; dragging = false; sp.classList.remove("drag"); store.set("railWidth", parseInt(col.style.width, 10) || 300); };
+  sp.addEventListener("pointerup", stop);
+  sp.addEventListener("pointercancel", stop);
+})();
+
 /* clock */
 setInterval(() => { $("clock").textContent = utc(); }, 1000);
 
@@ -907,6 +1070,7 @@ try {
   $("verlbl2").textContent = _v;
 } catch (e) {}
 $("sfx").classList.toggle("on", fx);
+$("sautoupd").classList.toggle("on", autoUpdate);
 $("fxsel").value = fxPreset;
 applyTheme(); renderCsList(); renderMasterBinds(); renderMic(); renderNets(); refreshSounds();
 $("signDiscord").style.display = discordMode ? "block" : "none";
@@ -978,4 +1142,48 @@ if (process.env.FLEETCOMM_AUTOTEST) {
     }, 6000);
   }, 800);
   ipcRenderer.on("ov-shown", (ev, shown) => console.log("[AUTOTEST] overlay=" + shown));
+
+  /* ── v0.9 feature checks ── */
+  setTimeout(() => {
+    const cs = getComputedStyle(document.documentElement);
+    const L = (k, v) => console.log("[AUTOTEST] " + k + "=" + v);
+
+    /* selection arms TX, and arms exactly one */
+    const tunedIdx = nets.map((n, i) => i).filter(i => nets[i].tuned);
+    if (tunedIdx.length > 1) {
+      cycleSel(1);
+      L("armed-count", nets.filter(n => n.tuned && n.txOn).length);
+      L("armed-is-selected", !!(sel() && sel().txOn));
+    } else L("armed-skip", "needs 2+ tuned nets");
+
+    /* theme: custom applies, and leaving custom clears every custom var */
+    const before = themeMode;
+    customTheme.accent = "#ff00ff"; customTheme.red = "#00ff00";
+    themeMode = "custom"; applyTheme();
+    L("custom-holo", document.documentElement.style.getPropertyValue("--holo").trim());
+    L("custom-red", document.documentElement.style.getPropertyValue("--red").trim());
+    themeMode = "dark"; applyTheme();
+    const leaked = ["--holo","--red","--bez","--amber","--grn","--tx","--ok"]
+      .filter(k => document.documentElement.style.getPropertyValue(k).trim() !== "");
+    L("theme-leak", leaked.length ? leaked.join("|") : "none");
+    themeMode = before; customTheme = Object.assign({}, THEME_DEFAULTS); applyTheme();
+
+    /* new UI plumbing present */
+    L("ctx-menu", !!document.getElementById("ctx"));
+    L("splitter", !!document.getElementById("split"));
+    L("acct-scroll", !!document.getElementById("acctScroll"));
+    L("theme-inputs", Object.keys(THEME_DEFAULTS).filter(k => document.getElementById("c_" + k)).length);
+
+    /* net dialog opens in edit mode without throwing */
+    /* the dialog is COMMAND-gated; prove the gate AND the dialog behind it */
+    L("edit-gated-without-token", (openNetDialog("edit", tunedIdx[0] != null ? tunedIdx[0] : 0),
+        !document.getElementById("dlg").classList.contains("on")));
+    cmdToken = "autotest-token";
+    try { openNetDialog("edit", tunedIdx[0] != null ? tunedIdx[0] : 0);
+          L("edit-dialog-open", document.getElementById("dlg").classList.contains("on"));
+          L("edit-dialog-prefilled", document.getElementById("dlgName").value || "(empty)");
+          document.getElementById("dlgCancel").click(); cmdToken = null; }
+    catch (e) { L("edit-dialog-ERR", e.message); }
+    console.log("[AUTOTEST] v09-checks-done");
+  }, 9000);
 }

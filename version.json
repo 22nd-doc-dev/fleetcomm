@@ -1,4 +1,4 @@
 {
-  "version": "0.8.0",
-  "notes": "Nest broadcast (key a ship net, reach every subnet), collapsible net tree, fixed net creation with a real dialog, and shipwide soundboards on ship nets."
+  "version": "0.9.0",
+  "notes": "Silent auto-update at startup (skipped while you're connected), right-click any net for properties/rename/sub-net/delete as COMMAND, PgUp/PgDn now arms TX on the net you select, drag-resizable channel rail, rebuilt ACCTS page that works in any window size, and a 10-color custom palette editor."
 }

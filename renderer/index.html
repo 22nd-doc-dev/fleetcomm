@@ -99,7 +99,10 @@
 
   /* ═ COMMS page ═ */
   #pgComms{flex-direction:row}
-  #chanCol{width:300px;flex:0 0 auto;border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
+  #chanCol{width:300px;flex:0 0 auto;display:flex;flex-direction:column;min-height:0}
+  #split{width:5px;flex:0 0 auto;cursor:col-resize;background:var(--line);position:relative}
+  #split:hover,#split.drag{background:var(--holo)}
+  #split::after{content:"";position:absolute;inset:0 -4px}
   #netlist{flex:1;overflow-y:auto;padding:6px}
   .net{border:1px solid var(--line);border-radius:4px;margin-bottom:5px;background:var(--panel);padding:7px 9px}
   .net.sub{margin-left:20px;position:relative}
@@ -286,6 +289,14 @@
   .sbBtn.playing{border-color:var(--amber);background:var(--amber-tint);color:var(--amber)}
   .sbBtn .del{color:var(--muted);margin-left:6px;font-size:10px}
   .sbBtn .del:hover{color:var(--red)}
+  .ctxi{display:block;width:100%;text-align:left;border:none;background:none;color:var(--ink);
+    padding:7px 11px;font-size:12px;border-radius:3px}
+  .ctxi:hover{background:var(--tint);color:var(--holo)}
+  .ctxi:disabled{opacity:.4;cursor:default}
+  #themeGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;padding:10px 2px}
+  #themeGrid label{display:flex;flex-direction:column;gap:4px;font-size:9px;font-weight:900;
+    letter-spacing:1px;color:var(--muted)}
+  #themeGrid input[type=color]{width:100%;height:30px;border:1px solid var(--line2);border-radius:3px;background:none;padding:2px}
   .toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);z-index:90;
     background:var(--panel);border:1px solid var(--amber);border-radius:5px;padding:10px 16px;
     font-size:13px;box-shadow:var(--shadow);display:none;max-width:90vw}
@@ -322,6 +333,7 @@
       <div id="netlist"></div>
       <button class="addbtn" id="addNetBtn">+ ADD NET</button>
     </div>
+    <div id="split" title="drag to resize"></div>
     <div id="commsMain">
       <div class="ph"><span id="rosterTitle">ON NET</span><span class="r" id="rosterCount"></span></div>
       <div id="rosterChips"></div>
@@ -353,11 +365,14 @@
   </div>
 
   <!-- ACCOUNTS (command only) -->
-  <div class="page" id="pgAcct">
-    <div class="ph">REGISTERED OPERATORS<span class="r" id="acctPending" style="color:var(--amber)"></span></div>
-    <div id="acctList" style="flex:1;overflow-y:auto;padding:10px;max-width:760px"></div>
-    <div class="ph">NET ACCESS — WHO MAY TUNE EACH NET (RELAY-ENFORCED)</div>
-    <div id="netAccess" style="flex:1;overflow-y:auto;padding:10px;max-width:760px"></div>
+  <div class="page" id="pgAcct" style="flex-direction:column">
+    <div class="ph">ACCOUNTS &amp; ACCESS<span class="r" id="acctPending" style="color:var(--amber)"></span></div>
+    <div id="acctScroll" style="flex:1;overflow-y:auto;padding:12px;min-height:0">
+      <div class="miniheading" style="margin-top:0">REGISTERED OPERATORS</div>
+      <div id="acctList" style="max-width:780px"></div>
+      <div class="miniheading">NET ACCESS — WHO MAY TUNE EACH NET (RELAY-ENFORCED)</div>
+      <div id="netAccess" style="max-width:780px;padding-bottom:20px"></div>
+    </div>
   </div>
 
   <!-- SYS -->
@@ -375,16 +390,26 @@
       <div class="miniheading">DISPLAY</div>
       <div class="togrow"><div class="tl"><b>Mode</b><span>Night, day, or custom palette</span></div>
         <select class="orgsel" id="sthemesel"><option value="dark">Night</option><option value="light">Day</option><option value="custom">Custom</option></select></div>
-      <div id="customcolors" style="display:none;gap:14px;padding:10px 2px;flex-wrap:wrap;align-items:center">
-        <label class="hint" style="display:flex;flex-direction:column;gap:3px;font-weight:800">SCREEN<input type="color" id="c_bg"></label>
-        <label class="hint" style="display:flex;flex-direction:column;gap:3px;font-weight:800">PANELS<input type="color" id="c_panel"></label>
-        <label class="hint" style="display:flex;flex-direction:column;gap:3px;font-weight:800">DATA<input type="color" id="c_ink"></label>
-        <label class="hint" style="display:flex;flex-direction:column;gap:3px;font-weight:800">CURSOR<input type="color" id="c_accent"></label>
+      <div id="customcolors" style="display:none">
+        <div id="themeGrid">
+          <label>SCREEN<input type="color" id="c_bg"></label>
+          <label>PANELS<input type="color" id="c_panel"></label>
+          <label>BEZEL / HEADER<input type="color" id="c_bez"></label>
+          <label>PRIMARY TEXT<input type="color" id="c_ink"></label>
+          <label>SECONDARY TEXT<input type="color" id="c_muted"></label>
+          <label>LINES / BORDERS<input type="color" id="c_line"></label>
+          <label>ACCENT / CURSOR<input type="color" id="c_accent"></label>
+          <label>RECEIVING<input type="color" id="c_grn"></label>
+          <label>TRANSMITTING<input type="color" id="c_amber"></label>
+          <label>WARNING<input type="color" id="c_red"></label>
+        </div>
+        <button class="icobtn" id="themeReset" style="margin-bottom:6px">RESET TO NIGHT DEFAULTS</button>
       </div>
       <div class="togrow"><div class="tl"><b>Overlay edit mode</b><span>Unlock the game overlay to move / resize, then LOCK</span></div><button class="switch" id="sovedit"></button></div>
       <div class="miniheading">COMMAND AUTHORITY</div>
       <div class="kv"><label>COMMAND TOKEN</label><input id="tokenIn" type="password" placeholder="issued by fleet command — optional"></div>
       <div class="miniheading">UPDATES</div>
+      <div class="togrow"><div class="tl"><b>Install updates automatically</b><span>Downloads and applies new versions at launch, before you connect</span></div><button class="switch on" id="sautoupd"></button></div>
       <div class="togrow"><div class="tl"><b>FleetComm <span id="verlbl2"></span></b><span>Also checks automatically at startup</span></div><button class="icobtn" id="updcheck">Check for updates</button></div>
       <div class="wnav"><button class="btn ghost" id="disconnBtn">DISCONNECT</button><button class="btn big" id="closeSet">APPLY · RETURN ▸</button></div>
     </div>
@@ -436,6 +461,14 @@
     <div class="signfoot" id="signFoot">No account needed yet — your callsign is your identity on the relay.
       Once COMMAND enables Discord sign-in, access is gated and role-based.</div>
   </div>
+</div>
+<div id="ctx" style="display:none;position:fixed;z-index:85;background:var(--panel);border:1px solid var(--bezline);
+  border-radius:5px;box-shadow:var(--shadow);padding:4px;min-width:190px">
+  <button class="ctxi" data-act="props">Edit properties…</button>
+  <button class="ctxi" data-act="rename">Rename net…</button>
+  <button class="ctxi" data-act="sub">Add subnet here…</button>
+  <button class="ctxi" data-act="access">Set who may tune…</button>
+  <button class="ctxi" data-act="delete" style="color:var(--red)">Delete net from relay…</button>
 </div>
 <div id="dlg"><div id="dlgBox">
   <h3 id="dlgTitle">NEW NET</h3>
