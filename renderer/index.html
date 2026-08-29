@@ -242,6 +242,16 @@
     border-radius:4px;padding:9px 12px;font-weight:800;font-size:12px;margin-bottom:12px;color:var(--grn)}
   .relaychip a{color:var(--muted);font-size:10px;margin-left:auto;text-decoration:underline;cursor:pointer}
   .signfoot{font-size:10.5px;color:var(--muted);line-height:1.6;margin-top:14px;border-top:1px solid var(--line);padding-top:11px}
+  .acctrow{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:4px;
+    background:var(--panel);padding:8px 11px;margin-bottom:6px}
+  .acctrow .nm b{font-size:13px;letter-spacing:.5px}
+  .acctrow .nm span{display:block;font-size:10px;color:var(--muted)}
+  .acctrow .rolelbl{margin-left:auto}
+  .acctrow .ann{cursor:pointer}
+  .narow{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:4px;
+    background:var(--panel);padding:7px 11px;margin-bottom:5px}
+  .narow b{font-size:12px;letter-spacing:.5px;flex:1}
+  .narow .fq2{font-size:10.5px;color:var(--muted)}
   .toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);z-index:90;
     background:var(--panel);border:1px solid var(--amber);border-radius:5px;padding:10px 16px;
     font-size:13px;box-shadow:var(--shadow);display:none;max-width:90vw}
@@ -254,6 +264,7 @@
   <button class="pkey on" data-page="pgComms">COMMS</button>
   <button class="pkey" data-page="pgChat">CHAT</button>
   <button class="pkey" data-page="pgAtc">ATC</button>
+  <button class="pkey" data-page="pgAcct" id="acctKey" style="display:none">ACCTS</button>
   <button class="pkey" data-page="settings">SYS</button>
   <div class="sp"></div>
   <div class="rd" id="opchip" style="display:none"><label>OPERATOR</label><span class="v"><span id="opname"></span><span class="role" id="oprole"></span></span></div>
@@ -300,6 +311,14 @@
   <div class="page" id="pgAtc">
     <div class="ph">ATC — NET CONTROL<span class="r"><span id="atcCount">0</span> OPERATORS ON RELAY</span></div>
     <div id="atcGrid"></div>
+  </div>
+
+  <!-- ACCOUNTS (command only) -->
+  <div class="page" id="pgAcct">
+    <div class="ph">REGISTERED OPERATORS<span class="r" id="acctPending" style="color:var(--amber)"></span></div>
+    <div id="acctList" style="flex:1;overflow-y:auto;padding:10px;max-width:760px"></div>
+    <div class="ph">NET ACCESS — WHO MAY TUNE EACH NET (RELAY-ENFORCED)</div>
+    <div id="netAccess" style="flex:1;overflow-y:auto;padding:10px;max-width:760px"></div>
   </div>
 
   <!-- SYS -->
@@ -355,14 +374,28 @@
       RELAY PACKAGE <span class="okk">LOADED · <span id="relayname">22ND EXPEDITIONARY FLEET</span></span> <a id="relayedit" style="color:var(--muted)">change</a><br>
       AWAITING OPERATOR ID —</div>
     <h2>SIGN IN</h2>
-    <p class="sub">OPERATOR CALLSIGN</p>
-    <div class="kv" id="hostrow" style="display:none"><label>SERVER ADDRESS</label><input id="hostIn" class="mono"></div>
-    <div class="kv"><input id="csIn" class="mono" placeholder="e.g. TIBER DOC 1" list="csList" style="font-size:16px;letter-spacing:1px"><datalist id="csList"></datalist></div>
-    <button class="btn big" id="connectBtn">CONNECT ▸</button>
+    <div id="signDiscord" style="display:none">
+      <button class="btn big" id="discordBtn" style="border-color:#5865F2;color:#8b9bff">SIGN IN WITH DISCORD ▸</button>
+      <p class="hint" style="margin-top:10px;text-align:left">Discord confirms who you are — username only, nothing else.
+        Whether you may use FleetComm is decided separately, by COMMAND.</p>
+      <div id="pendingBox" style="display:none;border:1px solid var(--amber);background:var(--amber-tint);border-radius:4px;padding:12px;margin-top:12px;text-align:left">
+        <b style="color:var(--amber);letter-spacing:1px;font-size:11px">AWAITING COMMAND APPROVAL</b>
+        <p class="hint" style="text-align:left;margin:6px 0 10px">Your sign-in is registered. A COMMAND operator must clear you before the relay will accept you.</p>
+        <button class="btn" id="recheckBtn">RE-CHECK STATUS</button>
+      </div>
+      <div class="kv" id="csRow2" style="display:none;margin-top:12px"><label>CALLSIGN FOR THIS SESSION</label>
+        <input id="csIn" class="mono" placeholder="e.g. TIBER DOC 1" list="csList" style="font-size:16px;letter-spacing:1px"><datalist id="csList"></datalist></div>
+      <button class="btn big" id="connectBtn" style="display:none;margin-top:10px">CONNECT ▸</button>
+    </div>
+    <div id="signLegacy">
+      <p class="sub">OPERATOR CALLSIGN</p>
+      <div class="kv"><input id="csInLegacy" class="mono" placeholder="e.g. TIBER DOC 1" style="font-size:16px;letter-spacing:1px"></div>
+      <button class="btn big" id="connectLegacyBtn">CONNECT ▸</button>
+    </div>
+    <div class="kv" id="hostrow" style="display:none;margin-top:10px"><label>SERVER ADDRESS</label><input id="hostIn" class="mono"></div>
     <p class="hint" id="connErr" style="color:var(--red);margin-top:10px;text-align:left"></p>
-    <div class="signfoot">No account needed — your callsign is your identity on the relay.
-      Discord sign-in with fleet roles arrives in a coming version. Net creation and
-      override authority come from a command token issued by COMMAND (SYS page).</div>
+    <div class="signfoot" id="signFoot">No account needed yet — your callsign is your identity on the relay.
+      Once COMMAND enables Discord sign-in, access is gated and role-based.</div>
   </div>
 </div>
 <div class="toast" id="toast"></div>

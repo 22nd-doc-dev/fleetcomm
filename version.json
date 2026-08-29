@@ -1,4 +1,4 @@
 {
-  "version": "0.6.0",
-  "notes": "All-new Bridge MFD identity: bezel page keys (COMMS/CHAT/ATC/SYS), instrument readouts, annunciator lights, avionics day/night modes, dedicated chat page."
+  "version": "0.7.0",
+  "notes": "Discord sign-in gate with COMMAND approval queue, operator profiles and roles, relay-enforced per-net access (open / members / command), ACCOUNTS admin page."
 }

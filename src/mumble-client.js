@@ -7,6 +7,7 @@
  * channel seeding) and inside Electron main.
  */
 const tls = require("tls");
+const fs = require("fs");
 const path = require("path");
 const EventEmitter = require("events");
 const protobuf = require("protobufjs");
@@ -33,7 +34,9 @@ class MumbleClient extends EventEmitter {
     this.session = null;
     this.seq = 0;
     this._buf = Buffer.alloc(0);
-    this._root = protobuf.loadSync(path.join(__dirname, "..", "proto", "Mumble.proto"));
+    const protoPath = [path.join(__dirname, "proto", "Mumble.proto"), path.join(__dirname, "..", "proto", "Mumble.proto")]
+      .find(p => fs.existsSync(p));
+    this._root = protobuf.loadSync(protoPath);
     this._types = {};
     for (const name of Object.keys(MSG)) {
       if (name === "UDPTunnel") continue;

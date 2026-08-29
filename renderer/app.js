@@ -568,29 +568,32 @@ $("micBtn").addEventListener("click", () => ensureMic());
 $("openMicBtn").addEventListener("click", () => setOpenMic(!openMic));
 $("overrideBtn").addEventListener("click", () => setOverride(!override));
 
-/* ══ CONNECT ══ */
+/* ══ CONNECT / SIGN-IN ══ */
+let acct = null; // {account:{role,callsign,discordName}, relay:{password,tokens,adminToken}}
+const discordMode = !!(pkg.accounts && pkg.accounts.url && pkg.accounts.discordClientId) && !process.env.FLEETCOMM_AUTOTEST;
 function currentHost() { return store.get("hostOverride", "") || pkg.server.host; }
 $("relayname").textContent = pkg.org.toUpperCase();
 $("relayedit").addEventListener("click", () => { $("hostrow").style.display = "flex"; $("hostIn").value = currentHost(); $("hostIn").focus(); });
 function renderCsList() { $("csList").innerHTML = myCallsigns.map(c => '<option value="' + esc(c) + '">').join(""); }
 $("csIn").value = callsign;
-$("connectBtn").addEventListener("click", async () => {
+async function doConnect(cs, btn) {
   const host = ($("hostrow").style.display !== "none" ? $("hostIn").value.trim() : currentHost());
-  const cs = $("csIn").value.trim().toUpperCase();
   if (!cs) { $("connErr").textContent = "Enter a callsign."; return; }
   callsign = cs;
   if (myCallsigns.indexOf(cs) < 0) myCallsigns.unshift(cs);
   store.set("callsign", cs); store.set("callsigns", myCallsigns.slice(0, 12));
   if (host !== pkg.server.host) store.set("hostOverride", host);
   renderCsList();
-  $("connErr").textContent = ""; $("connectBtn").textContent = "CONNECTING…";
+  $("connErr").textContent = ""; btn.textContent = "CONNECTING…";
   const wanted = nets.map((n, i) => i).filter(i => nets[i].cfg.monitor || nets[i].cfg.defaultKey);
   const res = await ipcRenderer.invoke("connect", {
     host, port: pkg.server.port, callsign: cs,
     nets: wanted.map(i => ({ name: nets[i].cfg.name, freq: nets[i].cfg.freq, channel: nets[i].cfg.name })),
-    token: cmdToken || null
+    token: cmdToken || null,
+    relayPassword: acct && acct.relay ? acct.relay.password : "",
+    roleTokens: acct && acct.relay ? acct.relay.tokens : []
   });
-  $("connectBtn").textContent = "CONNECT ▸";
+  btn.textContent = "CONNECT ▸";
   const okCount = res.filter(r => r.ok).length;
   if (!okCount) {
     const raw = (res[0] && res[0].error) || "unknown";
@@ -607,14 +610,50 @@ $("connectBtn").addEventListener("click", async () => {
     if (!n.bind && n.cfg.defaultKey) n.bind = { src: "label", label: n.cfg.defaultKey, mods: [] };
   });
   connected = true;
+  if (acct && cs !== acct.account.callsign) ipcRenderer.invoke("acct", { method: "POST", path: "/api/callsign", body: { callsign: cs } });
   selectedI = nets.findIndex(n => n.tuned);
   $("connectOv").classList.add("hidden");
   $("relayLbl").className = "v ok"; $("relayLbl").textContent = "LIVE · " + pkg.shortname;
+  const roleTxt = acct ? acct.account.role.toUpperCase() : (cmdToken ? "COMMAND" : "OPERATOR");
   $("opchip").style.display = ""; $("opname").textContent = callsign;
-  $("oprole").textContent = cmdToken ? "COMMAND" : "";
-  $("authName").textContent = callsign; $("authRole").textContent = cmdToken ? "COMMAND" : "OPERATOR";
-  addLog("sys", "", "operator " + callsign + " authenticated" + (cmdToken ? " (COMMAND)" : ""));
+  $("oprole").textContent = roleTxt === "OPERATOR" ? "" : roleTxt;
+  $("authName").textContent = callsign; $("authRole").textContent = roleTxt;
+  $("acctKey").style.display = (acct && acct.account.role === "command") ? "" : "none";
+  addLog("sys", "", "operator " + callsign + " authenticated (" + roleTxt + ")");
   renderNets(); chirpDown(); pollOps();
+}
+$("connectBtn").addEventListener("click", function () { doConnect($("csIn").value.trim().toUpperCase(), this); });
+$("connectLegacyBtn").addEventListener("click", function () { doConnect($("csInLegacy").value.trim().toUpperCase(), this); });
+
+/* Discord sign-in flow */
+function applyLogin(r) {
+  acct = { account: r.account, relay: r.relay };
+  if (r.account.role === "pending" || !r.relay) {
+    $("pendingBox").style.display = "block";
+    $("csRow2").style.display = "none"; $("connectBtn").style.display = "none";
+    return;
+  }
+  $("pendingBox").style.display = "none";
+  if (r.relay.adminToken) cmdToken = r.relay.adminToken; /* command role carries authority automatically */
+  $("csRow2").style.display = "flex"; $("connectBtn").style.display = "block";
+  $("csIn").value = r.account.callsign || callsign || "";
+  $("discordBtn").textContent = "✓ " + r.account.discordName.toUpperCase() + " — " + r.account.role.toUpperCase();
+  $("discordBtn").disabled = true;
+}
+if ($("discordBtn")) $("discordBtn").addEventListener("click", async function () {
+  this.textContent = "WAITING FOR DISCORD… (check your browser)";
+  const r = await ipcRenderer.invoke("discord-login");
+  if (!r.ok) {
+    this.textContent = "SIGN IN WITH DISCORD ▸";
+    $("connErr").textContent = r.unconfigured ? "Discord sign-in isn't configured yet." : ("Sign-in failed: " + (r.error || "unknown"));
+    return;
+  }
+  $("connErr").textContent = "";
+  applyLogin(r);
+});
+if ($("recheckBtn")) $("recheckBtn").addEventListener("click", async () => {
+  const r = await ipcRenderer.invoke("acct", { method: "GET", path: "/api/me" });
+  if (r.ok) applyLogin(r); else toast(r.error || "still pending");
 });
 $("disconnBtn").addEventListener("click", () => {
   ipcRenderer.send("disconnect"); connected = false;
@@ -655,6 +694,7 @@ function showPage(id) {
   document.querySelectorAll(".page").forEach(p => p.classList.toggle("on", p.id === id));
   document.querySelectorAll(".pkey").forEach(k => k.classList.toggle("on", k.dataset.page === id));
   if (id === "pgAtc") refreshAtc();
+  if (id === "pgAcct") refreshAccts();
   if (id === "pgChat") { renderChatTabs(); renderChat(); }
   if (id === "settings") $("tokenIn").value = cmdToken;
 }
@@ -736,7 +776,54 @@ try {
 $("sfx").classList.toggle("on", fx);
 $("fxsel").value = fxPreset;
 applyTheme(); renderCsList(); renderMasterBinds(); renderMic(); renderNets();
+$("signDiscord").style.display = discordMode ? "block" : "none";
+$("signLegacy").style.display = discordMode ? "none" : "block";
+if (discordMode) $("signFoot").textContent = "Access is gated: Discord confirms who you are, COMMAND decides who gets in, and the relay itself refuses anyone unapproved.";
 addLog("sys", "", "FleetComm console initialized — awaiting sign-in");
+
+/* ══ ACCOUNTS page (command) ══ */
+async function refreshAccts() {
+  const [ra, rn] = await Promise.all([
+    ipcRenderer.invoke("acct", { method: "GET", path: "/api/accounts" }),
+    ipcRenderer.invoke("acct", { method: "GET", path: "/api/nets/access" })
+  ]);
+  if (!ra.ok) { $("acctList").innerHTML = '<span class="hint">' + esc(ra.error || "unavailable") + "</span>"; return; }
+  const pend = ra.accounts.filter(x => x.role === "pending").length;
+  $("acctPending").textContent = pend ? pend + " AWAITING APPROVAL" : "";
+  const order = { pending: 0, command: 1, member: 2, revoked: 3 };
+  $("acctList").innerHTML = ra.accounts.sort((x, y) => (order[x.role] - order[y.role]) || x.discordName.localeCompare(y.discordName)).map(x => {
+    const btns =
+      (x.role === "pending" ? '<button class="ann lit-g" data-role="member">APPROVE</button>' : "") +
+      (x.role === "member" ? '<button class="ann lit-c" data-role="command">PROMOTE</button>' : "") +
+      (x.role === "command" ? '<button class="ann" data-role="member">DEMOTE</button>' : "") +
+      (x.role !== "revoked" ? '<button class="ann" style="border-color:var(--red);color:var(--red)" data-role="revoked">REVOKE</button>'
+                            : '<button class="ann lit-g" data-role="member">REINSTATE</button>');
+    return '<div class="acctrow" data-id="' + x.discordId + '"><div class="nm"><b>' + esc(x.callsign || "(no callsign yet)") + '</b>' +
+      '<span>discord: ' + esc(x.discordName) + " · " + (x.lastSeen ? "seen " + new Date(x.lastSeen).toLocaleString() : "never seen") + "</span></div>" +
+      '<span class="ann rolelbl ' + (x.role === "command" ? "lit-a" : x.role === "member" ? "lit-g" : "") + '">' + x.role.toUpperCase() + "</span>" + btns + "</div>";
+  }).join("");
+  const levels = ["open", "member", "command"];
+  const rows = [];
+  nets.forEach(n => rows.push({ name: n.cfg.name, freq: n.cfg.freq }));
+  $("netAccess").innerHTML = rows.map(r =>
+    '<div class="narow" data-net="' + esc(r.name) + '"><b>' + esc(r.name) + '</b><span class="fq2 num">' + r.freq + "</span>" +
+    '<select class="orgsel" data-lvl>' + levels.map(l =>
+      '<option value="' + l + '"' + (((rn.ok && rn.access[r.name]) || "open") === l ? " selected" : "") + ">" +
+      (l === "open" ? "OPEN — anyone approved" : l === "member" ? "MEMBERS+" : "COMMAND ONLY") + "</option>").join("") + "</select></div>"
+  ).join("");
+}
+$("acctList").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-role]"); if (!b) return;
+  const id = b.closest(".acctrow").dataset.id;
+  const r = await ipcRenderer.invoke("acct", { method: "POST", path: "/api/accounts/" + id + "/role", body: { role: b.dataset.role } });
+  if (!r.ok) toast(r.error); else { toast("Role updated."); refreshAccts(); }
+});
+$("netAccess").addEventListener("change", async (e) => {
+  const s2 = e.target.closest("[data-lvl]"); if (!s2) return;
+  const net = s2.closest(".narow").dataset.net;
+  const r = await ipcRenderer.invoke("acct", { method: "POST", path: "/api/nets/access", body: { net, level: s2.value } });
+  toast(r.ok ? net + " → " + s2.value.toUpperCase() + " (relay-enforced)" : "Failed: " + r.error);
+});
 
 /* headless CI hook */
 if (process.env.FLEETCOMM_AUTOTEST) {

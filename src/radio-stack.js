@@ -25,8 +25,8 @@ class RadioStack extends EventEmitter {
     const username = sanitizeUser(this.opts.callsign) + "|" + netCfg.freq;
     const client = new MumbleClient({
       host: this.opts.host, port: this.opts.port,
-      username, tokens: this.opts.tokens || [],
-      cert: this.opts.cert, key: this.opts.key, release: "FleetComm 0.2"
+      username, tokens: this.opts.tokens || [], password: this.opts.password || "",
+      cert: this.opts.cert, key: this.opts.key, release: "FleetComm"
     });
     const net = { cfg: netCfg, client, channelId: null, idx };
     this.nets.push(net);

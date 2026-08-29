@@ -3,7 +3,9 @@
 const { app, BrowserWindow, ipcMain, shell, screen } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const http = require("http");
 const https = require("https");
+const crypto = require("crypto");
 const { RadioStack } = require("./src/radio-stack");
 const { loadOrCreate } = require("./src/identity");
 
@@ -133,6 +135,84 @@ function downloadFile(url, dest, onPct, depth) {
     req.on("timeout", () => { req.destroy(); reject(new Error("download timeout")); });
   });
 }
+/* ── Discord sign-in (PKCE, loopback — no client secret anywhere) ── */
+const OAUTH_PORT = 53682;
+let acctToken = null;
+function b64url(buf) { return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
+function postForm(url, form) {
+  return new Promise((resolve, reject) => {
+    const data = new URLSearchParams(form).toString();
+    const u = new URL(url);
+    const req = https.request({ hostname: u.hostname, path: u.pathname, method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", "Content-Length": Buffer.byteLength(data) }, timeout: 15000 },
+      (res) => { let d = ""; res.on("data", c => d += c); res.on("end", () => {
+        try { const j = JSON.parse(d); res.statusCode === 200 ? resolve(j) : reject(new Error(j.error_description || j.error || ("HTTP " + res.statusCode))); }
+        catch (e) { reject(e); } }); });
+    req.on("error", reject); req.on("timeout", () => { req.destroy(); reject(new Error("timeout")); });
+    req.write(data); req.end();
+  });
+}
+function jsonCall(base, method, pathName, bodyObj, bearer) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(base + pathName);
+    const lib = u.protocol === "https:" ? https : http;
+    const data = bodyObj ? JSON.stringify(bodyObj) : null;
+    const req = lib.request({ hostname: u.hostname, port: u.port, path: u.pathname, method,
+      headers: Object.assign({ "Content-Type": "application/json" },
+        data ? { "Content-Length": Buffer.byteLength(data) } : {},
+        bearer ? { Authorization: "Bearer " + bearer } : {}), timeout: 12000 },
+      (res) => { let d = ""; res.on("data", c => d += c); res.on("end", () => {
+        try { resolve(JSON.parse(d)); } catch (e) { reject(new Error("bad response")); } }); });
+    req.on("error", reject); req.on("timeout", () => { req.destroy(); reject(new Error("service timeout")); });
+    if (data) req.write(data); req.end();
+  });
+}
+ipcMain.handle("discord-login", async () => {
+  const cfg = require("./config/22nd-package.json").accounts;
+  if (!cfg || !cfg.url || !cfg.discordClientId) return { ok: false, unconfigured: true };
+  const verifier = b64url(crypto.randomBytes(32));
+  const challenge = b64url(crypto.createHash("sha256").update(verifier).digest());
+  const state = b64url(crypto.randomBytes(16));
+  const redirect = "http://127.0.0.1:" + OAUTH_PORT + "/callback";
+  const authUrl = "https://discord.com/oauth2/authorize?response_type=code&client_id=" + cfg.discordClientId +
+    "&scope=identify&redirect_uri=" + encodeURIComponent(redirect) + "&state=" + state +
+    "&code_challenge=" + challenge + "&code_challenge_method=S256";
+  let code;
+  try {
+    code = await new Promise((resolve, reject) => {
+      const srv = http.createServer((req2, res2) => {
+        const u = new URL(req2.url, "http://x");
+        if (u.pathname !== "/callback") { res2.writeHead(404); return res2.end(); }
+        res2.writeHead(200, { "Content-Type": "text/html" });
+        res2.end("<body style='font-family:sans-serif;background:#0b0f13;color:#e8edf1;display:grid;place-items:center;height:100vh'><div><h2>FleetComm</h2>Signed in — you can close this tab and return to the app.</div></body>");
+        srv.close();
+        if (u.searchParams.get("state") !== state) return reject(new Error("state mismatch"));
+        if (u.searchParams.get("error")) return reject(new Error(u.searchParams.get("error")));
+        resolve(u.searchParams.get("code"));
+      });
+      srv.on("error", (e) => reject(new Error(e.code === "EADDRINUSE" ? "port 53682 busy — close other FleetComm sign-ins" : e.message)));
+      srv.listen(OAUTH_PORT, "127.0.0.1", () => shell.openExternal(authUrl));
+      setTimeout(() => { try { srv.close(); } catch (e) {} reject(new Error("sign-in timed out")); }, 180000);
+    });
+  } catch (e) { return { ok: false, error: e.message }; }
+  try {
+    const tok = await postForm("https://discord.com/api/oauth2/token", {
+      client_id: cfg.discordClientId, grant_type: "authorization_code",
+      code, redirect_uri: redirect, code_verifier: verifier
+    });
+    const login = await jsonCall(cfg.url, "POST", "/api/login", { discordToken: tok.access_token });
+    if (login.ok) acctToken = login.token;
+    return login;
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+ipcMain.handle("acct", async (ev, { method, path: p, body: b }) => {
+  const cfg = require("./config/22nd-package.json").accounts;
+  if (!cfg || !cfg.url) return { ok: false, error: "accounts service not configured" };
+  if (!acctToken) return { ok: false, error: "not signed in" };
+  try { return await jsonCall(cfg.url, method || "GET", p, b || null, acctToken); }
+  catch (e) { return { ok: false, error: e.message }; }
+});
+
 ipcMain.handle("do-update", async (ev, info) => {
   const pkgCfg = require("./config/22nd-package.json");
   const origExe = process.env.PORTABLE_EXECUTABLE_FILE;
@@ -209,10 +289,11 @@ app.whenReady().then(async () => {
   }
 });
 
-ipcMain.handle("connect", async (ev, { host, port, callsign, nets, token }) => {
+ipcMain.handle("connect", async (ev, { host, port, callsign, nets, token, relayPassword, roleTokens }) => {
   if (stack) stack.destroy();
+  const allTokens = [].concat(roleTokens || [], token ? [token] : []);
   stack = new RadioStack({ host, port: port || 64738, callsign,
-    tokens: token ? [token] : [],
+    tokens: allTokens, password: relayPassword || "",
     cert: identity && identity.cert, key: identity && identity.key });
   stack.on("rx", (r) => sendWin("rx", { idx: r.idx, session: r.session, name: r.name, opus: r.opus, last: r.last }));
   stack.on("chat", (m) => sendWin("chat", m));
