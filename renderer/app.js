@@ -1029,11 +1029,21 @@ function showUpdate(r) {
   $("updbar").dataset.url = r.url; $("updbar").dataset.version = r.version;
 }
 ipcRenderer.on("update-available", (ev, r) => showUpdate(r));
+/* what happened to the last automatic attempt, reported on the way back up */
+ipcRenderer.on("update-note", (ev, note) => {
+  if (!note) return;
+  if (note.installed) { toast("Updated to FleetComm v" + note.installed + "."); addLog("sys", "", "auto-update installed v" + note.installed); return; }
+  if (note.failed) {
+    showUpdate({ version: note.target || "", url: (pkg.updates && pkg.updates.releases) || "" });
+    $("updtext").textContent = "Automatic update didn't take — " + note.reason + ". Install it manually?";
+    addLog("sys", "", "auto-update failed: " + note.reason + " — falling back to the banner");
+  }
+});
 ipcRenderer.on("update-auto-offer", async (ev, r) => {
   if (!autoUpdate || connected) return;   /* never yank the app out from under a live op */
   $("updtext").textContent = "Installing FleetComm v" + r.version + " automatically…";
   $("updgo").style.display = "none";
-  const res = await ipcRenderer.invoke("do-update", { version: r.version });
+  const res = await ipcRenderer.invoke("do-update", { version: r.version, auto: true });
   if (res && res.ok) { $("updtext").textContent = "Update installed — restarting…"; return; }
   $("updgo").style.display = "";
   $("updtext").textContent = "FleetComm v" + r.version + " is available";

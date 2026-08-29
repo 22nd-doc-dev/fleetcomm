@@ -1,13 +1,13 @@
 {
   "name": "fleetcomm",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "description": "FleetComm \u2014 multi-net voice radio for the 22nd Expeditionary Fleet (QLink successor). Mumble-protocol backbone, radio-rack UI.",
   "author": "Rook \"Doc\" Sabbah \u2014 22nd Expeditionary Fleet",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "seed": "node scripts/seed-channels.js",
-    "test": "node test/integration.js && node test/stack-test.js && node test/permissions-test.js && node test/comms-test.js && node test/nest-test.js && node test/netedit-test.js && node test/accounts-test.js",
+    "test": "node test/integration.js && node test/stack-test.js && node test/permissions-test.js && node test/comms-test.js && node test/nest-test.js && node test/netedit-test.js && node test/update-test.js && node test/accounts-test.js",
     "admin-token": "node scripts/set-admin-token.js",
     "dist:win": "electron-builder --win --x64 --publish never",
     "dist:mac": "electron-builder --mac zip --publish never"

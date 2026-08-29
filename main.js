@@ -76,12 +76,7 @@ ipcMain.on("ov-state", (ev, nets) => {
 });
 
 /* ── update check ── */
-function cmpVer(a, b) {
-  const pa = String(a).replace(/^v/, "").split(".").map(Number);
-  const pb = String(b).replace(/^v/, "").split(".").map(Number);
-  for (let i = 0; i < 3; i++) { if ((pa[i] || 0) > (pb[i] || 0)) return 1; if ((pa[i] || 0) < (pb[i] || 0)) return -1; }
-  return 0;
-}
+const { cmpVer, reconcile: reconcileState, blocked, attempt } = require("./src/update-guard");
 function fetchJson(url) {
   return new Promise((resolve, reject) => {
     const req = https.get(url, { timeout: 8000 }, (res) => {
@@ -258,6 +253,36 @@ ipcMain.handle("acct", async (ev, { method, path: p, body: b }) => {
   catch (e) { return { ok: false, error: e.message }; }
 });
 
+/* ── update attempt bookkeeping ──
+   An updater that retries automatically after a failed swap is an updater that
+   can spin: relaunch, see the same new version, try again, forever. So every
+   automatic attempt is recorded before we hand off, and checked on the way back
+   up. If we return still running the old version, that version gets exactly one
+   automatic try and never another — it falls back to the banner, which explains
+   what happened and leaves the decision with the operator. */
+const updStatePath = () => path.join(app.getPath("userData"), "update-state.json");
+function readUpdState() { try { return JSON.parse(fs.readFileSync(updStatePath(), "utf8")); } catch (e) { return {}; } }
+/* Returns whether the record actually persisted. This matters: the loop guard
+   lives in that file, so if we cannot write it we cannot promise a failed swap
+   won't be retried forever — and in that case we decline to auto-install at all
+   and leave it to the banner. Failing closed beats spinning. */
+function writeUpdState(s) {
+  try {
+    fs.writeFileSync(updStatePath(), JSON.stringify(s));
+    return JSON.parse(fs.readFileSync(updStatePath(), "utf8")).target === s.target;
+  } catch (e) { return false; }
+}
+let updateNote = null;   /* what to tell the renderer about the last attempt */
+
+function reconcileUpdate() {
+  const r = reconcileState(app.getVersion(), readUpdState(), process.argv.includes("--update-failed"));
+  writeUpdState(r.state);
+  updateNote = r.note;
+}
+function autoUpdateBlocked(version) { return blocked(readUpdState(), version); }
+
+ipcMain.handle("update-note", () => updateNote);
+
 ipcMain.handle("do-update", async (ev, info) => {
   const pkgCfg = require("./config/22nd-package.json");
   const origExe = process.env.PORTABLE_EXECUTABLE_FILE;
@@ -267,17 +292,67 @@ ipcMain.handle("do-update", async (ev, info) => {
     const url = tpl.split("{v}").join(info.version);
     const fresh = path.join(app.getPath("temp"), "FleetComm-" + info.version + ".exe");
     const bytes = await downloadFile(url, fresh, (pct) => sendWin("update-progress", pct));
-    if (bytes < 50 * 1024 * 1024) throw new Error("download looks incomplete (" + bytes + " bytes)");
+    if (bytes < 40 * 1024 * 1024) throw new Error("download looks incomplete (" + bytes + " bytes)");
+    /* make sure we got a Windows binary and not an HTML error page */
+    const head = Buffer.alloc(2);
+    const fd = fs.openSync(fresh, "r"); fs.readSync(fd, head, 0, 2, 0); fs.closeSync(fd);
+    if (head.toString("latin1") !== "MZ") throw new Error("downloaded file is not a Windows executable");
+
+    /* The swap script waits for the file to actually be free rather than
+       guessing with a fixed sleep, verifies the new exe is in place before it
+       relaunches, and puts the old one back if anything goes wrong — so a
+       failed update leaves a working FleetComm, never a half-swapped one. */
     const script = path.join(app.getPath("temp"), "fleetcomm-update.cmd");
     fs.writeFileSync(script, [
       "@echo off",
-      "timeout /t 2 /nobreak >nul",
-      'move /y "' + origExe + '" "' + origExe + '.old" >nul',
-      'move /y "' + fresh + '" "' + origExe + '" >nul',
-      'start "" "' + origExe + '"',
-      'del "' + origExe + '.old" >nul 2>&1',
-      'del "%~f0"'
+      'set "EXE=' + origExe + '"',
+      'set "NEW=' + fresh + '"',
+      'set "BAK=' + origExe + '.old"',
+      'set "PID=' + process.pid + '"',
+      /* Wait for THIS process to be gone before relaunching. FleetComm holds a
+         single-instance lock, so a relaunch that overlaps the old process makes
+         the fresh copy quit on startup and hand focus back to the old window —
+         which looks exactly like "it reopened the old version". */
+      "set /a w=0",
+      ":wait",
+      "set /a w+=1",
+      'tasklist /fi "PID eq %PID%" 2>nul | find "%PID%" >nul || goto gone',
+      "if %w% geq 30 goto gone",
+      "ping -n 2 127.0.0.1 >nul",
+      "goto wait",
+      ":gone",
+      "set /a n=0",
+      ":swap",
+      "set /a n+=1",
+      'move /y "%EXE%" "%BAK%" >nul 2>&1',
+      "if not errorlevel 1 goto moved",
+      "if %n% geq 30 goto fail",
+      /* NOT `timeout` — we are spawned with stdio ignored, so its stdin is NUL
+         and it exits immediately with "input redirection is not supported",
+         which is how the old script raced the still-running app, failed the
+         move, and relaunched the OLD exe. ping always waits. */
+      "ping -n 2 127.0.0.1 >nul",
+      "goto swap",
+      ":moved",
+      'move /y "%NEW%" "%EXE%" >nul 2>&1',
+      "if errorlevel 1 goto restore",
+      'if not exist "%EXE%" goto restore',
+      'del "%BAK%" >nul 2>&1',
+      'start "" "%EXE%"',
+      "goto done",
+      ":restore",
+      'if exist "%BAK%" move /y "%BAK%" "%EXE%" >nul 2>&1',
+      'start "" "%EXE%" --update-failed',
+      "goto done",
+      ":fail",
+      'if exist "%BAK%" move /y "%BAK%" "%EXE%" >nul 2>&1',
+      'start "" "%EXE%" --update-failed',
+      ":done",
+      'del "%~f0" >nul 2>&1'
     ].join("\r\n"));
+
+    if (!writeUpdState(attempt(info.version)) && info.auto)
+      return { ok: false, error: "can't record the attempt, so it won't be installed unattended" };
     require("child_process").spawn("cmd.exe", ["/c", script], { detached: true, stdio: "ignore", windowsHide: true }).unref();
     setTimeout(shutdown, 300);
     return { ok: true };
@@ -375,13 +450,17 @@ ipcMain.handle("create-net", async (ev, { name, rootChannel }) => {
 ipcMain.on("disconnect", () => { if (stack) { stack.destroy(); stack = null; } });
 
 app.whenReady().then(() => {
+  reconcileUpdate();
   setTimeout(async () => {
+    if (updateNote) sendWin("update-note", updateNote);
     const r = await checkUpdates();
     if (r.status !== "update") return;
     sendWin("update-available", r);
     /* Silent path: on Windows portable builds we can fetch and swap ourselves.
-       The renderer decides whether to allow it (SYS toggle) and calls back. */
-    sendWin("update-auto-offer", r);
+       The renderer decides whether to allow it (SYS toggle) and calls back.
+       One automatic attempt per version — after that it's the banner, so a
+       swap that can't complete can never turn into a restart loop. */
+    if (!autoUpdateBlocked(r.version)) sendWin("update-auto-offer", r);
   }, 2500);
 });
 

@@ -1,4 +1,4 @@
 {
-  "version": "0.9.1",
-  "notes": "Fixes the right-click net editor: APPLY was dying on a missing helper and doing nothing at all, and the menu greyed out every option except properties on nets you hadn't tuned. You can now edit any net on the relay whether or not you're tuned to it, typed frequencies like \"250\" or \"290.5\" normalize properly, and a refused change tells you exactly what the relay said instead of failing silently."
+  "version": "0.9.2",
+  "notes": "Fixes the auto-updater restart loop. The swap script used `timeout`, which exits instantly when the app launches it detached, so it raced the still-running app, failed the swap, and relaunched the old build \u2014 forever. It now waits for the app to actually exit, verifies the new exe is in place before relaunching, restores the old one if anything goes wrong, and will only ever attempt one automatic install per version. If that attempt doesn't take, you get the banner and the reason instead of a loop."
 }
