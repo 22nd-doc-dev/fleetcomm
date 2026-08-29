@@ -135,6 +135,51 @@ function downloadFile(url, dest, onPct, depth) {
     req.on("timeout", () => { req.destroy(); reject(new Error("download timeout")); });
   });
 }
+/* ── soundboard library (files live in userData/sounds) ── */
+const soundsDir = () => {
+  const d = path.join(app.getPath("userData"), "sounds");
+  try { fs.mkdirSync(d, { recursive: true }); } catch (e) {}
+  return d;
+};
+ipcMain.handle("sounds-list", () => {
+  try {
+    return fs.readdirSync(soundsDir())
+      .filter(f => /\.(wav|mp3|ogg|m4a|flac|webm)$/i.test(f))
+      .map(f => ({ name: f, path: path.join(soundsDir(), f), size: fs.statSync(path.join(soundsDir(), f)).size }));
+  } catch (e) { return []; }
+});
+ipcMain.handle("sounds-add", async () => {
+  const { dialog } = require("electron");
+  const r = await dialog.showOpenDialog(win, {
+    title: "Add soundboard clips",
+    properties: ["openFile", "multiSelections"],
+    filters: [{ name: "Audio", extensions: ["wav", "mp3", "ogg", "m4a", "flac", "webm"] }]
+  });
+  if (r.canceled) return { ok: false, canceled: true };
+  const added = [];
+  for (const f of r.filePaths) {
+    try {
+      const base = path.basename(f).replace(/[^\w.\- ]+/g, "_");
+      const dest = path.join(soundsDir(), base);
+      const stat = fs.statSync(f);
+      if (stat.size > 12 * 1024 * 1024) continue; /* keep clips sane */
+      fs.copyFileSync(f, dest);
+      added.push(base);
+    } catch (e) {}
+  }
+  return { ok: true, added };
+});
+ipcMain.handle("sounds-read", (ev, name) => {
+  try {
+    const p = path.join(soundsDir(), path.basename(name));
+    return { ok: true, data: fs.readFileSync(p).buffer };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+ipcMain.handle("sounds-delete", (ev, name) => {
+  try { fs.unlinkSync(path.join(soundsDir(), path.basename(name))); return { ok: true }; }
+  catch (e) { return { ok: false, error: e.message }; }
+});
+
 /* ── Discord sign-in (PKCE, loopback — no client secret anywhere) ── */
 const OAUTH_PORT = 53682;
 let acctToken = null;
@@ -313,7 +358,8 @@ ipcMain.handle("tune", async (ev, net) => {
   catch (e) { return { ok: false, error: e.message }; }
 });
 ipcMain.on("detune", (ev, idx) => stack && stack.detune(idx));
-ipcMain.on("tx-frame", (ev, { idx, frame, last }) => stack && stack.txFrame(idx, Buffer.from(frame), last));
+ipcMain.on("tx-frame", (ev, { idx, frame, last, broadcast }) => stack && stack.txFrame(idx, Buffer.from(frame), last, broadcast));
+ipcMain.handle("arm-broadcast", (ev, idx) => stack ? stack.armBroadcast(idx) : false);
 ipcMain.on("net-mute", (ev, { idx, muted }) => stack && stack.setMuted(idx, muted));
 ipcMain.on("send-text", (ev, { idx, message }) => stack && stack.sendText(idx, message));
 ipcMain.handle("atc-view", () => stack ? stack.atcView() : []);

@@ -1,4 +1,4 @@
 {
-  "version": "0.7.1",
-  "notes": "Discord sign-in enabled for the 22nd. Approval queue, roles, and relay-enforced net access are live."
+  "version": "0.8.0",
+  "notes": "Nest broadcast (key a ship net, reach every subnet), collapsible net tree, fixed net creation with a real dialog, and shipwide soundboards on ship nets."
 }

@@ -17,7 +17,8 @@ let customTheme = store.get("customTheme", { bg: "#071219", panel: "#0c1b23", in
 let myCallsigns = store.get("callsigns", []);
 let callsign = store.get("callsign", "");
 let cmdToken = store.get("cmdToken", "");
-let netPrefs = store.get("netPrefs", {}); // freq -> {txOn, vol, pan, mon, bind}
+let netPrefs = store.get("netPrefs", {}); // freq -> {txOn, vol, pan, mon, bind, bcast}
+let collapsed = store.get("collapsed", {}); // parent net name -> true
 let masterBinds = store.get("masterBinds5", {
   active: { src: "label", label: "Space" },
   cycUp: { src: "label", label: "PageUp" },
@@ -35,17 +36,22 @@ function buildNets() {
       cfg, depth, parent, tuned: false, idx: null,
       mon: p.mon !== undefined ? p.mon : true,
       txOn: p.txOn || false, vol: p.vol !== undefined ? p.vol : 75, pan: p.pan || 0,
-      bind: p.bind || null, roster: new Map(), speaking: new Map(), chat: [], tx: false
+      bind: p.bind || null, bcast: p.bcast || false,
+      roster: new Map(), speaking: new Map(), chat: [], tx: false
     });
   };
   for (const n of pkg.nets) { add(n, 0, null); for (const s of n.subnets || []) add(s, 1, n.name); }
 }
 buildNets();
 function savePrefs() {
-  nets.forEach(n => { netPrefs[n.cfg.freq] = { txOn: n.txOn, vol: n.vol, pan: n.pan, mon: n.mon, bind: n.bind }; });
+  nets.forEach(n => { netPrefs[n.cfg.freq] = { txOn: n.txOn, vol: n.vol, pan: n.pan, mon: n.mon, bind: n.bind, bcast: n.bcast }; });
   store.set("netPrefs", netPrefs);
+  store.set("collapsed", collapsed);
 }
 const sel = () => nets[selectedI];
+const kidsOf = (name) => nets.filter(x => x.parent === name);
+const isParent = (n) => n.depth === 0 && (kidsOf(n.cfg.name).length > 0 || (n.cfg.subnets || []).length > 0);
+const isShip = (n) => !!n.cfg.ship;
 
 /* ══ color helpers + theme engine ══ */
 function hexRgb(h) { h = h.replace("#", ""); return [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)]; }
@@ -148,7 +154,7 @@ window.addEventListener("keyup", (e) => { if (!gActive) onKeyUp("dom", e.code, e
 /* ══ AUDIO ══ */
 const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
 const FRAME = 960;
-let capNode = null, txSet = new Set(), txEndPending = new Set();
+let capNode = null, txSet = new Set(), txEndPending = new Set(), bcastIdx = new Set();
 const encoder = new OpusScript(48000, 1, OpusScript.Application.VOIP);
 try { encoder.encoderCTL(4002, 40000); } catch (e) {}
 async function ensureMic() {
@@ -174,8 +180,8 @@ async function ensureMic() {
       const f32 = ev.data, i16 = Buffer.alloc(FRAME * 2);
       for (let i = 0; i < FRAME; i++) { const s = Math.max(-1, Math.min(1, f32[i])); i16.writeInt16LE((s * 32767) | 0, i * 2); }
       let opus; try { opus = Buffer.from(encoder.encode(i16, FRAME)); } catch (e) { return; }
-      for (const idx of txSet) ipcRenderer.send("tx-frame", { idx, frame: opus, last: false });
-      for (const idx of txEndPending) { ipcRenderer.send("tx-frame", { idx, frame: opus, last: true }); txEndPending.delete(idx); }
+      for (const idx of txSet) ipcRenderer.send("tx-frame", { idx, frame: opus, last: false, broadcast: bcastIdx.has(idx) });
+      for (const idx of txEndPending) { ipcRenderer.send("tx-frame", { idx, frame: opus, last: true, broadcast: bcastIdx.has(idx) }); txEndPending.delete(idx); }
     };
     micState = "ok"; renderMic(); return true;
   } catch (e) { micState = "denied"; renderMic(); toast("Microphone unavailable: " + e.message); return false; }
@@ -261,6 +267,7 @@ async function startTX(i, latched) {
   if (!n || !n.tuned || n.tx || !connected) return;
   if (!(await ensureMic())) return;
   n.tx = true; n._latched = !!latched; txSet.add(n.idx);
+  if (n.bcast) { bcastIdx.add(n.idx); await ipcRenderer.invoke("arm-broadcast", n.idx); } else bcastIdx.delete(n.idx);
   netDyn(i); sendOv(); renderTxTargets();
 }
 function endTX(i) {
@@ -319,17 +326,27 @@ const netlist = $("netlist");
 function renderNets() {
   netlist.innerHTML = "";
   nets.forEach((n, i) => {
+    if (n.depth && collapsed[n.parent]) return; /* hidden by collapsed parent */
+    const par = isParent(n), kids = par ? kidsOf(n.cfg.name) : [];
+    const anyKidTuned = kids.some(k => k.tuned);
     const d = document.createElement("div");
-    d.className = "net" + (n.depth ? " sub" : "") + (i === selectedI ? " sel" : "") + (n.tuned ? "" : " untuned") +
+    d.className = "net" + (n.depth ? " sub" : "") + (par ? " parent" : "") +
+      (par && anyKidTuned ? " hasnest" : "") + (par && n.bcast ? " bcast" : "") +
+      (i === selectedI ? " sel" : "") + (n.tuned ? "" : " untuned") +
       (n.tx ? " tx-live" : (n.speaking.size ? " rx-live" : ""));
     d.dataset.i = i;
-    let h = '<div class="nt" data-sel><span class="fq num">' + n.cfg.freq + '</span><b>' + n.cfg.name +
+    let h = '<div class="nt" data-sel>' +
+      (par ? '<button class="chev" data-chev title="collapse / expand nest">' + (collapsed[n.cfg.name] ? "▸" : "▾") + '</button>' : "") +
+      '<span class="fq num">' + n.cfg.freq + '</span><b>' + n.cfg.name +
       (n.cfg.enc ? ' <span class="enc">⚿</span>' : "") + '</b>' +
+      (isShip(n) ? '<span class="shipbadge">SHIP</span>' : "") +
+      (par ? '<span class="nestcount">' + kids.filter(k => k.tuned).length + "/" + kids.length + " NEST</span>" : "") +
       '<span class="cnt num" data-cnt>' + (n.tuned ? n.roster.size : "·") + '</span></div>';
     if (n.tuned) {
       h += '<div class="nrow">' +
         '<button class="ann' + (n.mon ? " lit-g" : "") + '" data-mon>LSN</button>' +
         '<button class="ann' + (n.txOn ? " lit-a" : "") + '" data-txon>TX</button>' +
+        (par ? '<button class="ann' + (n.bcast ? " lit-a" : "") + '" data-bcast title="Transmit to this net AND every subnet under it">NEST</button>' : "") +
         '<button class="keyb mono" data-key title="Per-net talk key — click, press a key or combo">' + (n.bind ? n.bind.label : "KEY") + '</button>' +
         '<button class="x" data-x title="Detune">✕</button></div>' +
         '<div class="srow"><label>VOL</label><input type="range" min="0" max="100" value="' + n.vol + '" data-vol>' +
@@ -363,7 +380,7 @@ function renderCenter() {
   $("rosterTitle").textContent = "ON NET — " + (n ? n.cfg.name : "");
   $("chatTitle").textContent = "NET TEXT — " + (n ? n.cfg.name : "");
   renderChatTabs();
-  renderRoster(); renderChat();
+  renderRoster(); renderChat(); renderSoundboard();
   const can = n && n.tuned && n.mon;
   $("chatIn").disabled = !can;
   $("chatIn").placeholder = can ? "message " + n.cfg.name + "…" : (n && n.tuned ? "enable LISTEN on this net to chat" : "tune this net to chat");
@@ -444,6 +461,17 @@ function sendOv() {
 netlist.addEventListener("click", async (e) => {
   const card = e.target.closest(".net"); if (!card) return;
   const i = +card.dataset.i, n = nets[i];
+  if (e.target.closest("[data-chev]")) {
+    collapsed[n.cfg.name] = !collapsed[n.cfg.name]; savePrefs(); renderNets(); return;
+  }
+  if (e.target.closest("[data-bcast]")) {
+    n.bcast = !n.bcast;
+    if (n.bcast && n.tuned) ipcRenderer.invoke("arm-broadcast", n.idx).then(ok => {
+      if (!ok) { n.bcast = false; toast("Couldn't arm nest broadcast."); renderNets(); }
+      else addLog("sys", n.cfg.name, "NEST BROADCAST armed — TX reaches all subnets");
+    });
+    savePrefs(); renderNets(); return;
+  }
   if (e.target.closest("[data-sel]")) { selectedI = i; renderNets(); return; }
   if (e.target.closest("[data-tune]")) { await tuneNet(i); return; }
   if (e.target.closest("[data-mon]")) { n.mon = !n.mon; ipcRenderer.send("net-mute", { idx: n.idx, muted: !n.mon }); savePrefs(); renderNets(); return; }
@@ -481,24 +509,129 @@ async function tuneNet(i, silent) {
   if (!r.ok) { if (!silent) toast("Tune failed: " + r.error); return false; }
   n.tuned = true; n.idx = r.idx;
   makeChain(n);
+  if (n.bcast) ipcRenderer.invoke("arm-broadcast", n.idx);
   if (!n.mon) ipcRenderer.send("net-mute", { idx: n.idx, muted: true });
   addLog("sys", n.cfg.name, "tuned — " + n.cfg.freq + " MHz");
   renderNets();
   return true;
 }
-$("addNetBtn").addEventListener("click", async () => {
-  const name = (prompt("Net name:") || "").trim().toUpperCase();
-  if (!name) return;
-  if (nets.some(n => n.cfg.name === name)) { toast("That net is already on your board."); return; }
-  const freq = (prompt("Frequency label (e.g. 290.500):") || "").trim() || "———.———";
-  const parent = (prompt("Parent net (blank = top level):") || "").trim().toUpperCase();
-  const cfg = { name, freq, enc: false, subnets: [] };
+/* Electron has no window.prompt — everything goes through this dialog. */
+function openNewNetDialog() {
+  if (!connected) { toast("Connect first."); return; }
+  if (!cmdToken) { toast("Creating nets requires COMMAND authority."); return; }
+  $("dlgName").value = ""; $("dlgFreq").value = ""; $("dlgShip").checked = false; $("dlgErr").textContent = "";
+  const opts = ['<option value="">— top level —</option>'].concat(
+    nets.filter(n => n.depth === 0).map(n => '<option value="' + esc(n.cfg.name) + '">under ' + esc(n.cfg.name) + "</option>"));
+  $("dlgParent").innerHTML = opts.join("");
+  const s = sel();
+  if (s) $("dlgParent").value = s.depth === 0 ? s.cfg.name : (s.parent || "");
+  $("dlg").classList.add("on");
+  setTimeout(() => $("dlgName").focus(), 30);
+}
+$("addNetBtn").addEventListener("click", openNewNetDialog);
+$("dlgCancel").addEventListener("click", () => $("dlg").classList.remove("on"));
+$("dlg").addEventListener("keydown", (e) => {
+  if (e.key === "Escape") $("dlg").classList.remove("on");
+  if (e.key === "Enter") $("dlgOk").click();
+  e.stopPropagation();
+});
+$("dlgOk").addEventListener("click", async function () {
+  const name = $("dlgName").value.trim().toUpperCase();
+  const freqRaw = $("dlgFreq").value.trim();
+  const parent = $("dlgParent").value;
+  if (!name) { $("dlgErr").textContent = "Give the net a name."; return; }
+  if (nets.some(n => n.cfg.name === name)) { $("dlgErr").textContent = "A net by that name is already on your board."; return; }
+  const freq = normFreq(freqRaw) || "———.———";
+  this.disabled = true; this.textContent = "CREATING…";
+  const cfg = { name, freq, enc: false, ship: $("dlgShip").checked, subnets: [] };
   const p = parent ? nets.find(n => n.cfg.name === parent && n.depth === 0) : null;
-  nets.push({ cfg, depth: p ? 1 : 0, parent: p ? p.cfg.name : null, tuned: false, idx: null, mon: true, txOn: false, vol: 75, pan: 0, bind: null, roster: new Map(), speaking: new Map(), chat: [], tx: false });
+  nets.push({ cfg, depth: p ? 1 : 0, parent: p ? p.cfg.name : null, tuned: false, idx: null,
+    mon: true, txOn: false, vol: 75, pan: 0, bind: null, bcast: false,
+    roster: new Map(), speaking: new Map(), chat: [], tx: false });
   const i = nets.length - 1;
   renderNets();
-  await tuneNet(i);
+  const ok = await tuneNet(i);
+  this.disabled = false; this.textContent = "CREATE ▸";
+  if (!ok) { nets.splice(i, 1); renderNets(); $("dlgErr").textContent = "The relay refused to create that net."; return; }
+  $("dlg").classList.remove("on");
+  selectedI = i; renderNets();
 });
+
+/* ══ SOUNDBOARD (ship nets only) ══
+   A clip is decoded, resampled to 48k mono, Opus-encoded and pushed down the
+   same TX path as the mic — so it honours nest broadcast and everyone on the
+   net (or the whole nest) hears it exactly like a transmission. */
+let sbSounds = [], sbPlaying = null;
+async function refreshSounds() {
+  sbSounds = await ipcRenderer.invoke("sounds-list");
+  renderSoundboard();
+}
+function renderSoundboard() {
+  const n = sel();
+  const show = n && isShip(n) && n.tuned;
+  $("sbPanel").style.display = show ? "block" : "none";
+  if (!show) return;
+  $("sbNet").textContent = n.cfg.name + (n.bcast ? " (NEST)" : "");
+  $("sbList").innerHTML = sbSounds.length
+    ? sbSounds.map(s => '<button class="sbBtn' + (sbPlaying === s.name ? " playing" : "") + '" data-snd="' + esc(s.name) + '">' +
+        esc(s.name.replace(/\.[^.]+$/, "")) + '<span class="del" data-del="' + esc(s.name) + '">✕</span></button>').join("")
+    : '<span class="hint">no clips yet — ADD CLIPS to build the ship\'s soundboard</span>';
+}
+$("sbAdd").addEventListener("click", async () => {
+  const r = await ipcRenderer.invoke("sounds-add");
+  if (r.ok && r.added.length) { toast("Added " + r.added.length + " clip(s)."); refreshSounds(); }
+});
+$("sbList").addEventListener("click", async (e) => {
+  const del = e.target.closest("[data-del]");
+  if (del) {
+    e.stopPropagation();
+    await ipcRenderer.invoke("sounds-delete", del.dataset.del);
+    refreshSounds(); return;
+  }
+  const b = e.target.closest("[data-snd]"); if (!b) return;
+  playClipOnNet(b.dataset.snd, sel());
+});
+async function playClipOnNet(name, net) {
+  if (!net || !net.tuned) { toast("Tune the net first."); return; }
+  if (sbPlaying) { toast("A clip is already playing."); return; }
+  const r = await ipcRenderer.invoke("sounds-read", name);
+  if (!r.ok) { toast("Couldn't read clip: " + r.error); return; }
+  let audio;
+  try { audio = await ctx.decodeAudioData(r.data); }
+  catch (e) { toast("Unsupported audio format: " + name); return; }
+  /* mix to mono at the context's 48k rate */
+  const len = audio.length, chans = audio.numberOfChannels;
+  const mono = new Float32Array(len);
+  for (let c = 0; c < chans; c++) {
+    const d = audio.getChannelData(c);
+    for (let i = 0; i < len; i++) mono[i] += d[i] / chans;
+  }
+  sbPlaying = name; renderSoundboard();
+  addLog("tx", net.cfg.name, "SHIPWIDE CLIP — " + name + (net.bcast ? " (nest)" : ""));
+  if (net.bcast) await ipcRenderer.invoke("arm-broadcast", net.idx);
+  /* local monitor so the sender hears it too */
+  const src = ctx.createBufferSource(); src.buffer = audio;
+  const g = ctx.createGain(); g.gain.value = 0.5;
+  src.connect(g); g.connect(ctx.destination); src.start();
+
+  const enc = new OpusScript(48000, 1, OpusScript.Application.AUDIO);
+  const i16 = Buffer.alloc(FRAME * 2);
+  let pos = 0;
+  const pump = setInterval(() => {
+    if (pos >= len) {
+      clearInterval(pump);
+      try { ipcRenderer.send("tx-frame", { idx: net.idx, frame: Buffer.from(enc.encode(Buffer.alloc(FRAME * 2), FRAME)), last: true, broadcast: !!net.bcast }); } catch (e) {}
+      sbPlaying = null; renderSoundboard();
+      return;
+    }
+    for (let i = 0; i < FRAME; i++) {
+      const s = pos + i < len ? Math.max(-1, Math.min(1, mono[pos + i])) : 0;
+      i16.writeInt16LE((s * 32767) | 0, i * 2);
+    }
+    pos += FRAME;
+    try { ipcRenderer.send("tx-frame", { idx: net.idx, frame: Buffer.from(enc.encode(i16, FRAME)), last: false, broadcast: !!net.bcast }); } catch (e) {}
+  }, 20);
+}
 
 /* ══ IPC: voice / roster / chat ══ */
 ipcRenderer.on("rx", (ev, r) => {
@@ -775,7 +908,7 @@ try {
 } catch (e) {}
 $("sfx").classList.toggle("on", fx);
 $("fxsel").value = fxPreset;
-applyTheme(); renderCsList(); renderMasterBinds(); renderMic(); renderNets();
+applyTheme(); renderCsList(); renderMasterBinds(); renderMic(); renderNets(); refreshSounds();
 $("signDiscord").style.display = discordMode ? "block" : "none";
 $("signLegacy").style.display = discordMode ? "none" : "block";
 if (discordMode) $("signFoot").textContent = "Access is gated: Discord confirms who you are, COMMAND decides who gets in, and the relay itself refuses anyone unapproved.";

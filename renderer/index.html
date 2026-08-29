@@ -102,7 +102,19 @@
   #chanCol{width:300px;flex:0 0 auto;border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
   #netlist{flex:1;overflow-y:auto;padding:6px}
   .net{border:1px solid var(--line);border-radius:4px;margin-bottom:5px;background:var(--panel);padding:7px 9px}
-  .net.sub{margin-left:14px}
+  .net.sub{margin-left:20px;position:relative}
+  .net.sub::before{content:"";position:absolute;left:-11px;top:-4px;bottom:50%;width:1px;background:var(--line2)}
+  .net.sub::after{content:"";position:absolute;left:-11px;top:50%;width:8px;height:1px;background:var(--line2)}
+  .net.sub.lastchild::before{bottom:50%}
+  .chev{border:none;background:none;color:var(--muted);font-size:10px;padding:0 3px;width:16px;flex:0 0 auto}
+  .chev:hover{color:var(--holo)}
+  .net.parent{border-left:3px solid var(--line2)}
+  .net.parent.hasnest{border-left-color:var(--holo)}
+  .nestcount{font-size:8.5px;font-weight:900;letter-spacing:1px;color:var(--muted);
+    border:1px solid var(--line2);border-radius:3px;padding:1px 5px}
+  .net.parent.bcast{border-left-color:var(--amber)}
+  .shipbadge{font-size:8px;font-weight:900;letter-spacing:1px;color:var(--holo);
+    border:1px solid var(--holo);border-radius:3px;padding:1px 4px}
   .net.sel{border-color:var(--holo);box-shadow:0 0 0 1px var(--holo)}
   .net.untuned{opacity:.55}
   .nt{display:flex;align-items:baseline;gap:8px;cursor:pointer}
@@ -252,6 +264,28 @@
     background:var(--panel);padding:7px 11px;margin-bottom:5px}
   .narow b{font-size:12px;letter-spacing:.5px;flex:1}
   .narow .fq2{font-size:10.5px;color:var(--muted)}
+  /* modal dialog (replaces window.prompt, which Electron doesn't implement) */
+  #dlg{position:fixed;inset:0;background:rgba(3,8,11,.72);display:none;align-items:center;justify-content:center;z-index:80;padding:20px}
+  #dlg.on{display:flex}
+  #dlgBox{width:min(460px,100%);background:var(--panel);border:1px solid var(--bezline);border-radius:6px;
+    padding:22px 24px;box-shadow:var(--shadow)}
+  #dlgBox h3{margin:0 0 14px;font-size:15px;letter-spacing:1.5px}
+  #dlgBox .kv{margin-bottom:10px}
+  #dlgBox .row{display:flex;align-items:center;gap:8px;margin:10px 0}
+  #dlgBox .row label{font-size:11.5px;color:var(--muted)}
+  /* soundboard */
+  #sbPanel{border-top:1px solid var(--line);padding:9px 10px}
+  #sbHead{display:flex;align-items:center;gap:8px;font-size:9px;font-weight:900;letter-spacing:1.5px;color:var(--muted);margin-bottom:7px}
+  #sbHead .addsb{margin-left:auto;border:1px solid var(--line2);background:transparent;color:var(--muted);
+    border-radius:3px;padding:2px 8px;font-size:9px;font-weight:900;letter-spacing:1px}
+  #sbHead .addsb:hover{border-color:var(--holo);color:var(--holo)}
+  #sbList{display:flex;flex-wrap:wrap;gap:5px}
+  .sbBtn{border:1px solid var(--line2);background:var(--panel);border-radius:3px;padding:5px 9px;
+    font-size:10.5px;font-weight:700;color:var(--ink);max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .sbBtn:hover{border-color:var(--amber);color:var(--amber)}
+  .sbBtn.playing{border-color:var(--amber);background:var(--amber-tint);color:var(--amber)}
+  .sbBtn .del{color:var(--muted);margin-left:6px;font-size:10px}
+  .sbBtn .del:hover{color:var(--red)}
   .toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);z-index:90;
     background:var(--panel);border:1px solid var(--amber);border-radius:5px;padding:10px 16px;
     font-size:13px;box-shadow:var(--shadow);display:none;max-width:90vw}
@@ -291,6 +325,11 @@
     <div id="commsMain">
       <div class="ph"><span id="rosterTitle">ON NET</span><span class="r" id="rosterCount"></span></div>
       <div id="rosterChips"></div>
+      <div id="sbPanel" style="display:none">
+        <div id="sbHead">SHIPWIDE SOUNDBOARD — <span id="sbNet"></span>
+          <button class="addsb" id="sbAdd">+ ADD CLIPS</button></div>
+        <div id="sbList"></div>
+      </div>
       <div class="ph">COMM LOG<span class="r" style="color:var(--grn)">LIVE</span></div>
       <div id="logFeed"></div>
     </div>
@@ -398,6 +437,15 @@
       Once COMMAND enables Discord sign-in, access is gated and role-based.</div>
   </div>
 </div>
+<div id="dlg"><div id="dlgBox">
+  <h3 id="dlgTitle">NEW NET</h3>
+  <div class="kv"><label>NET NAME</label><input id="dlgName" class="mono" placeholder="e.g. STRIKE TWO"></div>
+  <div class="kv"><label>FREQUENCY</label><input id="dlgFreq" class="mono" placeholder="e.g. 290.500"></div>
+  <div class="kv"><label>NEST UNDER (optional)</label><select id="dlgParent" class="orgsel" style="width:100%"></select></div>
+  <div class="row"><input type="checkbox" id="dlgShip"><label for="dlgShip">This is a ship net (enables shipwide soundboard)</label></div>
+  <p class="hint" id="dlgErr" style="color:var(--red);text-align:left;min-height:16px"></p>
+  <div class="wnav"><button class="btn ghost" id="dlgCancel">CANCEL</button><button class="btn big" id="dlgOk">CREATE ▸</button></div>
+</div></div>
 <div class="toast" id="toast"></div>
 <script src="app.js"></script>
 </body>

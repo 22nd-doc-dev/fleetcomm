@@ -81,7 +81,8 @@
           "freq": "265.500",
           "enc": false
         }
-      ]
+      ],
+      "ship": true
     },
     {
       "name": "51ST SHOCK REGIMENT",
@@ -93,6 +94,31 @@
         {
           "name": "REAPER 1",
           "freq": "271.100",
+          "enc": false
+        }
+      ]
+    },
+    {
+      "name": "UEENS MINERVA",
+      "freq": "268.000",
+      "enc": false,
+      "defaultKey": "",
+      "monitor": false,
+      "ship": true,
+      "subnets": [
+        {
+          "name": "MINERVA BRIDGE",
+          "freq": "268.100",
+          "enc": false
+        },
+        {
+          "name": "MINERVA DECK",
+          "freq": "268.200",
+          "enc": false
+        },
+        {
+          "name": "MINERVA ENGINEERING",
+          "freq": "268.300",
           "enc": false
         }
       ]

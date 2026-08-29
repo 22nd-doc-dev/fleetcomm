@@ -62,9 +62,19 @@ class RadioStack extends EventEmitter {
     net.dead = true;
   }
 
-  txFrame(idx, opusFrame, last) {
+  /* Register a voice target that fans out to this net AND every subnet under it.
+     Mumble does the fan-out server-side: one transmission, whole nest hears it. */
+  armBroadcast(idx) {
     const net = this.nets[idx];
-    if (net && !net.dead) net.client.sendVoice(opusFrame, 0, last);
+    if (!net || net.dead || net.channelId == null) return false;
+    net.client.send("VoiceTarget", { id: 1, targets: [{ channelId: net.channelId, children: true }] });
+    net.broadcastArmed = true;
+    return true;
+  }
+  txFrame(idx, opusFrame, last, broadcast) {
+    const net = this.nets[idx];
+    if (!net || net.dead) return;
+    net.client.sendVoice(opusFrame, broadcast && net.broadcastArmed ? 1 : 0, last);
   }
 
   setMuted(idx, muted) { if (this.nets[idx]) this.nets[idx].muted = muted; }
