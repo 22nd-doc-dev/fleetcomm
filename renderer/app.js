@@ -292,7 +292,7 @@ function txNames(t) { return t.map(i => nets[i].cfg.name).join(", "); }
 async function setOpenMic(on) {
   openMic = on;
   $("openMicBtn").classList.toggle("latched", on);
-  $("openMicBtn").textContent = on ? "◉ OPEN MIC ENGAGED — click to end" : "◉ OPEN MIC — continuous, no hold";
+  $("openMicBtn").textContent = on ? "OPEN MIC ENGAGED — click to end" : "OPEN MIC — continuous";
   $("ptt").classList.toggle("hot", on || pttHeld);
   const t = txTargetIdxs();
   if (on) {
@@ -308,7 +308,7 @@ function setOverride(on) {
   if (!cmdToken) { toast("COMMAND OVERRIDE requires a command token (⚙ Settings)."); return; }
   override = on;
   $("overrideBtn").classList.toggle("latched", on);
-  $("overrideBtn").textContent = on ? "⚠ OVERRIDE ENGAGED — all tuned nets" : "⚠ COMMAND OVERRIDE — all tuned nets";
+  $("overrideBtn").textContent = on ? "OVERRIDE ENGAGED — click to end" : "CMD OVERRIDE — all tuned";
   addLog("sys", "", on ? "COMMAND OVERRIDE ENGAGED — PTT now keys every tuned net" : "Command override disengaged");
   if (!on && (openMic || pttHeld)) { nets.forEach((n, i) => { if (n.tx && !n.txOn) endTX(i); }); }
   renderTxTargets();
@@ -321,16 +321,16 @@ function renderNets() {
   nets.forEach((n, i) => {
     const d = document.createElement("div");
     d.className = "net" + (n.depth ? " sub" : "") + (i === selectedI ? " sel" : "") + (n.tuned ? "" : " untuned") +
-      (n.tx ? " tx" : (n.speaking.size ? " rx" : ""));
+      (n.tx ? " tx-live" : (n.speaking.size ? " rx-live" : ""));
     d.dataset.i = i;
-    let h = '<div class="nt" data-sel><span class="lamp"></span><b>' + n.cfg.name +
-      (n.cfg.enc ? ' <span class="enc">🔒</span>' : "") + '</b><span class="fr mono">' + n.cfg.freq + '</span>' +
-      '<span class="cnt" data-cnt>' + (n.tuned ? n.roster.size : "—") + '</span></div>';
+    let h = '<div class="nt" data-sel><span class="fq num">' + n.cfg.freq + '</span><b>' + n.cfg.name +
+      (n.cfg.enc ? ' <span class="enc">⚿</span>' : "") + '</b>' +
+      '<span class="cnt num" data-cnt>' + (n.tuned ? n.roster.size : "·") + '</span></div>';
     if (n.tuned) {
       h += '<div class="nrow">' +
-        '<button class="pill' + (n.mon ? " on" : "") + '" data-mon>LISTEN</button>' +
-        '<button class="pill' + (n.txOn ? " ontx" : "") + '" data-txon>TX</button>' +
-        '<button class="keyb mono" data-key title="Per-net talk key — click, press a key or combo">' + (n.bind ? n.bind.label : "key") + '</button>' +
+        '<button class="ann' + (n.mon ? " lit-g" : "") + '" data-mon>LSN</button>' +
+        '<button class="ann' + (n.txOn ? " lit-a" : "") + '" data-txon>TX</button>' +
+        '<button class="keyb mono" data-key title="Per-net talk key — click, press a key or combo">' + (n.bind ? n.bind.label : "KEY") + '</button>' +
         '<button class="x" data-x title="Detune">✕</button></div>' +
         '<div class="srow"><label>VOL</label><input type="range" min="0" max="100" value="' + n.vol + '" data-vol>' +
         '<label style="width:20px">L·R</label><input type="range" class="pan" min="-100" max="100" value="' + n.pan + '" data-pan></div>';
@@ -346,15 +346,23 @@ function renderNets() {
 function netDyn(i) {
   const n = nets[i], el = netlist.querySelector('[data-i="' + i + '"]');
   if (!el) return;
-  el.classList.toggle("tx", !!n.tx);
-  el.classList.toggle("rx", !n.tx && n.speaking.size > 0);
+  el.classList.toggle("tx-live", !!n.tx);
+  el.classList.toggle("rx-live", !n.tx && n.speaking.size > 0);
   const c = el.querySelector("[data-cnt]"); if (c) c.textContent = n.tuned ? n.roster.size : "—";
   if (i === selectedI) renderRoster();
 }
+function renderChatTabs() {
+  const tuned = nets.map((n, i) => i).filter(i => nets[i].tuned);
+  $("chatTabs").innerHTML = tuned.map(i =>
+    '<button class="ctab' + (i === selectedI ? " on" : "") + '" data-ci="' + i + '">' + esc(nets[i].cfg.name) +
+    (nets[i].chat.length ? ' <span class="num">' + nets[i].chat.length + '</span>' : "") + '</button>').join("") ||
+    '<span class="hint">no nets tuned</span>';
+}
 function renderCenter() {
   const n = sel();
-  $("rosterTitle").textContent = "ROSTER — " + (n ? n.cfg.name : "");
-  $("chatTitle").textContent = "NET CHAT — " + (n ? n.cfg.name : "");
+  $("rosterTitle").textContent = "ON NET — " + (n ? n.cfg.name : "");
+  $("chatTitle").textContent = "NET TEXT — " + (n ? n.cfg.name : "");
+  renderChatTabs();
   renderRoster(); renderChat();
   const can = n && n.tuned && n.mon;
   $("chatIn").disabled = !can;
@@ -384,14 +392,15 @@ function renderChat() {
 function esc(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
 function renderTxTargets() {
   const t = txTargetIdxs(), el = $("txTargets");
-  if (override) { el.className = ""; el.innerHTML = '<span class="on">ALL TUNED NETS — OVERRIDE</span>'; }
-  else if (t.length) { el.className = ""; el.innerHTML = t.map(i => '<span class="on">' + nets[i].cfg.name + '</span>').join(" · "); }
-  else { el.className = "none"; el.textContent = "NO NET SELECTED"; }
+  if (override) el.innerHTML = '<span class="ann lit-a">OVERRIDE — ALL TUNED</span>';
+  else if (t.length) el.innerHTML = t.map(i => '<span class="ann lit-a">' + esc(nets[i].cfg.name) + '</span>').join("");
+  else el.innerHTML = '<span class="ann">NO NET</span>';
+  document.body.classList.toggle("ovr", override);
   $("overrideBtn").style.display = cmdToken ? "block" : "none";
 }
 function renderMic() {
-  $("micDot").className = "dot" + (micState === "ok" ? " on" : micState === "denied" ? " warn" : "");
-  $("micLbl").textContent = micState === "ok" ? "MIC LIVE" : micState === "denied" ? "MIC BLOCKED" : "MIC NOT REQUESTED";
+  $("micLbl").className = "v" + (micState === "ok" ? " ok" : micState === "denied" ? " warn" : " dim");
+  $("micLbl").textContent = micState === "ok" ? "LIVE" : micState === "denied" ? "BLOCKED" : "NOT REQ";
   $("micBtn").className = "wide" + (micState === "ok" ? " ok" : "");
   $("micBtn").textContent = micState === "ok" ? "✓ MICROPHONE ENABLED" : "ENABLE MICROPHONE";
 }
@@ -538,6 +547,10 @@ function sendChat() {
   $("chatIn").value = ""; renderChat();
 }
 $("chatSend").addEventListener("click", sendChat);
+$("chatTabs").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-ci]"); if (!b) return;
+  selectedI = +b.dataset.ci; renderNets(); renderChatTabs(); renderChat();
+});
 $("chatIn").addEventListener("keydown", (e) => { if (e.key === "Enter") sendChat(); e.stopPropagation(); });
 ipcRenderer.on("net-down", (ev, r) => {
   const i = nets.findIndex(x => x.idx === r.idx); if (i < 0) return;
@@ -596,7 +609,7 @@ $("connectBtn").addEventListener("click", async () => {
   connected = true;
   selectedI = nets.findIndex(n => n.tuned);
   $("connectOv").classList.add("hidden");
-  $("relayDot").className = "dot on"; $("relayLbl").textContent = "RELAY LIVE · " + pkg.shortname;
+  $("relayLbl").className = "v ok"; $("relayLbl").textContent = "LIVE · " + pkg.shortname;
   $("opchip").style.display = ""; $("opname").textContent = callsign;
   $("oprole").textContent = cmdToken ? "COMMAND" : "";
   $("authName").textContent = callsign; $("authRole").textContent = cmdToken ? "COMMAND" : "OPERATOR";
@@ -605,25 +618,23 @@ $("connectBtn").addEventListener("click", async () => {
 });
 $("disconnBtn").addEventListener("click", () => {
   ipcRenderer.send("disconnect"); connected = false;
-  buildNets(); renderNets();
-  $("settings").classList.add("hidden"); $("connectOv").classList.remove("hidden");
-  $("relayDot").className = "dot"; $("relayLbl").textContent = "RELAY OFFLINE";
+  buildNets(); renderNets(); showPage("pgComms");
+  $("connectOv").classList.remove("hidden");
+  $("relayLbl").className = "v dim"; $("relayLbl").textContent = "OFFLINE";
   $("opchip").style.display = "none";
 });
 
 /* ══ ATC + operators count ══ */
-async function openAtc() {
+async function refreshAtc() {
   const view = await ipcRenderer.invoke("atc-view");
-  const grid = $("atcGrid");
   const boxes = view.filter(c => c.id !== 0);
   const names = new Set(); view.forEach(c => c.users.forEach(u => names.add(u)));
   $("atcCount").textContent = names.size;
-  grid.innerHTML = boxes.map(c =>
+  $("atcGrid").innerHTML = boxes.map(c =>
     '<div class="atcbox"><h4>' + esc(c.name) + '<span class="c">' + c.users.length + '</span></h4>' +
     '<div class="who">' + (c.users.length ? c.users.map(u => "<i>" + esc(u) + "</i>").join("") : '<span class="empty">empty</span>') + '</div>' +
     '<button class="tunelink" data-name="' + esc(c.name) + '">TUNE ME HERE ▸</button></div>'
   ).join("");
-  $("atcOv").classList.remove("hidden");
 }
 $("atcGrid").addEventListener("click", async (e) => {
   const b = e.target.closest("[data-name]"); if (!b) return;
@@ -633,13 +644,21 @@ $("atcGrid").addEventListener("click", async (e) => {
     nets.push({ cfg: { name: nm, freq: "———.———", enc: false }, depth: 0, parent: null, tuned: false, idx: null, mon: true, txOn: false, vol: 75, pan: 0, bind: null, roster: new Map(), speaking: new Map(), chat: [], tx: false });
     i = nets.length - 1;
   }
-  $("atcOv").classList.add("hidden");
+  showPage("pgComms");
   await tuneNet(i);
   selectedI = i; renderNets();
 });
-$("tabAtc").addEventListener("click", () => { if (connected) openAtc(); else toast("Connect first."); });
-$("tabVoice").addEventListener("click", () => $("atcOv").classList.add("hidden"));
-$("atcClose").addEventListener("click", () => $("atcOv").classList.add("hidden"));
+function showPage(id) {
+  if (id === "pgAtc" && !connected) { toast("Connect first."); return; }
+  const leavingSys = document.getElementById("settings").classList.contains("on") && id !== "settings";
+  if (leavingSys) { cmdToken = $("tokenIn").value.trim(); store.set("cmdToken", cmdToken); renderTxTargets(); }
+  document.querySelectorAll(".page").forEach(p => p.classList.toggle("on", p.id === id));
+  document.querySelectorAll(".pkey").forEach(k => k.classList.toggle("on", k.dataset.page === id));
+  if (id === "pgAtc") refreshAtc();
+  if (id === "pgChat") { renderChatTabs(); renderChat(); }
+  if (id === "settings") $("tokenIn").value = cmdToken;
+}
+document.querySelectorAll(".pkey").forEach(k => k.addEventListener("click", () => showPage(k.dataset.page)));
 let opsTimer = null;
 function pollOps() {
   clearInterval(opsTimer);
@@ -657,11 +676,7 @@ $("sthemesel").addEventListener("change", function () { themeMode = this.value; 
 [["c_bg","bg"],["c_panel","panel"],["c_ink","ink"],["c_accent","accent"]].forEach(([id, key]) => {
   $(id).addEventListener("input", function () { customTheme[key] = this.value; themeMode = "custom"; applyTheme(); });
 });
-$("setbtn").addEventListener("click", () => { $("tokenIn").value = cmdToken; $("settings").classList.remove("hidden"); });
-$("closeSet").addEventListener("click", () => {
-  cmdToken = $("tokenIn").value.trim(); store.set("cmdToken", cmdToken);
-  $("settings").classList.add("hidden"); renderTxTargets();
-});
+$("closeSet").addEventListener("click", () => showPage("pgComms"));
 $("sfx").addEventListener("click", function () { fx = !fx; this.classList.toggle("on", fx); store.set("fx", fx); if (fx) chirpDown(); });
 $("fxsel").addEventListener("change", function () {
   fxPreset = this.value; store.set("fxPreset", fxPreset);
@@ -715,7 +730,7 @@ setInterval(() => { $("clock").textContent = utc(); }, 1000);
 /* init */
 try {
   const _v = "v" + require("../package.json").version;
-  $("verlbl").textContent = "FLEETCOMM " + _v + ' · developed by Rook "Doc" Sabbah of the UEE 22nd Expeditionary Fleet';
+  $("verlbl").textContent = "FLEETCOMM " + _v + ' — native unit: in-game PTT + overlay · developed by Rook "Doc" Sabbah, UEE 22nd Expeditionary Fleet';
   $("verlbl2").textContent = _v;
 } catch (e) {}
 $("sfx").classList.toggle("on", fx);

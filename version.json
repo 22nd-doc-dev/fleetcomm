@@ -1,4 +1,4 @@
 {
-  "version": "0.5.0",
-  "notes": "Command console: all-new UI, net hierarchy with subnets, multi-net simulcast TX, per-net text chat, transmission log, live rosters, open mic, command override, ATC board."
+  "version": "0.6.0",
+  "notes": "All-new Bridge MFD identity: bezel page keys (COMMS/CHAT/ATC/SYS), instrument readouts, annunciator lights, avionics day/night modes, dedicated chat page."
 }

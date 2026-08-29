@@ -5,366 +5,366 @@
 <title>FleetComm</title>
 <link rel="stylesheet" href="app.css">
 <style>
-  /* ══ FleetComm v0.5 — command console ══ */
+  /* ══ FleetComm — COMM MANAGEMENT UNIT (bridge MFD identity) ══
+     Avionics rules: neutral slate screen, white data, semantic color only —
+     green = receiving/good · amber = transmitting/caution · red = warning · cyan = cursor */
   :root, [data-theme="dark"]{
-    --bg:#071219; --grid:rgba(56,209,232,.035);
-    --panel:#0c1b23; --tint:#0a161d;
-    --line:#1b3440; --line2:#28495a;
-    --ink:#d9edf4; --muted:#7fa3b2;
-    --holo:#38d1e8; --holo-bright:#38d1e8; --holo-tint:rgba(56,209,232,.12);
-    --amber:#e8a53a; --amber-tint:rgba(232,165,58,.12);
-    --red:#ff5a66; --red-tint:#3a1218;
-    --ok:#3ddc97; --ok-tint:#0c2b21;
-    --tx:#fb923c; --tx-tint:rgba(251,146,60,.14);
-    --shadow:0 8px 26px rgba(0,0,0,.4); --lamp-off:#24404e;
+    --bez:#1c2126; --bez2:#252b31; --bezline:#31383f;
+    --bg:#0b0f13; --panel:#11161b; --tint:#0d1216;
+    --line:#242b32; --line2:#39424b;
+    --ink:#e8edf1; --muted:#8b979f;
+    --holo:#4fd4e8; --holo-tint:rgba(79,212,232,.13);
+    --grn:#49d17c; --grn-tint:rgba(73,209,124,.12);
+    --amber:#ffb648; --amber-tint:rgba(255,182,72,.13);
+    --red:#ff5a5a; --red-tint:rgba(255,90,90,.14);
+    --tx:#ffb648; --tx-tint:rgba(255,182,72,.13);
+    --ok:#49d17c; --ok-tint:rgba(73,209,124,.12);
+    --grid:transparent; --lamp-off:#222a31;
+    --shadow:0 10px 30px rgba(0,0,0,.45);
   }
-  [data-theme="light"]{
-    --bg:#e9eff4; --grid:rgba(12,138,166,.06);
-    --panel:#ffffff; --tint:#f0f6f9;
-    --line:#cfdde6; --line2:#b3c8d6;
-    --ink:#12242e; --muted:#587485;
-    --holo:#0c8aa6; --holo-bright:#0c8aa6; --holo-tint:rgba(12,138,166,.1);
-    --amber:#b26e0d; --amber-tint:rgba(178,110,13,.12);
-    --tx:#c2410c; --tx-tint:rgba(194,65,12,.12);
-    --ok:#0b7a55; --ok-tint:#e7f8f1;
-    --lamp-off:#c8d4de; --shadow:0 6px 22px rgba(40,70,90,.12);
+  [data-theme="light"]{ /* avionics DAY mode: white screen, black data */
+    --bez:#c8cdd2; --bez2:#d7dbdf; --bezline:#aeb5bb;
+    --bg:#f4f6f7; --panel:#ffffff; --tint:#eef1f3;
+    --line:#cdd4d9; --line2:#aab3ba;
+    --ink:#10181d; --muted:#5c6b74;
+    --holo:#0778f; --holo-tint:rgba(7,119,143,.1);
+    --grn:#0c8a4c; --grn-tint:rgba(12,138,76,.1);
+    --amber:#a86a00; --amber-tint:rgba(168,106,0,.12);
+    --red:#c22a2a; --red-tint:rgba(194,42,42,.1);
+    --tx:#a86a00; --tx-tint:rgba(168,106,0,.12);
+    --ok:#0c8a4c; --ok-tint:rgba(12,138,76,.1);
+    --lamp-off:#d4dade; --shadow:0 6px 20px rgba(30,40,50,.15);
   }
   *{box-sizing:border-box}
   html,body{height:100%}
-  body{margin:0;font:13.5px/1.45 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
-    color:var(--ink);background:
-      linear-gradient(var(--grid) 1px,transparent 1px),
-      linear-gradient(90deg,var(--grid) 1px,transparent 1px),var(--bg);
-    background-size:28px 28px,28px 28px,auto;
-    display:flex;flex-direction:column;overflow:hidden}
+  body{margin:0;font:13.5px/1.45 "Segoe UI",-apple-system,Roboto,Helvetica,Arial,sans-serif;
+    color:var(--ink);background:var(--bez);display:flex;flex-direction:column;overflow:hidden}
+  body.ovr{box-shadow:inset 0 0 0 3px var(--amber)}
   .mono{font-family:ui-monospace,Menlo,Consolas,monospace}
+  .num{font-family:ui-monospace,Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
   button{font:inherit;color:inherit;cursor:pointer}
   input,select,textarea{font:inherit;color:var(--ink)}
   ::-webkit-scrollbar{width:9px;height:9px}
-  ::-webkit-scrollbar-thumb{background:var(--line2);border-radius:5px}
+  ::-webkit-scrollbar-thumb{background:var(--line2);border-radius:2px}
   ::-webkit-scrollbar-track{background:transparent}
 
-  #titlebar{height:34px;flex:0 0 auto;-webkit-app-region:drag;display:flex;align-items:center;justify-content:center;
-    font-size:10px;letter-spacing:3px;font-weight:800;color:var(--muted);user-select:none;
-    border-bottom:1px solid var(--line);background:var(--tint)}
+  #titlebar{height:30px;flex:0 0 auto;-webkit-app-region:drag;display:flex;align-items:center;justify-content:center;
+    font-size:10px;letter-spacing:4px;font-weight:700;color:var(--muted);user-select:none;background:var(--bez)}
 
-  /* ── top bar ── */
-  #topbar{flex:0 0 auto;display:flex;align-items:center;gap:10px;padding:7px 12px;
-    background:var(--panel);border-bottom:1px solid var(--line)}
-  .brand{display:flex;align-items:baseline;gap:8px;min-width:0}
-  .brand b{font-size:15px;letter-spacing:3px;color:var(--holo)}
-  .brand span{font-size:10px;letter-spacing:1.5px;color:var(--muted);font-weight:700}
-  .tabs{display:flex;gap:4px;margin-left:14px}
-  .tab{border:1px solid var(--line);background:transparent;border-radius:6px;padding:5px 14px;
-    font-size:11px;font-weight:800;letter-spacing:1.5px;color:var(--muted)}
-  .tab.on{border-color:var(--holo);color:var(--holo);background:var(--holo-tint)}
-  #topbar .sp{flex:1}
-  .stat{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;font-weight:800;letter-spacing:.8px;color:var(--muted);white-space:nowrap}
-  .dot{width:7px;height:7px;border-radius:50%;background:var(--lamp-off);flex:0 0 auto}
-  .dot.on{background:var(--ok);box-shadow:0 0 5px var(--ok)}
-  .dot.warn{background:var(--amber);box-shadow:0 0 5px var(--amber)}
-  .opchip{border:1px solid var(--line2);border-radius:6px;padding:4px 10px;font-size:11px;font-weight:800;letter-spacing:.6px}
-  .opchip .role{color:var(--amber);margin-left:6px;font-size:9.5px;letter-spacing:1.2px}
-  #clock{font-size:12px;font-weight:800;letter-spacing:1.5px;color:var(--holo)}
-  .icobtn{border:1px solid var(--line);background:var(--tint);border-radius:6px;padding:5px 9px;
-    font-size:11px;font-weight:800;color:var(--muted)}
-  .icobtn:hover{border-color:var(--holo);color:var(--holo)}
-  .icobtn.onov{border-color:var(--holo);color:var(--holo);background:var(--holo-tint)}
+  /* ── bezel row: page keys + readouts ── */
+  #bezel{flex:0 0 auto;display:flex;align-items:stretch;gap:8px;padding:6px 10px 8px;background:var(--bez);
+    border-bottom:2px solid var(--bezline)}
+  #logo{display:flex;flex-direction:column;justify-content:center;padding:0 12px;border-right:1px solid var(--bezline)}
+  #logo b{font-size:14px;letter-spacing:2.5px}
+  #logo span{font-size:8.5px;letter-spacing:1.6px;color:var(--muted);font-weight:700}
+  .pkey{min-width:76px;border:1px solid var(--bezline);border-bottom-width:3px;border-radius:5px;
+    background:linear-gradient(var(--bez2),var(--bez));font-size:11px;font-weight:800;letter-spacing:1.6px;
+    color:var(--muted);padding:8px 12px}
+  .pkey:active{transform:translateY(1px);border-bottom-width:2px}
+  .pkey.on{color:var(--ink);border-color:var(--holo);background:linear-gradient(var(--bez2),var(--bez2));
+    box-shadow:inset 0 -3px 0 var(--holo)}
+  #bezel .sp{flex:1}
+  .rd{display:flex;flex-direction:column;justify-content:center;min-width:74px;padding:3px 10px;
+    border:1px solid var(--bezline);border-radius:5px;background:var(--bg)}
+  .rd label{font-size:8px;font-weight:800;letter-spacing:1.4px;color:var(--muted)}
+  .rd .v{font-size:12px;font-weight:800;letter-spacing:.5px;white-space:nowrap}
+  .rd .v.ok{color:var(--grn)} .rd .v.warn{color:var(--amber)} .rd .v.dim{color:var(--muted)}
+  .rd .v .role{color:var(--amber);font-size:9px;letter-spacing:1px;margin-left:5px}
+  .icobtn{border:1px solid var(--bezline);border-bottom-width:3px;border-radius:5px;
+    background:linear-gradient(var(--bez2),var(--bez));padding:6px 11px;font-size:12px;color:var(--muted)}
+  .icobtn:active{transform:translateY(1px)}
+  .icobtn.onov{color:var(--grn);box-shadow:inset 0 -3px 0 var(--grn)}
 
-  /* ── hazard strip ── */
-  #hazard{flex:0 0 auto;text-align:center;font-size:9.5px;font-weight:900;letter-spacing:3px;color:var(--amber);
-    padding:4px 0;border-top:1px solid var(--amber-tint);border-bottom:1px solid var(--line);
-    background:repeating-linear-gradient(-45deg,transparent 0 22px,var(--amber-tint) 22px 26px)}
+  #updbar{display:none;align-items:center;gap:10px;padding:7px 14px;background:var(--amber-tint);
+    border-bottom:1px solid var(--amber);color:var(--ink);font-weight:700;font-size:12.5px;flex:0 0 auto}
+  #updbar::before{content:"MAINT";font-size:9px;font-weight:900;letter-spacing:1px;color:var(--amber);
+    border:1px solid var(--amber);padding:2px 6px;border-radius:3px}
 
-  /* ── main grid ── */
-  #ops{flex:1;display:grid;grid-template-columns:262px minmax(0,1fr) 244px;min-height:0}
-  .pane-h{display:flex;align-items:center;gap:8px;padding:7px 11px;font-size:10px;font-weight:900;
-    letter-spacing:2px;color:var(--muted);border-bottom:1px solid var(--line);background:var(--tint);
-    text-transform:uppercase;flex:0 0 auto}
-  .pane-h .r{margin-left:auto;font-size:9.5px;letter-spacing:1px}
+  /* ── screen ── */
+  #screen{flex:1;display:flex;min-height:0;background:var(--bg);margin:0 8px 8px;border:1px solid var(--bezline);
+    border-radius:6px;overflow:hidden}
+  .page{display:none;flex:1;min-width:0;min-height:0}
+  .page.on{display:flex}
+  /* section headers = instrument labels */
+  .ph{display:flex;align-items:center;gap:8px;padding:6px 10px;font-size:9.5px;font-weight:900;
+    letter-spacing:2px;color:var(--muted);border-bottom:1px solid var(--line);flex:0 0 auto;background:var(--tint)}
+  .ph .r{margin-left:auto;letter-spacing:1px}
 
-  /* net rail */
-  #rail{border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0;background:var(--panel)}
-  #netlist{flex:1;overflow-y:auto;padding:7px}
-  .net{border:1px solid var(--line);border-radius:8px;padding:7px 9px;margin-bottom:6px;background:var(--tint);
-    transition:border-color .12s, box-shadow .12s}
-  .net.sub{margin-left:16px}
+  /* annunciators — dark until LIT (filled block, dark text) */
+  .ann{border:1px solid var(--line2);border-radius:3px;padding:3px 8px;font-size:9px;font-weight:900;
+    letter-spacing:1.2px;color:var(--muted);background:transparent;text-align:center}
+  .ann.lit-g{background:var(--grn);border-color:var(--grn);color:#06130b}
+  .ann.lit-a{background:var(--amber);border-color:var(--amber);color:#1d1300}
+  .ann.lit-c{background:var(--holo);border-color:var(--holo);color:#04191d}
+
+  /* ═ COMMS page ═ */
+  #pgComms{flex-direction:row}
+  #chanCol{width:300px;flex:0 0 auto;border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
+  #netlist{flex:1;overflow-y:auto;padding:6px}
+  .net{border:1px solid var(--line);border-radius:4px;margin-bottom:5px;background:var(--panel);padding:7px 9px}
+  .net.sub{margin-left:14px}
   .net.sel{border-color:var(--holo);box-shadow:0 0 0 1px var(--holo)}
-  .net.rx{border-color:var(--holo);box-shadow:0 0 7px var(--holo-tint)}
-  .net.tx{border-color:var(--tx);box-shadow:0 0 7px var(--tx-tint)}
-  .net.untuned{opacity:.62}
-  .nt{display:flex;align-items:center;gap:7px;cursor:pointer}
-  .nt .lamp{width:8px;height:8px;border-radius:50%;background:var(--lamp-off);flex:0 0 auto}
-  .net.rx .lamp{background:var(--holo);box-shadow:0 0 6px var(--holo)}
-  .net.tx .lamp{background:var(--tx);box-shadow:0 0 6px var(--tx)}
-  .nt b{font-size:12.5px;letter-spacing:.5px;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .nt .fr{font-size:10px;color:var(--muted);letter-spacing:1px}
-  .nt .cnt{font-size:9.5px;font-weight:900;color:var(--muted);border:1px solid var(--line);border-radius:4px;padding:1px 5px}
+  .net.untuned{opacity:.55}
+  .nt{display:flex;align-items:baseline;gap:8px;cursor:pointer}
+  .nt .fq{font-size:17px;font-weight:700;letter-spacing:1px}
+  .net.rx-live .fq{color:var(--grn)}
+  .net.tx-live .fq{color:var(--amber)}
+  .nt b{font-size:11px;font-weight:800;letter-spacing:.8px;flex:1;min-width:0;white-space:nowrap;
+    overflow:hidden;text-overflow:ellipsis;color:var(--muted)}
+  .net.sel .nt b{color:var(--ink)}
+  .nt .cnt{font-size:10px;color:var(--muted)}
   .nt .enc{color:var(--amber);font-size:10px}
-  .nrow{display:flex;align-items:center;gap:6px;margin-top:6px}
-  .pill{border:1px solid var(--line2);background:transparent;border-radius:5px;padding:3px 8px;
-    font-size:9.5px;font-weight:900;letter-spacing:1px;color:var(--muted)}
-  .pill.on{border-color:var(--ok);color:var(--ok);background:var(--ok-tint)}
-  .pill.ontx{border-color:var(--tx);color:var(--tx);background:var(--tx-tint)}
-  .nrow .keyb{margin-left:auto;border:1px dashed var(--line2);border-radius:5px;padding:3px 7px;
-    font-size:9.5px;font-weight:800;color:var(--muted);background:transparent}
+  .nrow{display:flex;align-items:center;gap:5px;margin-top:6px}
+  .nrow .keyb{margin-left:auto;border:1px dashed var(--line2);border-radius:3px;padding:2px 7px;
+    font-size:9px;font-weight:800;color:var(--muted);background:transparent}
   .nrow .keyb.listen{border-color:var(--amber);color:var(--amber);border-style:solid}
-  .nrow .x{border:none;background:none;color:var(--muted);font-size:12px;padding:0 3px}
+  .nrow .x{border:none;background:none;color:var(--muted);font-size:11px;padding:0 3px}
   .nrow .x:hover{color:var(--red)}
   .srow{display:flex;align-items:center;gap:6px;margin-top:5px}
-  .srow label{font-size:8.5px;font-weight:900;letter-spacing:1px;color:var(--muted);width:24px}
-  .srow input[type=range]{flex:1;height:14px;accent-color:var(--holo)}
-  .srow input.pan{max-width:64px}
-  .tunebtn{width:100%;margin-top:6px;border:1px solid var(--holo);background:var(--holo-tint);color:var(--holo);
-    border-radius:5px;padding:4px;font-size:10px;font-weight:900;letter-spacing:1.5px}
-  .addbtn{width:100%;border:1px dashed var(--line2);background:transparent;border-radius:8px;padding:7px;
-    font-size:10px;font-weight:800;letter-spacing:1px;color:var(--muted);margin-bottom:6px}
+  .srow label{font-size:8px;font-weight:900;letter-spacing:1px;color:var(--muted);width:22px}
+  .srow input[type=range]{flex:1;height:13px;accent-color:var(--holo)}
+  .srow input.pan{max-width:60px}
+  .tunebtn{width:100%;margin-top:6px;border:1px solid var(--line2);background:transparent;color:var(--muted);
+    border-radius:3px;padding:4px;font-size:9.5px;font-weight:900;letter-spacing:1.5px}
+  .tunebtn:hover{border-color:var(--grn);color:var(--grn)}
+  .addbtn{width:calc(100% - 12px);margin:0 6px 8px;border:1px dashed var(--line2);background:transparent;
+    border-radius:4px;padding:6px;font-size:9.5px;font-weight:800;letter-spacing:1px;color:var(--muted)}
   .addbtn:hover{border-color:var(--holo);color:var(--holo)}
 
-  /* center */
-  #center{display:flex;flex-direction:column;min-width:0;min-height:0}
-  #rosterPane{flex:0 0 auto;border-bottom:1px solid var(--line)}
-  #rosterChips{display:flex;gap:8px;flex-wrap:wrap;padding:9px 11px;min-height:52px;align-items:flex-start}
-  .rchip{border:1px solid var(--line2);border-radius:7px;padding:5px 10px;background:var(--tint)}
-  .rchip b{font-size:12px;letter-spacing:.5px;display:block}
-  .rchip span{font-size:9px;color:var(--muted);letter-spacing:1px;font-weight:800}
-  .rchip.speaking{border-color:var(--holo);box-shadow:0 0 7px var(--holo-tint)}
-  .rchip.speaking b{color:var(--holo)}
+  #commsMain{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0}
+  #rosterChips{display:flex;gap:6px;flex-wrap:wrap;padding:8px 10px;min-height:46px;border-bottom:1px solid var(--line)}
+  .rchip{border:1px solid var(--line2);border-radius:3px;padding:4px 9px;background:var(--panel)}
+  .rchip b{font-size:11.5px;letter-spacing:.5px;display:block}
+  .rchip span{font-size:8px;color:var(--muted);letter-spacing:1px;font-weight:900}
+  .rchip.speaking{border-color:var(--grn);background:var(--grn-tint)}
+  .rchip.speaking b{color:var(--grn)}
   .rchip.me{border-style:dashed}
-  #logPane{flex:1 1 44%;display:flex;flex-direction:column;min-height:0;border-bottom:1px solid var(--line)}
-  #logFeed{flex:1;overflow-y:auto;padding:8px 11px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;line-height:1.7}
+  #logFeed{flex:1;overflow-y:auto;padding:7px 10px;font-family:ui-monospace,Menlo,Consolas,monospace;
+    font-size:11.5px;line-height:1.75}
   .le{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .le .t{color:var(--muted)}
   .le .n{color:var(--holo);font-weight:700}
-  .le.sys .m{color:var(--muted)}
-  .le.tx .m{color:var(--tx)}
-  .le.chatline .m{color:var(--ink)}
-  #chatPane{flex:1 1 40%;display:flex;flex-direction:column;min-height:0}
-  #chatFeed{flex:1;overflow-y:auto;padding:8px 11px;font-size:12.5px;line-height:1.6}
-  .cm{margin-bottom:3px;word-wrap:break-word}
-  .cm b{color:var(--holo);font-size:11.5px;letter-spacing:.5px;margin-right:7px}
-  .cm .t{color:var(--muted);font-size:10px;margin-right:7px;font-family:ui-monospace,Menlo,Consolas,monospace}
+  .le.sys .m{color:var(--muted)} .le.tx .m{color:var(--amber)} .le.chatline .m{color:var(--ink)}
+
+  /* ═ CHAT page ═ */
+  #pgChat{flex-direction:column}
+  #chatTabs{display:flex;gap:5px;padding:7px 10px;border-bottom:1px solid var(--line);overflow-x:auto;flex:0 0 auto}
+  .ctab{border:1px solid var(--line2);border-radius:3px;background:transparent;color:var(--muted);
+    padding:5px 12px;font-size:10px;font-weight:800;letter-spacing:1px;white-space:nowrap}
+  .ctab.on{border-color:var(--holo);color:var(--ink);background:var(--holo-tint)}
+  #chatFeed{flex:1;overflow-y:auto;padding:10px 12px;font-size:13px;line-height:1.65}
+  .cm{margin-bottom:4px;word-wrap:break-word}
+  .cm b{color:var(--holo);font-size:12px;letter-spacing:.5px;margin-right:8px}
+  .cm .t{color:var(--muted);font-size:10px;margin-right:8px;font-family:ui-monospace,Menlo,Consolas,monospace}
   .cm.mine b{color:var(--amber)}
-  #chatBar{flex:0 0 auto;display:flex;gap:8px;padding:8px 11px;border-top:1px solid var(--line)}
-  #chatIn{flex:1;border:1px solid var(--line);border-radius:7px;padding:8px 11px;background:var(--tint)}
+  #chatBar{flex:0 0 auto;display:flex;gap:8px;padding:9px 12px;border-top:1px solid var(--line)}
+  #chatIn{flex:1;border:1px solid var(--line2);border-radius:4px;padding:9px 12px;background:var(--panel)}
   #chatIn:disabled{opacity:.5}
-  #chatSend{border:1px solid var(--holo);background:var(--holo-tint);color:var(--holo);border-radius:7px;
-    padding:8px 16px;font-weight:900;font-size:11px;letter-spacing:1.5px}
+  #chatSend{border:1px solid var(--line2);background:var(--tint);border-radius:4px;
+    padding:9px 18px;font-weight:900;font-size:11px;letter-spacing:1.5px;color:var(--muted)}
+  #chatSend:hover{border-color:var(--holo);color:var(--holo)}
 
-  /* tx rail */
-  #txrail{border-left:1px solid var(--line);background:var(--panel);display:flex;flex-direction:column;
-    min-height:0;overflow-y:auto;padding:11px;gap:10px}
-  .txh{font-size:9.5px;font-weight:900;letter-spacing:2px;color:var(--muted)}
-  #txTargets{font-size:13px;font-weight:800;line-height:1.5;min-height:20px}
-  #txTargets.none{color:var(--muted)}
-  #txTargets .on{color:var(--tx)}
-  #ptt{width:150px;height:150px;border-radius:50%;margin:6px auto;border:2px solid var(--line2);
-    background:radial-gradient(circle at 50% 40%, var(--tint), var(--panel));
-    font-size:12px;font-weight:900;letter-spacing:2px;color:var(--muted);user-select:none;-webkit-user-select:none;touch-action:none}
-  #ptt.hot{border-color:var(--tx);color:var(--tx);box-shadow:0 0 22px var(--tx-tint), inset 0 0 26px var(--tx-tint)}
-  .hint{font-size:10.5px;color:var(--muted);text-align:center;line-height:1.5}
-  .hint .keyb2{border:1px solid var(--line2);border-radius:4px;padding:1px 7px;font-weight:900;font-size:10px}
-  .hint a{color:var(--muted);text-decoration:underline;cursor:pointer}
-  .wide{width:100%;border:1px solid var(--line2);background:var(--tint);border-radius:7px;padding:9px;
-    font-size:10.5px;font-weight:900;letter-spacing:1px;color:var(--muted);text-align:center}
-  .wide.ok{border-color:var(--ok);color:var(--ok);background:var(--ok-tint)}
-  .wide.latched{border-color:var(--tx);color:var(--tx);background:var(--tx-tint)}
-  .wide.cmd{border-color:var(--amber);color:var(--amber)}
-  .wide.cmd.latched{background:var(--amber-tint);box-shadow:0 0 12px var(--amber-tint)}
-  .authbox{border:1px solid var(--line);border-radius:8px;padding:9px;background:var(--tint)}
-  .authbox .cs{font-size:14px;font-weight:900;letter-spacing:.5px}
-  .authbox .role{color:var(--amber);font-size:9.5px;font-weight:900;letter-spacing:1.5px;margin-left:6px}
-  .foot{font-size:9.5px;color:var(--muted);line-height:1.6;text-align:center;margin-top:auto}
+  /* ═ ATC page ═ */
+  #pgAtc{flex-direction:column}
+  #atcGrid{flex:1;overflow-y:auto;display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));
+    gap:8px;padding:10px;align-content:start}
+  .atcbox{border:1px solid var(--line2);border-radius:4px;background:var(--panel)}
+  .atcbox h4{margin:0;padding:6px 9px;font-size:10px;letter-spacing:1.4px;border-bottom:1px solid var(--line);
+    display:flex;justify-content:space-between}
+  .atcbox h4 .c{color:var(--muted)}
+  .atcbox .who{padding:7px 9px;display:flex;flex-wrap:wrap;gap:5px;min-height:28px}
+  .atcbox .who i{font-style:normal;font-size:10.5px;font-weight:700;border:1px solid var(--line2);border-radius:3px;padding:2px 7px}
+  .atcbox .who .empty{color:var(--muted);border:none}
+  .atcbox .tunelink{display:block;width:100%;border:none;background:none;color:var(--muted);font-size:9px;
+    letter-spacing:1.2px;font-weight:900;padding:5px;border-top:1px solid var(--line)}
+  .atcbox .tunelink:hover{color:var(--grn)}
 
-  /* modals */
-  .overlay{position:fixed;inset:0;background:rgba(3,10,14,.66);backdrop-filter:blur(3px);
-    display:flex;align-items:center;justify-content:center;padding:18px;z-index:50}
-  .overlay.hidden{display:none}
-  .modal{width:min(560px,100%);max-height:92vh;overflow-y:auto;background:var(--panel);
-    border:1px solid var(--line2);border-radius:12px;box-shadow:var(--shadow);padding:24px 26px}
-  .modal h2{margin:0 0 4px;font-size:19px;letter-spacing:1px}
-  .modal .sub{color:var(--muted);margin:0 0 16px;font-size:13px}
-  .miniheading{font-size:10px;font-weight:900;letter-spacing:2px;color:var(--muted);margin:14px 0 7px}
-  .kv{display:flex;flex-direction:column;gap:4px;margin-bottom:12px}
-  .kv label{font-size:10.5px;font-weight:900;letter-spacing:1.2px;color:var(--muted)}
-  .kv input{border:1px solid var(--line);border-radius:8px;padding:11px 12px;background:var(--tint);font-size:15px}
-  .btn{border:1px solid var(--holo);background:var(--holo-tint);color:var(--holo);
-    border-radius:8px;padding:10px 18px;font-weight:900;letter-spacing:1px;font-size:12px}
-  .btn.big{width:100%;font-size:13px;padding:12px}
-  .btn.ghost{border-color:var(--line2);background:transparent;color:var(--muted)}
-  .wnav{display:flex;gap:10px;margin-top:16px}
-  .wnav .btn{flex:1}
+  /* ═ SYS page ═ */
+  #settings{flex-direction:column}
+  #sysScroll{flex:1;overflow-y:auto;padding:14px 18px;max-width:660px}
+  .miniheading{font-size:9.5px;font-weight:900;letter-spacing:2px;color:var(--muted);margin:16px 0 6px}
   .togrow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 2px;border-bottom:1px solid var(--line)}
-  .togrow:last-of-type{border-bottom:none}
   .togrow .tl b{display:block;font-size:13px}
   .togrow .tl span{font-size:11.5px;color:var(--muted)}
-  .orgsel{border:1px solid var(--line);background:var(--tint);border-radius:7px;padding:7px 9px;font-weight:700;font-size:12px}
-  .keybadge{border:1px dashed var(--line2);background:transparent;border-radius:6px;padding:7px 12px;
+  .orgsel{border:1px solid var(--line2);background:var(--panel);border-radius:4px;padding:7px 9px;font-weight:700;font-size:12px}
+  .keybadge{border:1px dashed var(--line2);background:transparent;border-radius:4px;padding:7px 12px;
     font-weight:800;font-size:11px;color:var(--muted)}
   .keybadge.listen{border-color:var(--amber);color:var(--amber);border-style:solid}
-  .switch{position:relative;width:44px;height:24px;flex:0 0 auto;border:none;border-radius:999px;background:var(--line2);transition:background .15s}
-  .switch::after{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#fff;transition:left .15s}
-  .switch.on{background:var(--holo)}
-  .switch.on::after{left:23px}
-  .relaychip{display:flex;align-items:center;gap:8px;border:1px solid var(--ok);background:var(--ok-tint);
-    border-radius:8px;padding:10px 12px;font-weight:800;font-size:12.5px;margin-bottom:12px;color:var(--ok)}
-  .relaychip a{color:var(--muted);font-size:10.5px;margin-left:auto;text-decoration:underline;cursor:pointer}
-  /* sign-in card */
-  #connectOv .modal{width:min(420px,100%);text-align:center;padding:30px}
-  .crest{width:52px;height:52px;border-radius:10px;margin:0 auto 10px;position:relative;
-    background:var(--tint);border:1px solid var(--red);box-shadow:0 0 0 3px var(--red-tint)}
-  .crest::before{content:"";position:absolute;left:50%;top:52%;transform:translate(-50%,-50%);
-    width:0;height:0;border-left:13px solid transparent;border-right:13px solid transparent;border-bottom:22px solid var(--red)}
-  #connectOv h2{letter-spacing:5px;color:var(--holo)}
-  #connectOv .sub{letter-spacing:2px;font-size:10.5px;font-weight:800}
-  .signfoot{font-size:10.5px;color:var(--muted);line-height:1.65;text-align:left;margin-top:16px;
-    border-top:1px solid var(--line);padding-top:12px}
-  /* ATC board */
-  #atcOv .modal{width:min(980px,96vw)}
-  #atcGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-top:10px}
-  .atcbox{border:1px solid var(--line2);border-radius:8px;background:var(--tint)}
-  .atcbox h4{margin:0;padding:6px 9px;font-size:10px;letter-spacing:1.5px;border-bottom:1px solid var(--line);
-    display:flex;justify-content:space-between;color:var(--holo)}
-  .atcbox h4 .c{color:var(--muted)}
-  .atcbox .who{padding:7px 9px;display:flex;flex-wrap:wrap;gap:5px;min-height:30px}
-  .atcbox .who i{font-style:normal;font-size:10.5px;font-weight:800;border:1px solid var(--line2);border-radius:5px;padding:2px 7px}
-  .atcbox .who .empty{color:var(--muted);border:none;font-weight:600}
-  .atcbox .tunelink{display:block;width:100%;border:none;background:none;color:var(--muted);font-size:9.5px;
-    letter-spacing:1px;font-weight:900;padding:5px;border-top:1px solid var(--line)}
-  .atcbox .tunelink:hover{color:var(--holo)}
+  .switch{position:relative;width:44px;height:24px;flex:0 0 auto;border:1px solid var(--line2);border-radius:3px;background:var(--tint);transition:background .15s}
+  .switch::after{content:"";position:absolute;top:3px;left:4px;width:16px;height:16px;border-radius:2px;background:var(--muted);transition:left .15s,background .15s}
+  .switch.on{background:var(--grn-tint);border-color:var(--grn)}
+  .switch.on::after{left:22px;background:var(--grn)}
+  .kv{display:flex;flex-direction:column;gap:4px;margin:8px 0 12px}
+  .kv label{font-size:9.5px;font-weight:900;letter-spacing:1.5px;color:var(--muted)}
+  .kv input{border:1px solid var(--line2);border-radius:4px;padding:10px 12px;background:var(--panel);font-size:14px}
+  .btn{border:1px solid var(--line2);background:var(--tint);color:var(--ink);
+    border-radius:4px;padding:10px 18px;font-weight:900;letter-spacing:1px;font-size:11.5px}
+  .btn:hover{border-color:var(--holo)}
+  .btn.big{width:100%;font-size:12.5px;padding:12px}
+  .btn.ghost{color:var(--muted)}
+  .wnav{display:flex;gap:10px;margin-top:16px}
+  .wnav .btn{flex:1}
+
+  /* ═ radio head (persistent right rail) ═ */
+  #head{width:236px;flex:0 0 auto;border-left:1px solid var(--line);background:var(--tint);
+    display:flex;flex-direction:column;min-height:0;overflow-y:auto;padding:10px;gap:9px}
+  .txh{font-size:9px;font-weight:900;letter-spacing:2px;color:var(--muted)}
+  #txTargets{display:flex;flex-wrap:wrap;gap:5px;min-height:22px}
+  #txTargets .ann{font-size:9.5px}
+  #ptt{height:104px;border:1px solid var(--line2);border-bottom-width:4px;border-radius:6px;
+    background:linear-gradient(var(--panel),var(--tint));
+    font-size:13px;font-weight:900;letter-spacing:3px;color:var(--muted);user-select:none;-webkit-user-select:none;touch-action:none}
+  #ptt:active{transform:translateY(1px)}
+  #ptt.hot{border-color:var(--amber);color:var(--amber);background:var(--amber-tint);box-shadow:inset 0 0 0 1px var(--amber)}
+  .hint{font-size:10px;color:var(--muted);text-align:center;line-height:1.5}
+  .hint .keyb2{border:1px solid var(--line2);border-radius:3px;padding:1px 7px;font-weight:900;font-size:9.5px}
+  .hint a{color:var(--muted);text-decoration:underline;cursor:pointer}
+  .wide{width:100%;border:1px solid var(--line2);background:var(--panel);border-radius:4px;padding:8px;
+    font-size:10px;font-weight:900;letter-spacing:1px;color:var(--muted);text-align:center}
+  .wide.ok{border-color:var(--grn);color:var(--grn);background:var(--grn-tint)}
+  .wide.latched{border-color:var(--amber);color:var(--amber);background:var(--amber-tint)}
+  .wide.cmd{border-color:var(--amber);color:var(--amber)}
+  .authbox{border:1px solid var(--line);border-radius:4px;padding:8px;background:var(--panel)}
+  .authbox .cs{font-size:13.5px;font-weight:900;letter-spacing:.5px}
+  .authbox .role{color:var(--amber);font-size:9px;font-weight:900;letter-spacing:1.5px;margin-left:6px}
+  .foot{font-size:9px;color:var(--muted);line-height:1.6;text-align:center;margin-top:auto}
+
+  /* boot / sign-in */
+  .overlay{position:fixed;inset:0;background:var(--bez);display:flex;align-items:center;justify-content:center;padding:18px;z-index:50}
+  .overlay.hidden{display:none}
+  #connectOv .modal{width:min(430px,100%);background:var(--bg);border:1px solid var(--bezline);border-radius:6px;
+    padding:26px 28px;box-shadow:var(--shadow)}
+  .bootline{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:var(--muted);line-height:1.9}
+  .bootline .okk{color:var(--grn);font-weight:700}
+  #connectOv h2{margin:12px 0 2px;font-size:19px;letter-spacing:4px}
+  #connectOv .sub{color:var(--muted);font-size:10px;letter-spacing:2px;font-weight:800;margin:0 0 16px}
+  .relaychip{display:flex;align-items:center;gap:8px;border:1px solid var(--grn);background:var(--grn-tint);
+    border-radius:4px;padding:9px 12px;font-weight:800;font-size:12px;margin-bottom:12px;color:var(--grn)}
+  .relaychip a{color:var(--muted);font-size:10px;margin-left:auto;text-decoration:underline;cursor:pointer}
+  .signfoot{font-size:10.5px;color:var(--muted);line-height:1.6;margin-top:14px;border-top:1px solid var(--line);padding-top:11px}
   .toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);z-index:90;
-    background:var(--panel);border:1px solid var(--amber);border-radius:9px;padding:10px 16px;
+    background:var(--panel);border:1px solid var(--amber);border-radius:5px;padding:10px 16px;
     font-size:13px;box-shadow:var(--shadow);display:none;max-width:90vw}
-  #updbar{display:none;align-items:center;gap:10px;padding:8px 14px;border-bottom:1px solid var(--holo);
-    background:var(--holo-tint);font-weight:800;font-size:12.5px;flex:0 0 auto}
 </style>
 </head>
 <body>
 <div id="titlebar">FLEETCOMM</div>
-<header id="topbar">
-  <div class="brand"><b>FLEETCOMM</b><span>QUANTUM LINK COMMS · MK II</span></div>
-  <div class="tabs">
-    <button class="tab on" id="tabVoice">VOICE NET</button>
-    <button class="tab" id="tabAtc">ATC</button>
-  </div>
+<div id="bezel">
+  <div id="logo"><b>FLEETCOMM</b><span>COMM MGMT UNIT · 22EF</span></div>
+  <button class="pkey on" data-page="pgComms">COMMS</button>
+  <button class="pkey" data-page="pgChat">CHAT</button>
+  <button class="pkey" data-page="pgAtc">ATC</button>
+  <button class="pkey" data-page="settings">SYS</button>
   <div class="sp"></div>
-  <span class="opchip" id="opchip" style="display:none"><span id="opname"></span><span class="role" id="oprole"></span></span>
-  <span class="stat"><span class="dot" id="relayDot"></span><span id="relayLbl">RELAY OFFLINE</span></span>
-  <span class="stat"><span class="dot" id="micDot"></span><span id="micLbl">MIC NOT REQUESTED</span></span>
-  <span class="stat"><span id="opsCount">0</span>&nbsp;OPERATORS</span>
-  <span id="clock" class="mono">--:--:--</span>
+  <div class="rd" id="opchip" style="display:none"><label>OPERATOR</label><span class="v"><span id="opname"></span><span class="role" id="oprole"></span></span></div>
+  <div class="rd"><label>RELAY</label><span class="v dim" id="relayLbl">OFFLINE</span></div>
+  <div class="rd"><label>MIC</label><span class="v dim" id="micLbl">NOT REQ</span></div>
+  <div class="rd"><label>OPS</label><span class="v" id="opsCount">0</span></div>
+  <div class="rd"><label>UTC</label><span class="v num" id="clock">--:--:--</span></div>
   <button class="icobtn" id="ovbtn" title="Game overlay">▣</button>
-  <button class="icobtn" id="themebtn" title="Theme">◐</button>
-  <button class="icobtn" id="setbtn" title="Settings">⚙</button>
-</header>
-<div id="updbar">⬆ <span id="updtext"></span>
+  <button class="icobtn" id="themebtn" title="Day / night">◐</button>
+</div>
+<div id="updbar"><span id="updtext"></span>
   <button class="btn" id="updgo" style="margin-left:auto;padding:5px 14px;font-size:11px">Install &amp; restart</button>
   <button class="icobtn" id="upddismiss">✕</button>
 </div>
-<div id="hazard">22ND EXPEDITIONARY FLEET // FLEETCOMM SECURE COMMS</div>
 
-<main id="ops">
-  <aside id="rail">
-    <div class="pane-h">NET SELECT<span class="r" id="monCount">0 TUNED</span></div>
-    <div id="netlist"></div>
-    <div style="padding:0 7px 9px">
+<div id="screen">
+  <!-- COMMS -->
+  <div class="page on" id="pgComms">
+    <div id="chanCol">
+      <div class="ph">CHANNEL SELECT<span class="r" id="monCount">0 TUNED</span></div>
+      <div id="netlist"></div>
       <button class="addbtn" id="addNetBtn">+ ADD NET</button>
     </div>
-  </aside>
-
-  <section id="center">
-    <div id="rosterPane">
-      <div class="pane-h"><span id="rosterTitle">ROSTER</span><span class="r" id="rosterCount"></span></div>
+    <div id="commsMain">
+      <div class="ph"><span id="rosterTitle">ON NET</span><span class="r" id="rosterCount"></span></div>
       <div id="rosterChips"></div>
-    </div>
-    <div id="logPane">
-      <div class="pane-h">TRANSMISSION LOG<span class="r" style="color:var(--ok)">LIVE</span></div>
+      <div class="ph">COMM LOG<span class="r" style="color:var(--grn)">LIVE</span></div>
       <div id="logFeed"></div>
     </div>
-    <div id="chatPane">
-      <div class="pane-h"><span id="chatTitle">NET CHAT</span><span class="r" style="color:var(--amber)">NOT ENCRYPTED · RELAY TLS ONLY</span></div>
-      <div id="chatFeed"></div>
-      <div id="chatBar">
-        <input id="chatIn" placeholder="select a tuned net to chat" disabled>
-        <button id="chatSend">SEND</button>
-      </div>
-    </div>
-  </section>
+  </div>
 
-  <aside id="txrail">
-    <div class="txh">TRANSMITTING ON</div>
-    <div id="txTargets" class="none">NO NET SELECTED</div>
-    <button id="ptt">HOLD<br>TO TALK</button>
-    <div class="hint">click &amp; hold, or press &amp; hold <span class="keyb2 mono" id="pttKeyLbl">SPACE</span><br><a id="pttKeyChange">change</a></div>
+  <!-- CHAT -->
+  <div class="page" id="pgChat">
+    <div class="ph"><span id="chatTitle">NET TEXT</span><span class="r" style="color:var(--amber)">NOT ENCRYPTED · RELAY TLS ONLY</span></div>
+    <div id="chatTabs"></div>
+    <div id="chatFeed"></div>
+    <div id="chatBar">
+      <input id="chatIn" placeholder="tune a net to chat" disabled>
+      <button id="chatSend">SEND</button>
+    </div>
+  </div>
+
+  <!-- ATC -->
+  <div class="page" id="pgAtc">
+    <div class="ph">ATC — NET CONTROL<span class="r"><span id="atcCount">0</span> OPERATORS ON RELAY</span></div>
+    <div id="atcGrid"></div>
+  </div>
+
+  <!-- SYS -->
+  <div class="page" id="settings">
+    <div class="ph">SYS — CONFIGURATION</div>
+    <div id="sysScroll">
+      <div class="miniheading">MASTER KEYS</div>
+      <div class="togrow"><div class="tl"><b>Push to talk</b><span>Transmits on every net with TX armed</span></div><button class="keybadge" id="bindActive">SPACE</button></div>
+      <div class="togrow"><div class="tl"><b>Cycle selected net</b><span>Defaults: Page Up / Page Down</span></div>
+        <span><button class="keybadge" id="bindCycUp">PageUp</button> <button class="keybadge" id="bindCycDn">PageDown</button></span></div>
+      <div class="miniheading">AUDIO</div>
+      <div class="togrow"><div class="tl"><b>Radio chirp</b><span>Squelch click on key-up / key-down</span></div><button class="switch on" id="sfx"></button></div>
+      <div class="togrow"><div class="tl"><b>Radio voice effect</b><span>How much "over the net" character voices get</span></div>
+        <select class="orgsel" id="fxsel"><option value="clean">Clean</option><option value="standard">Standard</option><option value="heavy">Heavy</option></select></div>
+      <div class="miniheading">DISPLAY</div>
+      <div class="togrow"><div class="tl"><b>Mode</b><span>Night, day, or custom palette</span></div>
+        <select class="orgsel" id="sthemesel"><option value="dark">Night</option><option value="light">Day</option><option value="custom">Custom</option></select></div>
+      <div id="customcolors" style="display:none;gap:14px;padding:10px 2px;flex-wrap:wrap;align-items:center">
+        <label class="hint" style="display:flex;flex-direction:column;gap:3px;font-weight:800">SCREEN<input type="color" id="c_bg"></label>
+        <label class="hint" style="display:flex;flex-direction:column;gap:3px;font-weight:800">PANELS<input type="color" id="c_panel"></label>
+        <label class="hint" style="display:flex;flex-direction:column;gap:3px;font-weight:800">DATA<input type="color" id="c_ink"></label>
+        <label class="hint" style="display:flex;flex-direction:column;gap:3px;font-weight:800">CURSOR<input type="color" id="c_accent"></label>
+      </div>
+      <div class="togrow"><div class="tl"><b>Overlay edit mode</b><span>Unlock the game overlay to move / resize, then LOCK</span></div><button class="switch" id="sovedit"></button></div>
+      <div class="miniheading">COMMAND AUTHORITY</div>
+      <div class="kv"><label>COMMAND TOKEN</label><input id="tokenIn" type="password" placeholder="issued by fleet command — optional"></div>
+      <div class="miniheading">UPDATES</div>
+      <div class="togrow"><div class="tl"><b>FleetComm <span id="verlbl2"></span></b><span>Also checks automatically at startup</span></div><button class="icobtn" id="updcheck">Check for updates</button></div>
+      <div class="wnav"><button class="btn ghost" id="disconnBtn">DISCONNECT</button><button class="btn big" id="closeSet">APPLY · RETURN ▸</button></div>
+    </div>
+  </div>
+
+  <!-- radio head -->
+  <aside id="head">
+    <div class="txh">TX ARMED ON</div>
+    <div id="txTargets"><span class="ann">NO NET</span></div>
+    <button id="ptt">P T T</button>
+    <div class="hint">click &amp; hold, or press &amp; hold <span class="keyb2 mono" id="pttKeyLbl">SPACE</span> · <a id="pttKeyChange">change</a></div>
     <button class="wide" id="micBtn">ENABLE MICROPHONE</button>
-    <button class="wide" id="openMicBtn">◉ OPEN MIC — continuous, no hold</button>
-    <div class="authbox"><div class="txh" style="margin-bottom:5px">AUTHENTICATED AS</div>
+    <button class="wide" id="openMicBtn">OPEN MIC — continuous</button>
+    <button class="wide cmd" id="overrideBtn" style="display:none">CMD OVERRIDE — all tuned</button>
+    <div class="authbox"><div class="txh" style="margin-bottom:4px">AUTHENTICATED</div>
       <span class="cs" id="authName">—</span><span class="role" id="authRole"></span></div>
-    <button class="wide cmd" id="overrideBtn" style="display:none">⚠ COMMAND OVERRIDE — all tuned nets</button>
-    <div class="foot">toggle TX on any nets, hold PTT to speak on all of them at once ·
-      voice rides the 22nd's own relay · native client: PTT works in-game + overlay ·
-      <span id="verlbl"></span></div>
+    <div class="foot" id="verlbl"></div>
   </aside>
-</main>
+</div>
 
 <!-- sign-in -->
 <div class="overlay" id="connectOv">
   <div class="modal">
-    <div class="crest"></div>
-    <h2>FLEETCOMM</h2>
-    <p class="sub">OPERATOR SIGN-IN</p>
-    <div class="relaychip">⬤ RELAY · <span id="relayname">22ND EXPEDITIONARY FLEET</span><a id="relayedit">change</a></div>
+    <div class="bootline">FLEETCOMM COMM MANAGEMENT UNIT<br>
+      POWER-ON SELF TEST <span class="okk">OK</span><br>
+      RELAY PACKAGE <span class="okk">LOADED · <span id="relayname">22ND EXPEDITIONARY FLEET</span></span> <a id="relayedit" style="color:var(--muted)">change</a><br>
+      AWAITING OPERATOR ID —</div>
+    <h2>SIGN IN</h2>
+    <p class="sub">OPERATOR CALLSIGN</p>
     <div class="kv" id="hostrow" style="display:none"><label>SERVER ADDRESS</label><input id="hostIn" class="mono"></div>
-    <div class="kv" style="text-align:left"><label>CALLSIGN</label><input id="csIn" class="mono" placeholder="e.g. TIBER DOC 1" list="csList"><datalist id="csList"></datalist></div>
+    <div class="kv"><input id="csIn" class="mono" placeholder="e.g. TIBER DOC 1" list="csList" style="font-size:16px;letter-spacing:1px"><datalist id="csList"></datalist></div>
     <button class="btn big" id="connectBtn">CONNECT ▸</button>
-    <p class="hint" id="connErr" style="color:var(--red);margin-top:10px"></p>
-    <div class="signfoot">FleetComm connects with your callsign only — no account needed yet.
-      Discord sign-in with fleet roles arrives in a coming version. Whether you may create
-      nets is decided by a command token issued by COMMAND.</div>
+    <p class="hint" id="connErr" style="color:var(--red);margin-top:10px;text-align:left"></p>
+    <div class="signfoot">No account needed — your callsign is your identity on the relay.
+      Discord sign-in with fleet roles arrives in a coming version. Net creation and
+      override authority come from a command token issued by COMMAND (SYS page).</div>
   </div>
 </div>
-
-<!-- settings -->
-<div class="overlay hidden" id="settings">
-  <div class="modal">
-    <h2>Settings</h2>
-    <div class="miniheading">MASTER KEYS</div>
-    <div class="togrow"><div class="tl"><b>Hold to talk</b><span>Transmits on every net with TX enabled</span></div><button class="keybadge" id="bindActive">SPACE</button></div>
-    <div class="togrow"><div class="tl"><b>Cycle selected net</b><span>Defaults: Page Up / Page Down</span></div>
-      <span><button class="keybadge" id="bindCycUp">PageUp</button> <button class="keybadge" id="bindCycDn">PageDown</button></span></div>
-    <div class="miniheading">SOUND</div>
-    <div class="togrow"><div class="tl"><b>Radio chirp</b><span>Squelch click on key-up / key-down</span></div><button class="switch on" id="sfx"></button></div>
-    <div class="togrow"><div class="tl"><b>Radio voice effect</b><span>How much "over the net" character voices get</span></div>
-      <select class="orgsel" id="fxsel"><option value="clean">Clean</option><option value="standard">Standard</option><option value="heavy">Heavy</option></select></div>
-    <div class="miniheading">DISPLAY</div>
-    <div class="togrow"><div class="tl"><b>Theme</b><span>Console dark, daylight, or roll your own</span></div>
-      <select class="orgsel" id="sthemesel"><option value="dark">Dark</option><option value="light">Light</option><option value="custom">Custom</option></select></div>
-    <div id="customcolors" style="display:none;gap:14px;padding:10px 2px;flex-wrap:wrap;align-items:center">
-      <label class="hint" style="display:flex;flex-direction:column;gap:3px;font-weight:800">BACKGROUND<input type="color" id="c_bg"></label>
-      <label class="hint" style="display:flex;flex-direction:column;gap:3px;font-weight:800">PANELS<input type="color" id="c_panel"></label>
-      <label class="hint" style="display:flex;flex-direction:column;gap:3px;font-weight:800">TEXT<input type="color" id="c_ink"></label>
-      <label class="hint" style="display:flex;flex-direction:column;gap:3px;font-weight:800">ACCENT<input type="color" id="c_accent"></label>
-    </div>
-    <div class="togrow"><div class="tl"><b>Overlay edit mode</b><span>Unlock the game overlay to move / resize, then LOCK</span></div><button class="switch" id="sovedit"></button></div>
-    <div class="miniheading">COMMAND AUTHORITY</div>
-    <div class="kv"><label>COMMAND TOKEN (optional)</label><input id="tokenIn" type="password" placeholder="issued by fleet command"></div>
-    <p class="hint" style="text-align:left;margin:-6px 0 10px">Grants net creation and COMMAND OVERRIDE. Server-enforced — applied on next connect.</p>
-    <div class="miniheading">UPDATES</div>
-    <div class="togrow"><div class="tl"><b>FleetComm <span id="verlbl2"></span></b><span>Also checks automatically at startup</span></div><button class="icobtn" id="updcheck">Check for updates</button></div>
-    <div class="wnav"><button class="btn ghost" id="disconnBtn">Disconnect</button><button class="btn big" id="closeSet">Done</button></div>
-  </div>
-</div>
-
-<!-- ATC -->
-<div class="overlay hidden" id="atcOv">
-  <div class="modal">
-    <h2>ATC — NET CONTROL</h2>
-    <p class="sub"><span id="atcCount">0</span> operator(s) on the relay · click a net to tune yourself to it</p>
-    <div id="atcGrid"></div>
-    <div class="wnav"><button class="btn big" id="atcClose">CLOSE</button></div>
-  </div>
-</div>
-
 <div class="toast" id="toast"></div>
 <script src="app.js"></script>
 </body>
