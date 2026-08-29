@@ -118,26 +118,44 @@ class RadioStack extends EventEmitter {
     const c = this._anyClient(); if (!c) return [];
     return [...c.channels.values()].map(ch => ch.name).filter(Boolean);
   }
-  renameNet(idx, newName) {
-    const net = this.nets[idx];
-    if (!net || net.dead || net.channelId == null) return false;
-    net.client.send("ChannelState", { channelId: net.channelId, name: newName });
-    return true;
+  /* ── editing the net tree ──
+     These take a channel NAME, not a tuned-net index, and go out over whichever
+     connection is live. COMMAND edits the org's tree; needing to tune a net
+     before you could rename or re-home it was an artificial restriction, and it
+     left most of the right-click menu greyed out for no good reason.
+     Each one waits for the relay's answer and reports what actually happened. */
+  _resolve(name) {
+    const c = this._anyClient(); if (!c) return null;
+    const id = c.channelByName(name);
+    return id == null ? null : { c, id };
   }
-  moveNet(idx, newParentName) {
-    const net = this.nets[idx];
-    const c = this._anyClient();
-    if (!net || net.dead || !c) return false;
-    const parentId = newParentName ? c.channelByName(newParentName) : 0;
-    if (parentId == null) return false;
-    net.client.send("ChannelState", { channelId: net.channelId, parent: parentId });
-    return true;
+  /* keep our own record in step so a tuned net doesn't keep its old label */
+  _relabel(oldName, newName) {
+    const net = this.nets.find(n => n && !n.dead && n.cfg && n.cfg.name === oldName);
+    if (net) net.cfg = Object.assign({}, net.cfg, { name: newName });
   }
-  removeNet(idx) {
-    const net = this.nets[idx];
-    if (!net || net.dead || net.channelId == null) return false;
-    net.client.send("ChannelRemove", { channelId: net.channelId });
-    return true;
+  async renameNet(name, newName) {
+    const r = this._resolve(name);
+    if (!r) return { ok: false, error: "not connected to the relay" };
+    try { await r.c.editChannel(r.id, { name: newName }); this._relabel(name, newName); return { ok: true }; }
+    catch (e) { return { ok: false, error: e.message }; }
+  }
+  async moveNet(name, newParentName) {
+    const r = this._resolve(name);
+    if (!r) return { ok: false, error: "not connected to the relay" };
+    let parentId = 0;
+    if (newParentName) {
+      parentId = r.c.channelByName(newParentName);
+      if (parentId == null) return { ok: false, error: "no net named " + newParentName + " on the relay" };
+    }
+    try { await r.c.editChannel(r.id, { parent: parentId }); return { ok: true }; }
+    catch (e) { return { ok: false, error: e.message }; }
+  }
+  async removeNet(name) {
+    const r = this._resolve(name);
+    if (!r) return { ok: false, error: "not connected to the relay" };
+    try { await r.c.removeChannel(r.id); return { ok: true }; }
+    catch (e) { return { ok: false, error: e.message }; }
   }
 
   async createNet(name, parentChannelName) {

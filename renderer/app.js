@@ -452,6 +452,27 @@ function addLog(kind, netName, msg) {
 }
 function utc() { return new Date().toISOString().slice(11, 19); }
 
+/* Takes what a person actually types — "250", "290.5", "290,500", " 118.25 " —
+   and returns the NNN.NNN the board displays. Empty string for anything that
+   isn't a frequency, so callers can fall back to what the net already had. */
+/* A rename has to carry the local state that was filed under the old name:
+   the collapse flag for the nest, and every child's parent pointer. Miss these
+   and the tree quietly reshuffles itself the next time it renders. */
+function renameLocal(oldName, newName) {
+  if (Object.prototype.hasOwnProperty.call(collapsed, oldName)) {
+    collapsed[newName] = collapsed[oldName];
+    delete collapsed[oldName];
+  }
+  nets.forEach(x => { if (x.parent === oldName) x.parent = newName; });
+}
+function normFreq(raw) {
+  const s = String(raw == null ? "" : raw).trim().replace(",", ".");
+  if (!s) return "";
+  const m = s.match(/^(\d{1,3})(?:\.(\d{0,3}))?$/);
+  if (!m) return "";
+  return m[1] + "." + (m[2] || "").padEnd(3, "0");
+}
+
 /* ══ TX arming ══
    Cycling with PgUp/PgDn — or clicking a net's name — makes that net THE net
    you talk on, and disarms the others. Simulcast still works the way it always
@@ -595,10 +616,10 @@ $("dlgOk").addEventListener("click", async function () {
   if (dlgMode === "delete") {
     const n = nets[dlgIdx];
     if ($("dlgName").value.trim().toUpperCase() !== n.cfg.name) { $("dlgErr").textContent = "Name doesn't match — nothing deleted."; return; }
-    const ok = await ipcRenderer.invoke("net-remove", n.idx);
+    const r = await ipcRenderer.invoke("net-remove", n.cfg.name);
     $("dlg").classList.remove("on");
     $("dlgOk").textContent = "CREATE ▸";
-    if (!ok) { toast("The relay refused the delete."); return; }
+    if (!r.ok) { toast("Delete failed — " + (r.error || "the relay refused it.")); return; }
     addLog("sys", n.cfg.name, "net DELETED from relay by " + callsign);
     nets.splice(dlgIdx, 1); selectedI = Math.min(selectedI, nets.length - 1); renderNets();
     return;
@@ -609,18 +630,20 @@ $("dlgOk").addEventListener("click", async function () {
     const newFreq = normFreq($("dlgFreq").value) || n.cfg.freq;
     const newParent = $("dlgParent").value;
     this.disabled = true; this.textContent = "APPLYING…";
-    let ok = true;
+    let r = { ok: true };
     if (newName && newName !== n.cfg.name) {
-      ok = await ipcRenderer.invoke("net-rename", { idx: n.idx, name: newName });
-      if (ok) { addLog("sys", n.cfg.name, "renamed to " + newName); n.cfg.name = newName; }
+      r = await ipcRenderer.invoke("net-rename", { net: n.cfg.name, name: newName });
+      if (r.ok) { addLog("sys", n.cfg.name, "renamed to " + newName + " by " + callsign);
+                  renameLocal(n.cfg.name, newName); n.cfg.name = newName; }
     }
-    if (ok && (newParent || "") !== (n.parent || "")) {
-      ok = await ipcRenderer.invoke("net-move", { idx: n.idx, parent: newParent });
-      if (ok) { n.parent = newParent || null; n.depth = newParent ? 1 : 0; addLog("sys", n.cfg.name, newParent ? "nested under " + newParent : "moved to top level"); }
+    if (r.ok && (newParent || "") !== (n.parent || "")) {
+      r = await ipcRenderer.invoke("net-move", { net: n.cfg.name, parent: newParent });
+      if (r.ok) { n.parent = newParent || null; n.depth = newParent ? 1 : 0;
+                  addLog("sys", n.cfg.name, newParent ? "nested under " + newParent : "moved to top level"); }
     }
     n.cfg.freq = newFreq; n.cfg.ship = $("dlgShip").checked;
     this.disabled = false; this.textContent = "CREATE ▸";
-    if (!ok) { $("dlgErr").textContent = "The relay refused part of that change."; return; }
+    if (!r.ok) { $("dlgErr").textContent = r.error || "The relay refused that change."; return; }
     savePrefs(); $("dlg").classList.remove("on"); renderNets(); renderSoundboard();
     return;
   }
@@ -657,8 +680,9 @@ netlist.addEventListener("contextmenu", (e) => {
   const vw = window.innerWidth, vh = window.innerHeight, r = m.getBoundingClientRect();
   m.style.left = Math.min(e.clientX, vw - r.width - 8) + "px";
   m.style.top = Math.min(e.clientY, vh - r.height - 8) + "px";
-  const tuned = nets[ctxNet].tuned;
-  m.querySelectorAll(".ctxi").forEach(b => { b.disabled = !tuned && b.dataset.act !== "props"; });
+  /* everything here goes out over whichever relay connection is live, so the
+     only thing that can disable an item is not being connected at all */
+  m.querySelectorAll(".ctxi").forEach(b => { b.disabled = !connected; });
 });
 window.addEventListener("click", () => { $("ctx").style.display = "none"; });
 window.addEventListener("blur", () => { $("ctx").style.display = "none"; });
@@ -670,7 +694,6 @@ $("ctx").addEventListener("click", async (e) => {
   if (b.dataset.act === "sub") { openNetDialog("new", i); return; }
   if (b.dataset.act === "access") { showPage("pgAcct"); toast("Set access for " + n.cfg.name + " in the NET ACCESS list."); return; }
   if (b.dataset.act === "delete") {
-    if (!n.tuned) { toast("Tune the net before deleting it."); return; }
     openConfirmDelete(i);
   }
 });
@@ -1179,11 +1202,31 @@ if (process.env.FLEETCOMM_AUTOTEST) {
     L("edit-gated-without-token", (openNetDialog("edit", tunedIdx[0] != null ? tunedIdx[0] : 0),
         !document.getElementById("dlg").classList.contains("on")));
     cmdToken = "autotest-token";
-    try { openNetDialog("edit", tunedIdx[0] != null ? tunedIdx[0] : 0);
+    L("normfreq", ["250","290.5","118.25","290,500","junk",""]
+        .map(v => v + "->" + (normFreq(v) || "-")).join(" "));
+
+    const target = tunedIdx[0] != null ? tunedIdx[0] : 0;
+    try { openNetDialog("edit", target);
           L("edit-dialog-open", document.getElementById("dlg").classList.contains("on"));
           L("edit-dialog-prefilled", document.getElementById("dlgName").value || "(empty)");
-          document.getElementById("dlgCancel").click(); cmdToken = null; }
-    catch (e) { L("edit-dialog-ERR", e.message); }
-    console.log("[AUTOTEST] v09-checks-done");
+
+          /* actually submit — a dialog that opens but whose APPLY throws is
+             exactly the bug this check exists to catch */
+          const was = nets[target].cfg.name;
+          document.getElementById("dlgName").value = was + " X";
+          document.getElementById("dlgFreq").value = "291.7";
+          document.getElementById("dlgOk").click();
+          setTimeout(() => {
+            L("apply-renamed", nets[target].cfg.name);
+            L("apply-freq", nets[target].cfg.freq);
+            L("apply-err", document.getElementById("dlgErr").textContent || "(none)");
+            L("apply-dialog-closed", !document.getElementById("dlg").classList.contains("on"));
+            /* put it back so the relay is left as we found it */
+            ipcRenderer.invoke("net-rename", { net: nets[target].cfg.name, name: was })
+              .then(r => { L("apply-restored", r.ok); nets[target].cfg.name = was;
+                           cmdToken = null; console.log("[AUTOTEST] v09-checks-done"); });
+          }, 2500);
+        }
+    catch (e) { L("edit-dialog-ERR", e.message); console.log("[AUTOTEST] v09-checks-done"); }
   }, 9000);
 }

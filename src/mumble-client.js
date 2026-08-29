@@ -171,7 +171,35 @@ class MumbleClient extends EventEmitter {
       this.on("ChannelState", onState);
       this.on("PermissionDenied", onDenied);
       this.send("ChannelState", { parent, name, description });
-      setTimeout(() => { cleanup(); reject(new Error("timeout creating " + name)); }, 5000);
+      var t = setTimeout(() => { cleanup(); reject(new Error("timeout creating " + name)); }, 5000);
+    });
+  }
+
+  /* Editing and removing channels, acked properly.
+     Firing a ChannelState at murmur and assuming it worked is how you get a UI
+     that silently does nothing: the server answers a refused edit with
+     PermissionDenied and an accepted one with an echo, so wait for whichever
+     arrives and report it honestly. */
+  editChannel(channelId, fields) {
+    return new Promise((resolve, reject) => {
+      const onState = (m) => { if (m.channelId === channelId) { cleanup(); resolve(m); } };
+      const onDenied = (m) => { cleanup(); reject(new Error("relay denied it (PermissionDenied type=" + m.type + ")")); };
+      const cleanup = () => { this.off("ChannelState", onState); this.off("PermissionDenied", onDenied); clearTimeout(t); };
+      this.on("ChannelState", onState);
+      this.on("PermissionDenied", onDenied);
+      this.send("ChannelState", Object.assign({ channelId }, fields));
+      var t = setTimeout(() => { cleanup(); reject(new Error("the relay never answered")); }, 5000);
+    });
+  }
+  removeChannel(channelId) {
+    return new Promise((resolve, reject) => {
+      const onGone = (m) => { if (m.channelId === channelId) { cleanup(); resolve(true); } };
+      const onDenied = (m) => { cleanup(); reject(new Error("relay denied it (PermissionDenied type=" + m.type + ")")); };
+      const cleanup = () => { this.off("ChannelRemove", onGone); this.off("PermissionDenied", onDenied); clearTimeout(t); };
+      this.on("ChannelRemove", onGone);
+      this.on("PermissionDenied", onDenied);
+      this.send("ChannelRemove", { channelId });
+      var t = setTimeout(() => { cleanup(); reject(new Error("the relay never answered")); }, 5000);
     });
   }
   channelByName(name) {

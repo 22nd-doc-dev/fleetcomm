@@ -363,9 +363,10 @@ ipcMain.handle("arm-broadcast", (ev, idx) => stack ? stack.armBroadcast(idx) : f
 ipcMain.on("net-mute", (ev, { idx, muted }) => stack && stack.setMuted(idx, muted));
 ipcMain.on("send-text", (ev, { idx, message }) => stack && stack.sendText(idx, message));
 ipcMain.handle("atc-view", () => stack ? stack.atcView() : []);
-ipcMain.handle("net-rename", (ev, { idx, name }) => stack ? stack.renameNet(idx, name) : false);
-ipcMain.handle("net-move", (ev, { idx, parent }) => stack ? stack.moveNet(idx, parent) : false);
-ipcMain.handle("net-remove", (ev, idx) => stack ? stack.removeNet(idx) : false);
+const NOSTACK = { ok: false, error: "not connected to the relay" };
+ipcMain.handle("net-rename", (ev, { net, name }) => stack ? stack.renameNet(net, name) : NOSTACK);
+ipcMain.handle("net-move", (ev, { net, parent }) => stack ? stack.moveNet(net, parent) : NOSTACK);
+ipcMain.handle("net-remove", (ev, net) => stack ? stack.removeNet(net) : NOSTACK);
 ipcMain.handle("create-net", async (ev, { name, rootChannel }) => {
   if (!stack) return { ok: false, error: "not connected" };
   try { return { ok: true, id: await stack.createNet(name, rootChannel) }; }

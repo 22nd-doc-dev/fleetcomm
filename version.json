@@ -1,4 +1,4 @@
 {
-  "version": "0.9.0",
-  "notes": "Silent auto-update at startup (skipped while you're connected), right-click any net for properties/rename/sub-net/delete as COMMAND, PgUp/PgDn now arms TX on the net you select, drag-resizable channel rail, rebuilt ACCTS page that works in any window size, and a 10-color custom palette editor."
+  "version": "0.9.1",
+  "notes": "Fixes the right-click net editor: APPLY was dying on a missing helper and doing nothing at all, and the menu greyed out every option except properties on nets you hadn't tuned. You can now edit any net on the relay whether or not you're tuned to it, typed frequencies like \"250\" or \"290.5\" normalize properly, and a refused change tells you exactly what the relay said instead of failing silently."
 }
