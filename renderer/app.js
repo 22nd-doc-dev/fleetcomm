@@ -1360,7 +1360,9 @@ function scheduleRelink(i) {
   if (!n || !connected) return;
   const prev = relinking.get(n.cfg.name) || { tries: 0 };
   const tries = prev.tries + 1;
-  const wait = Math.min(60000, 4000 * Math.pow(2, Math.min(3, tries - 1))) + Math.random() * 1500 + i * 250;
+  /* 4s, 8s, 16s, 32s, then capped at 60s (exponent must reach past the cap or
+     the 60s tier is dead code — it was, for a while) */
+  const wait = Math.min(60000, 4000 * Math.pow(2, Math.min(4, tries - 1))) + Math.random() * 1500 + i * 250;
   n.relinking = true;
   const timer = setTimeout(async () => {
     if (!connected || !n.relinking) { stopRelink(n.cfg.name); renderNets(); return; }
@@ -1599,9 +1601,14 @@ function pollOps() {
      while the voice connections rode the same blip out on TCP retransmit.
      src/acct-heartbeat.js now separates a server VERDICT (expired, revoked —
      sign out) from a transport blip (hold: stay on comms, keep polling). */
-  let acctFails = 0;
+  let acctFails = 0, polling = false;
   opsTimer = setInterval(async () => {
     if (!connected) return;
+    /* a hung poll can take the full request timeout — as long as the interval
+       itself — so ticks would overlap and double-count the failure streak */
+    if (polling) return;
+    polling = true;
+    try {
     const view = await ipcRenderer.invoke("atc-view");
     const names = new Set(); view.forEach(c => c.users.forEach(u => names.add(u)));
     $("opsCount").textContent = names.size;
@@ -1618,6 +1625,7 @@ function pollOps() {
         toast("Your FleetComm role is now " + current.account.role.toUpperCase() + ".");
       }
     }
+    } finally { polling = false; }
   }, 12000);
 }
 
@@ -1736,6 +1744,10 @@ function showUpdBusy(version, line) {
   $("updOv").classList.remove("hidden");
 }
 function hideUpdOv() { $("updOv").classList.add("hidden"); }
+/* true while the acknowledgement screen is up and unconfirmed — nothing may
+   draw over it (the auto-update offer arrives seconds after launch, which is
+   exactly when this screen is showing) */
+let ackPending = false, deferredAutoOffer = null;
 function ackVersionCheck() {
   const note = bridge.updateGuard.versionNote(store.get("ackVersion", null), bridge.version);
   if (note.store) { store.set("ackVersion", bridge.version); return; }
@@ -1748,9 +1760,28 @@ function ackVersionCheck() {
       ". If you didn't install this yourself, a failed update may have restored an older build.";
   $("updOvOk").style.display = "";
   $("updOv").classList.remove("hidden");
+  ackPending = true;
 }
-$("updOvOk").addEventListener("click", () => { store.set("ackVersion", bridge.version); hideUpdOv(); });
+$("updOvOk").addEventListener("click", () => {
+  store.set("ackVersion", bridge.version); hideUpdOv(); ackPending = false;
+  const offer = deferredAutoOffer; deferredAutoOffer = null;
+  if (offer) startAutoUpdate(offer);
+});
 ackVersionCheck();
+/* one choreography for both the manual button and the automatic path — the
+   banner and the full-screen state must never be sequenced by hand twice */
+async function runUpdate(version, auto) {
+  showUpdBusy(version, "Downloading FleetComm v" + version + "…");
+  const res = await ipcRenderer.invoke("do-update", { version, auto: !!auto });
+  if (res && res.ok) {
+    $("updtext").textContent = "Update installed — restarting…";
+    $("updOvState").textContent = "Installing — FleetComm is closing and will reopen itself.";
+    return res;
+  }
+  hideUpdOv();
+  $("updtext").textContent = "FleetComm v" + version + " is available";
+  return res || { ok: false };
+}
 /* what happened to the last automatic attempt, reported on the way back up */
 ipcRenderer.on("update-note", (ev, note) => {
   if (!note) return;
@@ -1761,21 +1792,20 @@ ipcRenderer.on("update-note", (ev, note) => {
     addLog("sys", "", "auto-update failed: " + note.reason + " — falling back to the banner");
   }
 });
-ipcRenderer.on("update-auto-offer", async (ev, r) => {
+async function startAutoUpdate(r) {
   if (!autoUpdate || connected) return;   /* never yank the app out from under a live op */
   $("updtext").textContent = "Installing FleetComm v" + r.version + " automatically…";
   $("updgo").style.display = "none";
-  showUpdBusy(r.version, "Downloading FleetComm v" + r.version + "…");
-  const res = await ipcRenderer.invoke("do-update", { version: r.version, auto: true });
-  if (res && res.ok) {
-    $("updtext").textContent = "Update installed — restarting…";
-    $("updOvState").textContent = "Installing — FleetComm is closing and will reopen itself.";
-    return;
-  }
-  hideUpdOv();
+  const res = await runUpdate(r.version, true);
+  if (res.ok) return;
   $("updgo").style.display = "";
-  $("updtext").textContent = "FleetComm v" + r.version + " is available";
-  if (res && res.error) toast("Automatic update failed: " + res.error);
+  if (res.error) toast("Automatic update failed: " + res.error);
+}
+ipcRenderer.on("update-auto-offer", (ev, r) => {
+  /* the acknowledgement of the LAST update outranks starting the next one —
+     drawing over that screen erased the one confirmation it exists to give */
+  if (ackPending) { deferredAutoOffer = r; return; }
+  startAutoUpdate(r);
 });
 $("sautoupd").addEventListener("click", function () {
   autoUpdate = !autoUpdate; this.classList.toggle("on", autoUpdate); store.set("autoUpdate", autoUpdate);
@@ -1783,17 +1813,10 @@ $("sautoupd").addEventListener("click", function () {
 });
 $("updgo").addEventListener("click", async function () {
   this.disabled = true; this.textContent = "Updating…";
-  const version = $("updbar").dataset.version;
-  showUpdBusy(version, "Downloading FleetComm v" + version + "…");
-  const r = await ipcRenderer.invoke("do-update", { version });
-  if (r && r.ok) {
-    $("updtext").textContent = "Restarting…";
-    $("updOvState").textContent = "Installing — FleetComm is closing and will reopen itself.";
-    return;
-  }
-  hideUpdOv();
+  const r = await runUpdate($("updbar").dataset.version, false);
+  if (r.ok) return;
   this.disabled = false; this.textContent = "Install & restart";
-  if (r && r.error) toast("Auto-update failed (" + r.error + ") — opening the releases page instead.");
+  if (r.error) toast("Auto-update failed (" + r.error + ") — opening the releases page instead.");
   ipcRenderer.send("open-external", $("updbar").dataset.url);
 });
 ipcRenderer.on("update-progress", (ev, pct) => {

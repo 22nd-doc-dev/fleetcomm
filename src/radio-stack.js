@@ -127,10 +127,17 @@ class RadioStack extends EventEmitter {
       cert: this.opts.cert, key: this.opts.key, release: "FleetComm",
       pin: this.opts.pin || "", onPin: this.opts.onPin
     });
-    const idx = this.nets.length;
-    const net = { cfg: { name: "\u0000control", freq: "" }, client, channelId: null, idx,
-                  control: true, muted: true };
-    this.nets.push(net);
+    /* Reconnects REUSE the control slot. Pushing a fresh entry per attempt let
+       a long relay outage grow this.nets without bound (~112 dead entries an
+       hour at the relink cadence); once nets.length passed the 0-255 idx clamp
+       in main's IPC handlers, newly tuned nets keyed up and transmitted
+       nothing. One control connection, one slot, forever. */
+    const existing = this.nets.find(n => n && n.control);
+    const idx = existing ? existing.idx : this.nets.length;
+    const net = existing || { cfg: { name: "\u0000control", freq: "" }, client: null, channelId: null, idx,
+                              control: true, muted: true };
+    net.client = client; net.dead = false; net.channelId = null;
+    if (!existing) this.nets.push(net);
     try {
       await client.connect();
       await new Promise(r => setTimeout(r, 250));
@@ -145,7 +152,9 @@ class RadioStack extends EventEmitter {
          destroyed socket — forever, silently. Attached only after a successful
          connect so a failed dial reports through the throw below, not twice. */
       client.on("close", () => {
-        if (net.dead) return;                   /* deliberate teardown */
+        /* ignore teardown, and ignore a stale close from a client this slot
+           has already been relinked past */
+        if (net.dead || net.client !== client) return;
         net.dead = true;
         this.emit("control-down", { idx });
       });

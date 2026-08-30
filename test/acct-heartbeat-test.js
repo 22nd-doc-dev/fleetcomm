@@ -9,7 +9,7 @@
 const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
-const { assess, WARN_AFTER } = require("../src/acct-heartbeat");
+const { assess, WARN_AFTER, REWARN_EVERY } = require("../src/acct-heartbeat");
 
 /* ── a healthy poll is a healthy poll ── */
 let v = assess({ ok: true, authorized: true, account: { role: "member" } }, 0);
@@ -29,11 +29,15 @@ for (let fails = 0, i = 0; i < 50; i++) {
   fails = v.fails;
 }
 
-/* ── the warning fires exactly once, at the threshold ── */
+/* ── the warning fires at the threshold, then only periodically ── */
 v = assess({ ok: false, transport: true, error: "read ECONNRESET" }, WARN_AFTER - 1);
 assert.strictEqual(v.warn, true, "the operator is told once the outage is clearly not a one-off");
 v = assess({ ok: false, transport: true, error: "read ECONNRESET" }, WARN_AFTER);
 assert.strictEqual(v.warn, false, "and is not nagged every 12s afterwards");
+v = assess({ ok: false, transport: true, error: "read ECONNRESET" }, REWARN_EVERY - 1);
+assert.strictEqual(v.warn, true, "but a sustained outage re-warns (~5min) instead of hiding behind one line");
+v = assess({ ok: false, transport: true, error: "read ECONNRESET" }, REWARN_EVERY);
+assert.strictEqual(v.warn, false, "and only at the period, not on every poll after it");
 
 /* ── recovery resets the failure count ── */
 v = assess({ ok: true, authorized: true, account: { role: "member" } }, 7);
@@ -42,8 +46,10 @@ assert.strictEqual(v.fails, 0, "one good poll forgives the streak");
 
 /* ── server verdicts still eject, with operator-readable reasons ── */
 v = assess({ ok: false, error: "unauthorized" }, 0);
-assert.strictEqual(v.action, "eject", "an expired session is a verdict, not a blip");
-assert(/session expired/i.test(v.reason), "and the toast explains it instead of saying 'unauthorized'");
+assert.strictEqual(v.action, "eject", "a dead session is a verdict, not a blip");
+assert(/session has ended/i.test(v.reason), "and the toast explains it instead of saying 'unauthorized'");
+assert(!/expired/i.test(v.reason),
+  "it must not CLAIM expiry — a revoked account's sessions are deleted and surface as the same 'unauthorized'");
 assert(!/ECONNRESET|unauthorized/.test(v.reason), "no raw error codes in an operator-facing toast");
 
 v = assess({ ok: false, error: "access revoked by COMMAND" }, 3);
@@ -63,6 +69,9 @@ const appSrc = fs.readFileSync(path.join(__dirname, "..", "renderer", "app.js"),
 const stackSrc = fs.readFileSync(path.join(__dirname, "..", "src", "radio-stack.js"), "utf8");
 const preload = fs.readFileSync(path.join(__dirname, "..", "src", "preload.js"), "utf8");
 assert(/transport:\s*true/.test(mainSrc), "the acct IPC handler must flag transport failures");
+assert(/httpStatus >= 500/.test(mainSrc),
+  "a 5xx is a server FAULT, not a verdict — the service wraps its own internal errors as {ok:false} JSON, " +
+  "and without this check one transient 500 on /api/me ejects every connected operator at once");
 assert(/acctHeartbeat\.assess/.test(appSrc), "pollOps must route results through the heartbeat verdict");
 assert(!/if \(!current\.ok \|\| !current\.authorized\) \{\s*\$\("disconnBtn"\)/.test(appSrc),
   "the old eject-on-any-failure branch must be gone");

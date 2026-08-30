@@ -299,7 +299,14 @@ function jsonCall(base, method, pathName, bodyObj, bearer) {
         d += c;
         if (d.length > 1024 * 1024) req.destroy(new Error("accounts response is too large"));
       }); res.on("end", () => {
-        try { resolve(JSON.parse(d)); } catch (e) { reject(new Error("bad response")); } }); });
+        /* httpStatus rides along so callers can tell a VERDICT (401/403 — the
+           server judged us) from a server-side FAULT (5xx — it wraps its own
+           internal errors as {ok:false} JSON). Without it, one transient 500
+           on /api/me read as "access revoked" and ejected the whole fleet. */
+        try { const body = JSON.parse(d);
+              if (body && typeof body === "object") body.httpStatus = res.statusCode;
+              resolve(body); }
+        catch (e) { reject(new Error("bad response")); } }); });
     req.on("error", reject); req.on("timeout", () => { req.destroy(); reject(new Error("service timeout")); });
     if (data) req.write(data); req.end();
   });
@@ -432,6 +439,10 @@ ipcMain.handle("acct", async (ev, request) => {
   if (!allowed) return { ok: false, error: "unsupported account operation" };
   try {
     const response = await jsonCall(cfg.url, verb, p, b || null, acctToken);
+    /* a 5xx is the server failing, not the server judging us — same class as a
+       reset: no verdict was rendered, so the heartbeat must hold, not eject */
+    if (response && response.httpStatus >= 500)
+      return { ok: false, transport: true, error: "accounts service error " + response.httpStatus };
     return p === "/api/me" && response.ok ? keepAccountSecrets(response) : response;
   }
   /* transport:true = the request never completed (reset, timeout, DNS) — the
@@ -651,14 +662,14 @@ ipcMain.handle("connect", async (ev, request) => {
   /* ── control relink ──
      Tuned nets heal themselves in the renderer; the control connection is
      invisible there, so it heals here. Same shape as the renderer's backoff
-     (4s, 8s, 16s, 30s, then 60s, with jitter) and it stops the moment this
-     stack is no longer the live one. Main-process timers are not throttled,
-     so this keeps working while the operator is in-game. */
+     (4s, 8s, 16s, 32s, then capped at 60s, with jitter) and it stops the
+     moment this stack is no longer the live one. Main-process timers are not
+     throttled, so this keeps working while the operator is in-game. */
   const rootChannel = require("./config/22nd-package.json").rootChannel;
   let ctlTries = 0;
   const relinkControl = () => {
     if (stack !== radio) return;
-    const wait = Math.min(60000, 4000 * Math.pow(2, Math.min(3, ctlTries++))) + Math.random() * 1500;
+    const wait = Math.min(60000, 4000 * Math.pow(2, Math.min(4, ctlTries++))) + Math.random() * 1500;
     setTimeout(async () => {
       if (stack !== radio) return;
       try { await radio.connectControl(rootChannel); ctlTries = 0; }

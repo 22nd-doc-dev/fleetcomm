@@ -22,9 +22,16 @@
 /* consecutive transport failures before the operator is told about it —
  * 3 polls = ~36s, long enough that a single blip never warns */
 const WARN_AFTER = 3;
+/* re-warn during a sustained outage (every 25 polls = ~5min), so a broken
+ * endpoint isn't hidden behind one easily-missed log line for hours */
+const REWARN_EVERY = 25;
 
 const REASONS = {
-  unauthorized: "Your sign-in session expired. Sign in with Discord again.",
+  /* "unauthorized" covers BOTH an expired session and a revocation — the
+     server deletes a revoked account's sessions, so the heartbeat can't tell
+     them apart. Say the session ended and let the re-login say why, rather
+     than confidently claiming an expiry that may not be one. */
+  unauthorized: "Your sign-in session has ended — sign in with Discord again.",
   "access revoked by COMMAND": "Your FleetComm access was revoked by COMMAND."
 };
 
@@ -37,7 +44,8 @@ function assess(result, fails) {
   const r = result || {};
   if (r.transport) {
     const next = (fails || 0) + 1;
-    return { action: "hold", fails: next, warn: next === WARN_AFTER, reason: "" };
+    const warn = next === WARN_AFTER || (next > WARN_AFTER && next % REWARN_EVERY === 0);
+    return { action: "hold", fails: next, warn, reason: "" };
   }
   if (!r.ok || !r.authorized) {
     const reason = REASONS[r.error] || r.error || "Your FleetComm access changed. Sign in again.";
@@ -46,4 +54,4 @@ function assess(result, fails) {
   return { action: "ok", fails: 0, warn: false, reason: "" };
 }
 
-module.exports = { assess, WARN_AFTER };
+module.exports = { assess, WARN_AFTER, REWARN_EVERY };

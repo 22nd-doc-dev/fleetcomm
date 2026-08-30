@@ -20,9 +20,12 @@ BOOTTOK="boot-$(openssl rand -hex 24)"
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE"/{server,src,proto,config,deploy-secrets}
-for file in server/accounts-service.js server/setup-accounts.sh src/channel-name.js src/mumble-client.js src/relay-trust.js src/varint.js proto/Mumble.proto config/22nd-package.json; do
+# src/ is staged whole — hand-picking files from it is how a missing
+# relay-trust.js (a hard require of mumble-client.js) crash-looped the service
+for file in server/accounts-service.js server/setup-accounts.sh proto/Mumble.proto config/22nd-package.json; do
   cp "$file" "$STAGE/$(dirname "$file")/"
 done
+cp src/*.js "$STAGE/src/"
 printf '%s' "$SUPW" > "$STAGE/deploy-secrets/superuser-password"
 printf '%s' "$RELAYPW" > "$STAGE/deploy-secrets/relay-password"
 printf '%s' "$BOOTTOK" > "$STAGE/deploy-secrets/bootstrap-token"
