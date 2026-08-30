@@ -41,6 +41,14 @@ if (!Number.isFinite(SESSION_TTL_HOURS) || SESSION_TTL_HOURS < 1 || SESSION_TTL_
   throw new Error("SESSION_TTL_HOURS must be between 1 and 168");
 const SESSION_TTL_MS = SESSION_TTL_HOURS * 60 * 60 * 1000;
 const MOCK = process.env.MOCK_DISCORD === "1";
+/* ── Discord guild gate ──
+   Only members of the fleet's Discord may sign in. This is checked HERE, on the
+   server, against Discord's own API — never in the client, which an operator
+   could patch. It also means access follows the Discord: leave the server and
+   your next sign-in fails, without anyone having to remember to revoke you.
+   Unset = no gate, so a droplet that hasn't been told the guild ID keeps working
+   instead of silently locking out the whole fleet. */
+const GUILD_ID = String(process.env.DISCORD_GUILD_ID || "").trim();
 const ACL_SYNC_DISABLED = process.env.ACL_SYNC_DISABLED === "1";
 if (!["127.0.0.1", "::1", "localhost"].includes(HOST) && process.env.ALLOW_PUBLIC_ACCOUNTS !== "1")
   throw new Error("accounts service must bind to loopback (set ALLOW_PUBLIC_ACCOUNTS=1 only behind a trusted TLS proxy)");
@@ -107,6 +115,32 @@ function cleanSessions(now) {
 }
 
 /* ── Discord verification ── */
+function discordGet(pathName, token) {
+  return new Promise((resolve, reject) => {
+    const req = https.get("https://discord.com/api" + pathName,
+      { headers: { Authorization: "Bearer " + token, "User-Agent": "FleetComm-Accounts" }, timeout: 10000 },
+      (res) => {
+        let d = "";
+        res.on("data", c => { d += c; if (d.length > 512 * 1024) req.destroy(new Error("discord response is too large")); });
+        res.on("end", () => {
+          if (res.statusCode !== 200) return reject(new Error("discord guild check failed (" + res.statusCode + ")"));
+          try { resolve(JSON.parse(d)); } catch (e) { reject(new Error("discord returned malformed data")); }
+        });
+      });
+    req.on("error", reject);
+    req.on("timeout", () => { req.destroy(); reject(new Error("discord timed out")); });
+  });
+}
+/* Throws unless this token's owner is a member of the configured guild. */
+async function requireGuildMember(token) {
+  if (!GUILD_ID) return true;                 /* gate not configured — allow */
+  const guilds = await discordGet("/users/@me/guilds", token);
+  if (!Array.isArray(guilds)) throw new Error("discord returned an unexpected guild list");
+  if (!guilds.some(g => String(g && g.id) === GUILD_ID))
+    throw new Error("not a member of the fleet Discord");
+  return true;
+}
+
 function verifyDiscord(body) {
   if (MOCK) {
     if (!body.mockId) return Promise.reject(new Error("mock login requires mockId"));
@@ -269,6 +303,9 @@ const server = http.createServer(async (req, res) => {
     if (p === "/api/login" && req.method === "POST") {
       const b = await body(req);
       const who = await verifyDiscord(b);
+      /* fleet Discord membership is checked before ANY account state is touched,
+         so a non-member never lands in the queue in the first place */
+      if (!MOCK && b.discordToken) await requireGuildMember(String(b.discordToken));
       let acc = db.accounts[who.id];
       const initialized = hasCommand();
       if (!initialized) {

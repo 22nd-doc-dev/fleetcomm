@@ -60,7 +60,13 @@ class RadioStack extends EventEmitter {
       const chan = client.channelByName(relayName);
       if (chan == null) throw new Error("net channel not found on server: " + relayName);
       net.channelId = chan;
-      client.joinChannel(chan);
+      /* confirm we really landed, so a net an operator may not enter reports as
+         refused instead of pretending to be tuned */
+      try {
+        await client.joinChannelAcked(chan);
+      } catch (denied) {
+        throw new Error("you don't have access to " + (netCfg.name || relayName) + " — " + denied.message);
+      }
       this.emit("tuned", { idx, net: netCfg });
       return idx;
     } catch (error) {

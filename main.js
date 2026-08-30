@@ -375,7 +375,9 @@ ipcMain.handle("discord-login", async (ev, request) => {
   const state = b64url(crypto.randomBytes(16));
   const redirect = "http://127.0.0.1:" + OAUTH_PORT + "/callback";
   const authUrl = "https://discord.com/oauth2/authorize?response_type=code&client_id=" + cfg.discordClientId +
-    "&scope=identify&redirect_uri=" + encodeURIComponent(redirect) + "&state=" + state +
+    /* `guilds` lets the ACCOUNTS SERVICE confirm the operator is in the fleet's
+       Discord. The check happens there, against Discord, never in this client. */
+    "&scope=identify%20guilds&redirect_uri=" + encodeURIComponent(redirect) + "&state=" + state +
     "&code_challenge=" + challenge + "&code_challenge_method=S256";
   let code;
   try {

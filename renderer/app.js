@@ -308,6 +308,9 @@ try { encoder.encoderCTL(4002, 40000); } catch (e) {}
    audio or hearing the net through speakers the mic can pick up. Both
    selections persist and the mic is re-opened in place when changed. */
 let micDevice = store.get("micDevice", "");
+/* transmit gate threshold (RMS 0..1) and its hold counter; 0 disables the gate */
+let micGate = Math.max(0, Math.min(0.2, Number(store.get("micGate", 0.012)) || 0));
+let gateHold = 0, aecOn = true;
 let outDevice = store.get("outDevice", "");
 async function listAudioDevices() {
   let devices = [];
@@ -326,11 +329,33 @@ async function listAudioDevices() {
   fill($("outSel"), "audiooutput", outDevice);
 }
 async function applyOutputDevice() {
-  /* setSinkId is Chromium-only and not always present; fail quietly */
+  /* Only ever re-route when the operator has actually PICKED a device.
+     Calling setSinkId("") re-creates the output stream even though nothing
+     changed, and Chromium's echo canceller pairs the capture stream with a
+     known render device — re-routing after the mic is open leaves it without a
+     reference, and the room comes straight back down the net as echo. */
+  if (!outDevice) return;
   try {
-    if (typeof ctx.setSinkId === "function") await ctx.setSinkId(outDevice || "");
+    if (typeof ctx.setSinkId === "function") await ctx.setSinkId(outDevice);
   } catch (e) { toast("Couldn't switch output device: " + e.message); }
 }
+/* the slider is 0-60 on a curve, so the useful low end has real resolution */
+const gateToSlider = (g) => Math.round(Math.sqrt(Math.max(0, g) / 0.06) * 60);
+const sliderToGate = (v) => (v <= 0 ? 0 : Math.pow(v / 60, 2) * 0.06);
+function renderGate() {
+  $("micGateSl").value = String(gateToSlider(micGate));
+  $("micGateVal").textContent = micGate <= 0 ? "off" : Math.round(micGate * 1000) / 10 + "%";
+  $("gateHint").classList.toggle("warn", micGate <= 0);
+  $("gateHint").textContent = micGate <= 0
+    ? "Gate off — everything your microphone hears goes out, including your speakers."
+    : "Below this level nothing is sent, so the room and your speakers don't ride out over the net";
+  $("outHint").classList.toggle("warn", !aecOn);
+  if (!aecOn) $("outHint").textContent =
+    "This microphone reports no echo cancellation — on speakers, everyone else will hear themselves. Use a headset.";
+}
+$("micGateSl").addEventListener("input", function () {
+  micGate = sliderToGate(Number(this.value)); store.set("micGate", micGate); renderGate();
+});
 $("micSel").addEventListener("change", async function () {
   micDevice = this.value; store.set("micDevice", micDevice);
   if (capNode) {                       /* re-open the mic on the new device */
@@ -362,7 +387,17 @@ async function ensureMic() {
       toast("Saved microphone unavailable — using the system default.");
     }
     listAudioDevices();          /* labels are only readable once permission is granted */
-    applyOutputDevice();
+    if (outDevice) applyOutputDevice();
+    /* Report whether the browser actually granted echo cancellation. When it
+       didn't — some USB interfaces and virtual cables simply don't offer it —
+       the operator needs to know, because on speakers that is audible echo for
+       everyone else on the net, not for them. */
+    try {
+      const t = stream.getAudioTracks()[0], st = t && t.getSettings ? t.getSettings() : {};
+      aecOn = st.echoCancellation !== false;
+      if (!aecOn) addLog("sys", "", "echo cancellation unavailable on this microphone — use a headset");
+    } catch (e) { aecOn = true; }
+    renderMic(); renderGate();
     const src = ctx.createMediaStreamSource(stream);
     const workletCode = `class Cap extends AudioWorkletProcessor{
       constructor(){super();this.buf=new Float32Array(${FRAME});this.n=0;}
@@ -380,7 +415,21 @@ async function ensureMic() {
     capNode.connect(silent); silent.connect(ctx.destination); // keep the pull-based worklet graph alive without monitoring the mic
     capNode.port.onmessage = (ev) => {
       if (txSet.size === 0 && txEndPending.size === 0) return;
-      const f32 = ev.data, i16 = pcm16(f32);
+      const f32 = ev.data;
+      /* ── transmit gate ──
+         Below the threshold we send silence rather than the room. Echo
+         cancellation only ever gets you most of the way there, and what leaks
+         through is exactly this: quiet speaker bleed, riding out over the net
+         under everyone else's voice. Fast to open so word onsets survive, slow
+         to close so word endings do. */
+      let sum = 0;
+      for (let i = 0; i < f32.length; i++) sum += f32[i] * f32[i];
+      const rms = Math.sqrt(sum / f32.length);
+      if (rms >= micGate) gateHold = 12;              /* ~240 ms of hold */
+      else if (gateHold > 0) gateHold--;
+      const open = micGate <= 0 || gateHold > 0;
+      if (!open) f32.fill(0);
+      const i16 = pcm16(f32);
       let opus; try { opus = encoder.encode(i16, FRAME); } catch (e) { return; }
       for (const idx of txSet) ipcRenderer.send("tx-frame", { idx, frame: opus, last: false, broadcast: bcastIdx.has(idx) });
       for (const idx of txEndPending) { ipcRenderer.send("tx-frame", { idx, frame: opus, last: true, broadcast: bcastIdx.has(idx) }); txEndPending.delete(idx); }
@@ -616,7 +665,9 @@ function renderNets() {
         '<div class="srow"><label>VOL</label><input type="range" min="0" max="100" value="' + n.vol + '" data-vol>' +
         '<label>L\u00b7R</label><input type="range" class="pan" min="-100" max="100" value="' + n.pan + '" data-pan></div>';
     } else {
-      h += '<button class="tunebtn" data-tune>TUNE ▸</button>';
+      h += n.denied
+        ? '<div class="denied" title="' + escAttr(n.denied) + '">RESTRICTED — NO ACCESS</div>'
+        : '<button class="tunebtn" data-tune>TUNE ▸</button>';
     }
     d.innerHTML = h;
     netlist.appendChild(d);
@@ -913,7 +964,20 @@ async function tuneNet(i, silent) {
     addLog("sys", n.cfg.name, "net created on relay by " + callsign);
     r = await ipcRenderer.invoke("tune", cfg);
   }
-  if (!r.ok) { if (!silent) toast("Tune failed: " + r.error); return false; }
+  if (!r.ok) {
+    /* An access refusal is not a technical failure — say so in those terms, and
+       mark the net on the board so it's obvious you can't use it rather than
+       leaving you pressing a control that does nothing. */
+    const denied = /don't have access|PermissionDenied|refused you access/i.test(r.error || "");
+    n.denied = denied ? (r.error || "").replace(/\s*\(PermissionDenied[^)]*\)/, "") : null;
+    if (!silent) toast(denied
+      ? n.cfg.name + " is restricted — your account doesn't have access to it."
+      : "Tune failed: " + r.error);
+    if (denied) addLog("sys", n.cfg.name, "ACCESS DENIED — restricted net");
+    renderNets();
+    return false;
+  }
+  n.denied = null;
   n.tuned = true; n.idx = r.idx;
   makeChain(n);
   if (n.bcast) ipcRenderer.invoke("arm-broadcast", n.idx);
@@ -1146,15 +1210,26 @@ async function playClipOnNet(name, net) {
      how the file was recorded. */
   let peak = 0;
   for (let i = 0; i < len; i++) { const a = mono[i] < 0 ? -mono[i] : mono[i]; if (a > peak) peak = a; }
-  const CLIP_TARGET = 0.45;                      /* sits alongside voice, not over it */
+  const CLIP_TARGET = 0.18;                      /* well under voice — a clip should sit behind people, not over them */
   const norm = peak > 0.0001 ? Math.min(4, CLIP_TARGET / peak) : 1;
 
+  /* ── where a clip goes ──
+     It is the SHIPWIDE soundboard, so on a ship group it always reaches the
+     whole ship. Requiring TX ALL to be armed first meant clips quietly played
+     into the ship's own empty container channel and nobody heard them. Arming
+     is about YOUR voice; the soundboard's reach is what the feature is. */
+  const shipwide = !!net.cfg.ship;
+  const broadcast = shipwide || !!net.bcast;
+  if (broadcast) {
+    const armed = await ipcRenderer.invoke("arm-broadcast", net.idx);
+    if (!armed) { toast("Couldn't reach the ship's nets — clip not played."); sbPlaying = null; renderSoundboard(); return; }
+  }
+
   sbPlaying = name; renderSoundboard();
-  const where = net.cfg.name + (net.bcast ? " (nest)" : "");
+  const where = net.cfg.name + (broadcast ? (shipwide ? " (shipwide)" : " (nest)") : "");
   addLog("tx", where, "SHIPWIDE CLIP — " + name + " — played by " + callsign);
   /* tell everyone else on the net who keyed it; the audio alone doesn't say */
   try { ipcRenderer.send("send-text", { idx: net.idx, message: "♪ " + callsign + " played " + name }); } catch (e) {}
-  if (net.bcast) await ipcRenderer.invoke("arm-broadcast", net.idx);
 
   /* local monitor so the sender hears what went out, at the same relative level */
   const src = ctx.createBufferSource(); src.buffer = audio;
@@ -1177,7 +1252,7 @@ async function playClipOnNet(name, net) {
   let sent = 0;
   const finish = (ok) => {
     clearInterval(pump);
-    if (ok) { try { ipcRenderer.send("tx-frame", { idx: net.idx, frame: enc.encode(new ArrayBuffer(FRAME * 2), FRAME), last: true, broadcast: !!net.bcast }); } catch (e) {} }
+    if (ok) { try { ipcRenderer.send("tx-frame", { idx: net.idx, frame: enc.encode(new ArrayBuffer(FRAME * 2), FRAME), last: true, broadcast: broadcast }); } catch (e) {} }
     try { enc.delete(); } catch (e) {}
     sbPlaying = null; renderSoundboard();
   };
@@ -1191,7 +1266,7 @@ async function playClipOnNet(name, net) {
         i16view.setInt16(i * 2, (Math.max(-1, Math.min(1, v)) * 32767) | 0, true);
       }
       pos += FRAME; sent++;
-      try { ipcRenderer.send("tx-frame", { idx: net.idx, frame: enc.encode(i16, FRAME), last: false, broadcast: !!net.bcast }); } catch (e) {}
+      try { ipcRenderer.send("tx-frame", { idx: net.idx, frame: enc.encode(i16, FRAME), last: false, broadcast: broadcast }); } catch (e) {}
     }
     if (pos >= len) finish(true);
   }, 20);
@@ -1549,6 +1624,32 @@ $("sovedit").addEventListener("click", function () {
   this.classList.toggle("on", on); ipcRenderer.send("ov-edit", on);
 });
 ipcRenderer.on("ov-edit-state", (ev, on) => $("sovedit").classList.toggle("on", on));
+
+/* ── overlay controls beside AUTHENTICATED ──
+   Moving the overlay means watching it move, which you can't do from inside the
+   SYS page. These mirror the SYS switches so both stay in step. */
+let ovShown = false, ovEditing = false;
+function renderOverlayBox() {
+  $("ovShowBtn").classList.toggle("on", ovShown);
+  $("ovShowBtn").textContent = ovShown ? "HIDE" : "SHOW";
+  $("ovEditBtn").disabled = !ovShown;
+  $("ovEditBtn").classList.toggle("editing", ovEditing);
+  $("ovEditBtn").textContent = ovEditing ? "LOCK IT ▸" : "UNLOCK · MOVE";
+  $("ovHint").textContent = !ovShown ? "off"
+    : ovEditing ? "drag it where you want it, then LOCK IT"
+    : "on — click through it while you play";
+}
+$("ovShowBtn").addEventListener("click", () => ipcRenderer.send("ov-toggle"));
+$("ovEditBtn").addEventListener("click", function () {
+  if (!ovShown) return;
+  ovEditing = !ovEditing;
+  $("sovedit").classList.toggle("on", ovEditing);
+  ipcRenderer.send("ov-edit", ovEditing);
+  renderOverlayBox();
+});
+ipcRenderer.on("ov-shown", (ev, shown) => { ovShown = !!shown; if (!shown) ovEditing = false; renderOverlayBox(); });
+ipcRenderer.on("ov-edit-state", (ev, on) => { ovEditing = !!on; renderOverlayBox(); });
+renderOverlayBox();
 [["bindActive", "active"], ["bindCycUp", "cycUp"], ["bindCycDn", "cycDn"]].forEach(([id, which]) => {
   $(id).addEventListener("click", function () { capturing = { kind: "master", which }; this.classList.add("listen"); this.textContent = "press…"; });
 });
@@ -1635,7 +1736,7 @@ try {
 $("sfx").classList.toggle("on", fx);
 $("sautoupd").classList.toggle("on", autoUpdate);
 $("fxsel").value = fxPreset;
-applyFont(); applyScale(); applyTheme(); refreshAcctEp(); listAudioDevices(); renderCsList(); renderMasterBinds(); renderMic(); renderNets(); refreshSounds();
+applyFont(); applyScale(); applyTheme(); refreshAcctEp(); listAudioDevices(); renderGate(); renderCsList(); renderMasterBinds(); renderMic(); renderNets(); refreshSounds();
 $("startupFail").style.display = "none";
 $("signDiscord").style.display = discordMode ? "block" : "none";
 $("signLegacy").style.display = discordMode ? "none" : "block";
@@ -1779,6 +1880,37 @@ if (bridge.autotestHost) {
     customTheme.bez = "#402030"; themeMode = "custom"; applyTheme();
     L("titlebar-custom", cssHex("--bez", "?") + " (set #402030)");
     themeMode = "dark"; customTheme = Object.assign({}, THEME_DEFAULTS); applyTheme();
+
+    /* this round: overlay box, row density, nest indent, clip level, denial */
+    L("overlay-box-beside-auth", (function () {
+      const b = document.querySelector(".ovbox");
+      const a = document.querySelector(".authbox");
+      return !!(b && a && a.parentElement === b.parentElement && a.nextElementSibling === b);
+    })());
+    L("overlay-buttons", !!document.getElementById("ovShowBtn") && !!document.getElementById("ovEditBtn"));
+    L("overlay-edit-disabled-until-shown", document.getElementById("ovEditBtn").disabled);
+    {
+      const rows = [...netlist.querySelectorAll(".net")];
+      const top = rows.find(r => !r.classList.contains("sub"));
+      const sub = rows.find(r => r.classList.contains("sub"));
+      if (top) L("row-height-px", Math.round(top.getBoundingClientRect().height));
+      if (top && sub) L("nest-indent-px",
+        Math.round(sub.getBoundingClientRect().left - top.getBoundingClientRect().left));
+    }
+    L("clip-target", (function () {
+      const m = String(playClipOnNet).match(/CLIP_TARGET\s*=\s*([0-9.]+)/);
+      return m ? m[1] : "?";
+    })());
+    L("soundboard-always-shipwide", /shipwide\s*\|\|/.test(String(playClipOnNet)));
+    {
+      const n = nets.find(x => !x.tuned) || nets[0];
+      const was = n.denied;
+      n.denied = "you don't have access to " + n.cfg.name; renderNets();
+      const card = netlist.querySelector('[data-i="' + nets.indexOf(n) + '"]');
+      L("denied-row-shows-restricted", !!(card && card.querySelector(".denied")));
+      L("denied-row-hides-tune", !(card && card.querySelector("[data-tune]")));
+      n.denied = was; renderNets();
+    }
 
     /* SYS page: it was pinned to 660px and stopped partway across a wide window */
     showPage("settings");

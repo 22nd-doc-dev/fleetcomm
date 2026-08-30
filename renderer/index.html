@@ -133,12 +133,14 @@
   #split:hover,#split.drag{background:var(--holo)}
   #split::after{content:"";position:absolute;inset:0 -4px}
   #netlist{flex:1;overflow-y:auto;padding:6px}
-  .net{border:1px solid var(--line);border-radius:4px;margin-bottom:5px;background:var(--panel);padding:7px 9px}
+  /* slimmer rows: more nets on screen without shrinking the type */
+  .net{border:1px solid var(--line);border-radius:4px;margin-bottom:3px;background:var(--panel);padding:4px 8px}
   /* indent scales with real nest depth (--lvl), so nests deeper than one
      level read correctly instead of all sitting at the same offset */
-  .net.sub{margin-left:calc(var(--lvl,1) * 20px);position:relative}
-  .net.sub::before{content:"";position:absolute;left:-11px;top:-4px;bottom:50%;width:1px;background:var(--line2)}
-  .net.sub::after{content:"";position:absolute;left:-11px;top:50%;width:8px;height:1px;background:var(--line2)}
+  /* a deeper step per level so a nested net reads as nested at a glance */
+  .net.sub{margin-left:calc(var(--lvl,1) * 30px);position:relative}
+  .net.sub::before{content:"";position:absolute;left:-16px;top:-4px;bottom:50%;width:1px;background:var(--line2)}
+  .net.sub::after{content:"";position:absolute;left:-16px;top:50%;width:13px;height:1px;background:var(--line2)}
   .net.sub.lastchild::before{bottom:50%}
   .chev{border:none;background:none;color:var(--muted);font-size:11.5px;padding:0 3px;width:16px;flex:0 0 auto}
   .chev:hover{color:var(--holo)}
@@ -160,13 +162,13 @@
      CAN shrink — absorbed every pixel of squeeze and collapsed to "UEE…".
      The row wraps instead, and the name keeps a floor width. */
   .nt{display:flex;align-items:center;gap:8px;cursor:pointer;flex-wrap:wrap;row-gap:4px}
-  .nmwrap{display:flex;flex-direction:column;flex:1 1 auto;min-width:118px;line-height:1.2}
+  .nmwrap{display:flex;flex-direction:column;flex:1 1 auto;min-width:118px;line-height:1.15}
   .nt .shipbadge,.nt .nestcount,.nt .cnt{flex:0 0 auto}
-  .nt b.nm{font-size:15px;font-weight:800;letter-spacing:.6px;min-width:0;white-space:nowrap;
+  .nt b.nm{font-size:14px;font-weight:800;letter-spacing:.5px;min-width:0;white-space:nowrap;
     overflow:hidden;text-overflow:ellipsis;color:var(--ink)}
   .net.untuned .nt b.nm{color:var(--muted)}
   .net.sel .nt b.nm{color:var(--ink)}
-  .nt .fq{font-size:11px;font-weight:700;letter-spacing:1px;color:var(--muted)}
+  .nt .fq{font-size:10.5px;font-weight:700;letter-spacing:.8px;color:var(--muted)}
   .net.rx-live .nt b.nm{color:var(--grn)}
   .net.tx-live .nt b.nm{color:var(--amber)}
   .net.rx-live .fq{color:var(--grn)}
@@ -184,7 +186,7 @@
   .ann.wide{flex:1;letter-spacing:1px}
   .nt .cnt{font-size:11.5px;color:var(--muted)}
   .nt .enc{color:var(--amber);font-size:11.5px}
-  .nrow{display:flex;align-items:center;gap:5px;margin-top:6px}
+  .nrow{display:flex;align-items:center;gap:5px;margin-top:4px}
   .nrow .keyb{margin-left:auto;border:1px dashed var(--line2);border-radius:3px;padding:2px 7px;
     font-size:10.5px;font-weight:800;color:var(--muted);background:transparent}
   .nrow .keyb.listen{border-color:var(--amber);color:var(--amber);border-style:solid}
@@ -193,12 +195,17 @@
   /* A range input has a wide intrinsic minimum, and a flex item won't shrink
      below that without min-width:0 — so the VOL slider refused to give ground
      and pushed the L·R slider clean off the right edge of the rail. */
-  .srow{display:flex;align-items:center;gap:6px;margin-top:5px;flex-wrap:wrap;row-gap:4px}
+  .srow{display:flex;align-items:center;gap:6px;margin-top:3px;flex-wrap:wrap;row-gap:4px}
   .srow label{font-size:10px;font-weight:900;letter-spacing:1px;color:var(--muted);
     width:22px;flex:0 0 auto}
   .srow input[type=range]{flex:1 1 54px;min-width:0;height:13px;accent-color:var(--holo)}
   .srow input.pan{flex:0 1 60px;min-width:0;max-width:60px}
-  .tunebtn{width:100%;margin-top:6px;border:1px solid var(--line2);background:transparent;color:var(--muted);
+  /* a net the relay won't let you into says so, instead of offering a TUNE
+     button that silently does nothing */
+  .denied{width:100%;margin-top:6px;border:1px solid var(--red);border-radius:3px;padding:4px;
+    font-size:11px;font-weight:900;letter-spacing:1.2px;color:var(--red);text-align:center;
+    background:var(--red-tint)}
+  .tunebtn{width:100%;margin-top:4px;border:1px solid var(--line2);background:transparent;color:var(--muted);
     border-radius:3px;padding:4px;font-size:11px;font-weight:900;letter-spacing:1.5px}
   .tunebtn:hover{border-color:var(--grn);color:var(--grn)}
   .addbtn{width:calc(100% - 12px);margin:0 6px 8px;border:1px dashed var(--line2);background:transparent;
@@ -310,6 +317,12 @@
   .wide.latched{border-color:var(--amber);color:var(--amber);background:var(--amber-tint)}
   .wide.cmd{border-color:var(--amber);color:var(--amber)}
   .authbox{border:1px solid var(--line);border-radius:4px;padding:8px;background:var(--panel)}
+  .ovbox{border:1px solid var(--line);border-radius:4px;padding:8px;background:var(--panel);margin-top:8px}
+  .ovrow{display:flex;gap:6px;margin:6px 0 4px;flex-wrap:wrap}
+  .ovrow .btn{flex:1 1 auto;min-width:0;padding:5px 8px;font-size:11px}
+  .ovrow .btn.on{border-color:var(--grn);color:var(--grn)}
+  .ovrow .btn.editing{border-color:var(--amber);color:var(--amber)}
+  .ovbox .hint{font-size:11px;color:var(--muted)}
   .authbox .cs{font-size:13.5px;font-weight:900;letter-spacing:.5px}
   .authbox .role{color:var(--amber);font-size:10.5px;font-weight:900;letter-spacing:1.5px;margin-left:6px}
   .foot{font-size:10.5px;color:var(--muted);line-height:1.6;text-align:center;margin-top:auto}
@@ -378,6 +391,10 @@
     animation:pttpulse 1.4s ease-in-out infinite}
   @keyframes pttpulse{0%,100%{opacity:1}50%{opacity:.45}}
   @media (prefers-reduced-motion:reduce){#pttRow.unbound #bindActive{animation:none}}
+  #gaterow{display:flex;align-items:center;gap:8px;min-width:150px}
+  #gaterow input[type=range]{flex:1 1 90px;min-width:0;accent-color:var(--holo)}
+  #micGateVal{min-width:52px;text-align:right;color:var(--muted)}
+  #outHint.warn,#gateHint.warn{color:var(--amber)}
   #scalerow{display:flex;align-items:center;gap:6px}
   #scalerow .btn{padding:4px 9px}
   #scaleval{min-width:46px;text-align:center;color:var(--muted)}
@@ -474,8 +491,11 @@
       <div class="miniheading">AUDIO</div>
       <div class="togrow"><div class="tl"><b>Microphone</b><span>Which input FleetComm transmits from</span></div>
         <select class="orgsel" id="micSel"><option value="">System default</option></select></div>
-      <div class="togrow"><div class="tl"><b>Output</b><span>Where received traffic plays — headset, not speakers, ideally</span></div>
+      <div class="togrow"><div class="tl"><b>Output</b><span id="outHint">Where received traffic plays — a headset stops the net looping back through your mic</span></div>
         <select class="orgsel" id="outSel"><option value="">System default</option></select></div>
+      <div class="togrow"><div class="tl"><b>Transmit gate</b><span id="gateHint">Below this level nothing is sent, so the room and your speakers don't ride out over the net</span></div>
+        <div id="gaterow"><input type="range" id="micGateSl" min="0" max="60" step="1">
+          <span class="num" id="micGateVal">—</span></div></div>
       <div class="togrow"><div class="tl"><b>Radio chirp</b><span>Squelch click on key-up / key-down</span></div><button class="switch on" id="sfx"></button></div>
       <div class="togrow"><div class="tl"><b>Radio voice effect</b><span>How much "over the net" character voices get</span></div>
         <select class="orgsel" id="fxsel"><option value="clean">Clean</option><option value="standard">Standard</option><option value="heavy">Heavy</option></select></div>
@@ -531,6 +551,15 @@
     <button class="wide cmd" id="overrideBtn" style="display:none">CMD OVERRIDE — all tuned</button>
     <div class="authbox"><div class="txh" style="margin-bottom:4px">AUTHENTICATED</div>
       <span class="cs" id="authName">—</span><span class="role" id="authRole"></span></div>
+    <!-- overlay controls belong where you are while using them, not buried in SYS -->
+    <div class="ovbox">
+      <div class="txh">GAME OVERLAY</div>
+      <div class="ovrow">
+        <button class="btn" id="ovShowBtn">SHOW</button>
+        <button class="btn" id="ovEditBtn" title="Unlock to move or resize the overlay, then lock it again">UNLOCK · MOVE</button>
+      </div>
+      <div class="hint" id="ovHint">off</div>
+    </div>
     <div class="foot" id="verlbl"></div>
   </aside>
 </div>

@@ -206,6 +206,24 @@ class MumbleClient extends EventEmitter {
 
   /* ── conveniences ── */
   joinChannel(channelId) { this.send("UserState", { session: this.session, channelId }); }
+  /* Joining is normally fire-and-forget, which means an ACL that refuses you
+     Enter looks exactly like success: the app says "tuned", you sit in Root, and
+     nobody can hear you. That is the worst kind of failure — a control that
+     appears to work. This waits for the server to confirm you actually landed,
+     or to say no. */
+  joinChannelAcked(channelId, ms) {
+    return new Promise((resolve, reject) => {
+      const onState = (m) => {
+        if (m.session === this.session && m.channelId === channelId) { cleanup(); resolve(true); }
+      };
+      const onDenied = (m) => { cleanup(); reject(new Error("the relay refused you access (PermissionDenied type=" + m.type + ")")); };
+      const cleanup = () => { this.off("UserState", onState); this.off("PermissionDenied", onDenied); clearTimeout(t); };
+      this.on("UserState", onState);
+      this.on("PermissionDenied", onDenied);
+      this.joinChannel(channelId);
+      const t = setTimeout(() => { cleanup(); reject(new Error("the relay never confirmed the channel change")); }, ms || 6000);
+    });
+  }
   listen(channelIds) { this.send("UserState", { session: this.session, listeningChannelAdd: channelIds }); }
   unlisten(channelIds) { this.send("UserState", { session: this.session, listeningChannelRemove: channelIds }); }
   setVoiceTarget(id, channelId) { this.send("VoiceTarget", { id, targets: [{ channelId }] }); }
