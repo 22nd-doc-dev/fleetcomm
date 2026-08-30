@@ -198,6 +198,17 @@ async function syncRelayAcls() {
     }
   });
 }
+async function syncRelayAclsWithRetry() {
+  let lastError;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try { await syncRelayAcls(); return; }
+    catch (error) {
+      lastError = error;
+      if (attempt < 4) await pause(500 * (2 ** attempt));
+    }
+  }
+  throw lastError || new Error("relay ACL synchronization failed");
+}
 
 /* ── helpers ── */
 function tokensFor(acc) {
@@ -380,7 +391,7 @@ server.requestTimeout = 15000;
 server.headersTimeout = 16000;
 server.keepAliveTimeout = 5000;
 server.maxRequestsPerSocket = 100;
-syncRelayAcls().then(() => {
+syncRelayAclsWithRetry().then(() => {
   server.listen(PORT, HOST, () => console.log("[fleetcomm-accounts] listening on " + HOST + ":" + PORT + (MOCK ? " (MOCK DISCORD MODE)" : "")));
 }).catch(error => {
   console.error("[fleetcomm-accounts] ACL synchronization failed:", error.message);

@@ -10,6 +10,7 @@ const { MumbleClient } = require("../src/mumble-client");
 
 const TESTPORT = 8890 + Math.floor(Math.random() * 100);
 const BASE = "http://127.0.0.1:" + TESTPORT;
+const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 function api(method, path, bodyObj, token) {
   return new Promise((resolve, reject) => {
     const data = bodyObj ? JSON.stringify(bodyObj) : null;
@@ -21,6 +22,17 @@ function api(method, path, bodyObj, token) {
     req.end();
   });
 }
+async function waitForService(timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const health = await api("GET", "/api/health");
+      if (health.ok) return;
+    } catch (error) {}
+    await wait(100);
+  }
+  throw new Error("accounts service did not become ready");
+}
 (async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "fleetcomm-accounts-"));
   const svc = spawn(process.execPath, [path.join(__dirname, "..", "server", "accounts-service.js")], {
@@ -30,7 +42,9 @@ function api(method, path, bodyObj, token) {
       RELAY_PASSWORD: "gate-pw-test", BOOTSTRAP_TOKEN: "boot-test-only"
     }), stdio: "inherit"
   });
-  await new Promise(r => setTimeout(r, 900));
+  /* Startup synchronizes ACLs for every descendant of the org root; that is
+     intentionally fail-closed and can take several seconds on a fresh relay. */
+  await waitForService(60000);
 
   /* 1. first login needs the out-of-band setup code; there is no first-user race */
   const status = await api("GET", "/api/status");
@@ -68,7 +82,7 @@ function api(method, path, bodyObj, token) {
   const probeM = new MumbleClient({ host: "127.0.0.1", username: "probe-member", tokens: memberTok });
   const probeC = new MumbleClient({ host: "127.0.0.1", username: "probe-cmd", tokens: cmdTok });
   await probeM.connect(); await probeC.connect();
-  await new Promise(r => setTimeout(r, 350));
+  await wait(350);
   const chan = probeM.channelByName("COMMAND NET");
   probeM.joinChannel(chan); probeC.joinChannel(chan);
   await new Promise(r => setTimeout(r, 600));
