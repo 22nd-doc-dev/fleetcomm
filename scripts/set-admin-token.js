@@ -10,9 +10,9 @@
  */
 const path = require("path");
 const { MumbleClient } = require("../src/mumble-client");
+const { channelName: chanName } = require("../src/channel-name");
 
 const PERM = { Write: 0x01, MakeChannel: 0x40, MakeTempChannel: 0x400 };
-function chanName(name) { return name.replace(/[^ \-=\w#\[\]{}()@|]/g, "-"); }
 
 async function setToken(host, supw, token, cfg, port) {
   const c = new MumbleClient({ host, port: port || 64738, username: "SuperUser", password: supw });

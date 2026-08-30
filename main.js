@@ -1,6 +1,6 @@
 "use strict";
 /* FleetComm — Electron main: window, global PTT hooks, radio stack owner. */
-const { app, BrowserWindow, ipcMain, shell, screen } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, screen, session } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const http = require("http");
@@ -16,6 +16,12 @@ app.on("second-instance", () => {
 });
 
 let win = null, stack = null, uio = null, identity = null, keyLabel = (c) => "KEY " + c;
+let connectGeneration = 0;
+const boundedText = (value, max) => String(value == null ? "" : value).trim().slice(0, max);
+const boundedInt = (value, min, max, fallback) => {
+  const n = Number(value);
+  return Number.isInteger(n) && n >= min && n <= max ? n : fallback;
+};
 /* every message to a window goes through these guards — windows can be gone */
 function sendWin(ch, data) { if (win && !win.isDestroyed()) win.webContents.send(ch, data); }
 function sendOverlay(ch, data) { if (overlay && !overlay.isDestroyed()) overlay.webContents.send(ch, data); }
@@ -28,6 +34,13 @@ function loadOvCfg() {
   return ovCfg;
 }
 function saveOvCfg() { try { fs.writeFileSync(ovCfgPath(), JSON.stringify(ovCfg)); } catch (e) {} }
+function lockLocalWindow(window) {
+  window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  window.webContents.on("will-navigate", (event, url) => {
+    if (url !== window.webContents.getURL()) event.preventDefault();
+  });
+  window.webContents.on("will-attach-webview", event => event.preventDefault());
+}
 
 function createOverlay() {
   const c = loadOvCfg();
@@ -37,8 +50,12 @@ function createOverlay() {
     ...b, frame: false, transparent: true, resizable: true, skipTaskbar: true,
     alwaysOnTop: true, hasShadow: false, minimizable: false, maximizable: false,
     focusable: false,
-    webPreferences: { nodeIntegration: true, contextIsolation: false }
+    webPreferences: {
+      preload: path.join(__dirname, "src", "overlay-preload.js"),
+      nodeIntegration: false, contextIsolation: true, sandbox: false, webSecurity: true
+    }
   });
+  lockLocalWindow(overlay);
   overlay.setAlwaysOnTop(true, "screen-saver");
   overlay.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   overlay.setIgnoreMouseEvents(true, { forward: true });
@@ -67,23 +84,44 @@ ipcMain.on("ov-toggle", () => {
   else createOverlay();
   sendWin("ov-shown", !!overlay);
 });
-ipcMain.on("ov-edit", (ev, on) => setOvEdit(on));
+ipcMain.on("ov-edit", (ev, on) => setOvEdit(!!on));
 ipcMain.on("ov-lock", () => setOvEdit(false));
-ipcMain.on("ov-set", (ev, c) => { ovCfg.opacity = c.opacity; ovCfg.scale = c.scale; saveOvCfg(); });
+ipcMain.on("ov-set", (ev, c) => {
+  const cfg = loadOvCfg();
+  cfg.opacity = Math.max(15, Math.min(100, Number(c && c.opacity) || 72));
+  cfg.scale = Math.max(70, Math.min(180, Number(c && c.scale) || 100));
+  saveOvCfg();
+});
 ipcMain.on("ov-state", (ev, nets) => {
-  lastOvState = nets;
-  sendOverlay("ov-state", nets);
+  lastOvState = Array.isArray(nets) ? nets.slice(0, 32).map(net => ({
+    name: String(net.name || "").slice(0, 80), freq: String(net.freq || "").slice(0, 16),
+    who: net.who == null ? null : String(net.who).slice(0, 80), me: String(net.me || "").slice(0, 80),
+    tx: !!net.tx, active: !!net.active, mon: !!net.mon
+  })) : [];
+  sendOverlay("ov-state", lastOvState);
 });
 
 /* ── update check ── */
 const { cmpVer, reconcile: reconcileState, blocked, attempt } = require("./src/update-guard");
-function fetchJson(url) {
+const { isPortableExecutable, validVersion, writeJsonAtomic } = require("./src/update-helper");
+let availableUpdate = null, updateInProgress = false;
+function fetchJson(url, depth) {
   return new Promise((resolve, reject) => {
+    if ((depth || 0) > 5) return reject(new Error("too many redirects"));
+    let parsed;
+    try { parsed = new URL(url); } catch (error) { return reject(new Error("invalid update URL")); }
+    if (parsed.protocol !== "https:") return reject(new Error("update URL must use HTTPS"));
     const req = https.get(url, { timeout: 8000 }, (res) => {
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location)
-        return fetchJson(res.headers.location).then(resolve, reject);
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume();
+        return fetchJson(new URL(res.headers.location, parsed).toString(), (depth || 0) + 1).then(resolve, reject);
+      }
+      if (res.statusCode !== 200) { res.resume(); return reject(new Error("HTTP " + res.statusCode)); }
       let d = "";
-      res.on("data", (c) => d += c);
+      res.on("data", (c) => {
+        d += c;
+        if (d.length > 256 * 1024) req.destroy(new Error("update response is too large"));
+      });
       res.on("end", () => { try { resolve(JSON.parse(d)); } catch (e) { reject(e); } });
     });
     req.on("error", reject);
@@ -96,10 +134,14 @@ async function checkUpdates() {
   if (!u || !/^https:/.test(u.url || "")) return { status: "unconfigured" };
   try {
     const info = await fetchJson(u.url);
-    if (info.version && cmpVer(info.version, app.getVersion()) > 0)
-      return { status: "update", version: info.version, notes: info.notes || "", url: u.releases || u.url };
+    if (info.version && !validVersion(info.version)) throw new Error("update feed returned an invalid version");
+    if (info.version && cmpVer(info.version, app.getVersion()) > 0) {
+      availableUpdate = { status: "update", version: info.version, notes: String(info.notes || "").slice(0, 4000), url: u.releases || u.url };
+      return availableUpdate;
+    }
+    availableUpdate = null;
     return { status: "current", version: app.getVersion() };
-  } catch (e) { return { status: "error", error: e.message }; }
+  } catch (e) { availableUpdate = null; return { status: "error", error: e.message }; }
 }
 ipcMain.handle("check-updates", () => checkUpdates());
 
@@ -111,20 +153,39 @@ ipcMain.handle("check-updates", () => checkUpdates());
 function downloadFile(url, dest, onPct, depth) {
   return new Promise((resolve, reject) => {
     if ((depth || 0) > 5) return reject(new Error("too many redirects"));
+    let parsed;
+    try { parsed = new URL(url); } catch (error) { return reject(new Error("invalid download URL")); }
+    if (parsed.protocol !== "https:") return reject(new Error("download URL must use HTTPS"));
     const req = https.get(url, { timeout: 30000, headers: { "User-Agent": "FleetComm" } }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         res.resume();
-        return downloadFile(res.headers.location, dest, onPct, (depth || 0) + 1).then(resolve, reject);
+        let next;
+        try { next = new URL(res.headers.location, parsed).toString(); }
+        catch (error) { return reject(new Error("invalid download redirect")); }
+        return downloadFile(next, dest, onPct, (depth || 0) + 1).then(resolve, reject);
       }
       if (res.statusCode !== 200) { res.resume(); return reject(new Error("HTTP " + res.statusCode)); }
       const total = parseInt(res.headers["content-length"] || "0", 10);
+      if (total > 512 * 1024 * 1024) { res.resume(); return reject(new Error("download is unexpectedly large")); }
       let got = 0;
-      const out = fs.createWriteStream(dest);
-      res.on("data", (ch) => { got += ch.length; if (total && onPct) onPct(Math.round(got / total * 100)); });
+      const out = fs.createWriteStream(dest, { mode: 0o600 });
+      let settled = false;
+      const fail = (error) => {
+        if (settled) return;
+        settled = true;
+        try { out.destroy(); } catch (ignore) {}
+        try { fs.unlinkSync(dest); } catch (ignore) {}
+        reject(error);
+      };
+      res.on("data", (ch) => {
+        got += ch.length;
+        if (got > 512 * 1024 * 1024) return fail(new Error("download is unexpectedly large"));
+        if (total && onPct) onPct(Math.round(got / total * 100));
+      });
       res.pipe(out);
-      out.on("finish", () => out.close(() => resolve(got)));
-      out.on("error", reject);
-      res.on("error", reject);
+      out.on("finish", () => out.close(() => { if (!settled) { settled = true; resolve(got); } }));
+      out.on("error", fail);
+      res.on("error", fail);
     });
     req.on("error", reject);
     req.on("timeout", () => { req.destroy(); reject(new Error("download timeout")); });
@@ -136,11 +197,24 @@ const soundsDir = () => {
   try { fs.mkdirSync(d, { recursive: true }); } catch (e) {}
   return d;
 };
+function soundFile(name) {
+  const base = path.basename(boundedText(name, 255));
+  if (!base || base === "." || base === "..") throw new Error("invalid sound name");
+  const p = path.join(soundsDir(), base);
+  const st = fs.lstatSync(p);
+  if (!st.isFile() || st.isSymbolicLink()) throw new Error("sound is not a regular file");
+  return { path: p, stat: st };
+}
 ipcMain.handle("sounds-list", () => {
   try {
     return fs.readdirSync(soundsDir())
       .filter(f => /\.(wav|mp3|ogg|m4a|flac|webm)$/i.test(f))
-      .map(f => ({ name: f, path: path.join(soundsDir(), f), size: fs.statSync(path.join(soundsDir(), f)).size }));
+      // Renderer only needs the logical filename and size.  Do not expose the
+      // user's absolute profile path across the IPC boundary.
+      .map(f => {
+        try { const file = soundFile(f); return { name: f, size: file.stat.size }; }
+        catch (error) { return null; }
+      }).filter(Boolean);
   } catch (e) { return []; }
 });
 ipcMain.handle("sounds-add", async () => {
@@ -158,7 +232,9 @@ ipcMain.handle("sounds-add", async () => {
       const dest = path.join(soundsDir(), base);
       const stat = fs.statSync(f);
       if (stat.size > 12 * 1024 * 1024) continue; /* keep clips sane */
-      fs.copyFileSync(f, dest);
+      /* Never follow an attacker-created destination symlink, and do not
+         replace an existing clip behind the user's back. */
+      fs.copyFileSync(f, dest, fs.constants.COPYFILE_EXCL);
       added.push(base);
     } catch (e) {}
   }
@@ -166,18 +242,18 @@ ipcMain.handle("sounds-add", async () => {
 });
 ipcMain.handle("sounds-read", (ev, name) => {
   try {
-    const p = path.join(soundsDir(), path.basename(name));
-    return { ok: true, data: fs.readFileSync(p).buffer };
+    const data = fs.readFileSync(soundFile(name).path);
+    return { ok: true, data: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) };
   } catch (e) { return { ok: false, error: e.message }; }
 });
 ipcMain.handle("sounds-delete", (ev, name) => {
-  try { fs.unlinkSync(path.join(soundsDir(), path.basename(name))); return { ok: true }; }
+  try { fs.unlinkSync(soundFile(name).path); return { ok: true }; }
   catch (e) { return { ok: false, error: e.message }; }
 });
 
 /* ── Discord sign-in (PKCE, loopback — no client secret anywhere) ── */
 const OAUTH_PORT = 53682;
-let acctToken = null;
+let acctToken = null, acctRelay = null;
 function b64url(buf) { return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
 function postForm(url, form) {
   return new Promise((resolve, reject) => {
@@ -185,31 +261,65 @@ function postForm(url, form) {
     const u = new URL(url);
     const req = https.request({ hostname: u.hostname, path: u.pathname, method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded", "Content-Length": Buffer.byteLength(data) }, timeout: 15000 },
-      (res) => { let d = ""; res.on("data", c => d += c); res.on("end", () => {
+      (res) => { let d = ""; res.on("data", c => {
+        d += c;
+        if (d.length > 256 * 1024) req.destroy(new Error("OAuth response is too large"));
+      }); res.on("end", () => {
         try { const j = JSON.parse(d); res.statusCode === 200 ? resolve(j) : reject(new Error(j.error_description || j.error || ("HTTP " + res.statusCode))); }
         catch (e) { reject(e); } }); });
     req.on("error", reject); req.on("timeout", () => { req.destroy(); reject(new Error("timeout")); });
     req.write(data); req.end();
   });
 }
+function accountBase(raw) {
+  const u = new URL(raw);
+  const loopback = ["127.0.0.1", "::1", "localhost"].includes(u.hostname);
+  if (u.protocol !== "https:" && !(u.protocol === "http:" && loopback))
+    throw new Error("accounts service must use HTTPS");
+  return u;
+}
 function jsonCall(base, method, pathName, bodyObj, bearer) {
   return new Promise((resolve, reject) => {
-    const u = new URL(base + pathName);
+    let root, u;
+    try {
+      root = accountBase(base);
+      u = new URL(pathName, root);
+      if (u.origin !== root.origin || !u.pathname.startsWith("/api/")) throw new Error("invalid accounts path");
+    } catch (error) { return reject(error); }
     const lib = u.protocol === "https:" ? https : http;
     const data = bodyObj ? JSON.stringify(bodyObj) : null;
     const req = lib.request({ hostname: u.hostname, port: u.port, path: u.pathname, method,
       headers: Object.assign({ "Content-Type": "application/json" },
         data ? { "Content-Length": Buffer.byteLength(data) } : {},
         bearer ? { Authorization: "Bearer " + bearer } : {}), timeout: 12000 },
-      (res) => { let d = ""; res.on("data", c => d += c); res.on("end", () => {
+      (res) => { let d = ""; res.on("data", c => {
+        d += c;
+        if (d.length > 1024 * 1024) req.destroy(new Error("accounts response is too large"));
+      }); res.on("end", () => {
         try { resolve(JSON.parse(d)); } catch (e) { reject(new Error("bad response")); } }); });
     req.on("error", reject); req.on("timeout", () => { req.destroy(); reject(new Error("service timeout")); });
     if (data) req.write(data); req.end();
   });
 }
-ipcMain.handle("discord-login", async () => {
+function keepAccountSecrets(response) {
+  if (!response || typeof response !== "object") return response;
+  if (response.token) acctToken = response.token;
+  if (Object.prototype.hasOwnProperty.call(response, "relay")) acctRelay = response.relay || null;
+  const out = Object.assign({}, response);
+  delete out.token;
+  out.authorized = !!response.relay;
+  delete out.relay;
+  return out;
+}
+ipcMain.handle("discord-login", async (ev, request) => {
   const cfg = require("./config/22nd-package.json").accounts;
   if (!cfg || !cfg.url || !cfg.discordClientId) return { ok: false, unconfigured: true };
+  const bootstrapToken = String(request && request.bootstrapToken || "").trim().slice(0, 200);
+  try {
+    const status = await jsonCall(cfg.url, "GET", "/api/status");
+    if (status && status.ok && !status.initialized && !bootstrapToken)
+      return { ok: false, bootstrapRequired: true, error: "initial COMMAND setup code required" };
+  } catch (error) { return { ok: false, error: error.message }; }
   const verifier = b64url(crypto.randomBytes(32));
   const challenge = b64url(crypto.createHash("sha256").update(verifier).digest());
   const state = b64url(crypto.randomBytes(16));
@@ -220,19 +330,33 @@ ipcMain.handle("discord-login", async () => {
   let code;
   try {
     code = await new Promise((resolve, reject) => {
+      let settled = false;
+      let timer;
+      const finish = (error, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        try { srv.close(); } catch (ignore) {}
+        error ? reject(error) : resolve(value);
+      };
       const srv = http.createServer((req2, res2) => {
         const u = new URL(req2.url, "http://x");
         if (u.pathname !== "/callback") { res2.writeHead(404); return res2.end(); }
-        res2.writeHead(200, { "Content-Type": "text/html" });
-        res2.end("<body style='font-family:sans-serif;background:#0b0f13;color:#e8edf1;display:grid;place-items:center;height:100vh'><div><h2>FleetComm</h2>Signed in — you can close this tab and return to the app.</div></body>");
-        srv.close();
-        if (u.searchParams.get("state") !== state) return reject(new Error("state mismatch"));
-        if (u.searchParams.get("error")) return reject(new Error(u.searchParams.get("error")));
-        resolve(u.searchParams.get("code"));
+        const error = u.searchParams.get("state") !== state ? new Error("state mismatch")
+          : u.searchParams.get("error") ? new Error(u.searchParams.get("error"))
+          : !u.searchParams.get("code") ? new Error("Discord did not return a sign-in code") : null;
+        res2.writeHead(error ? 400 : 200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store",
+          "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'" });
+        res2.end("<body style='font-family:sans-serif;background:#0b0f13;color:#e8edf1;display:grid;place-items:center;height:100vh'><div><h2>FleetComm</h2>" +
+          (error ? "Sign-in could not be completed. Return to FleetComm for details." : "Signed in — you can close this tab and return to the app.") + "</div></body>");
+        finish(error, u.searchParams.get("code"));
       });
-      srv.on("error", (e) => reject(new Error(e.code === "EADDRINUSE" ? "port 53682 busy — close other FleetComm sign-ins" : e.message)));
-      srv.listen(OAUTH_PORT, "127.0.0.1", () => shell.openExternal(authUrl));
-      setTimeout(() => { try { srv.close(); } catch (e) {} reject(new Error("sign-in timed out")); }, 180000);
+      srv.on("error", (e) => finish(new Error(e.code === "EADDRINUSE" ? "port 53682 busy — close other FleetComm sign-ins" : e.message)));
+      srv.listen(OAUTH_PORT, "127.0.0.1", () => {
+        try { shell.openExternal(authUrl).catch(finish); }
+        catch (error) { finish(error); }
+      });
+      timer = setTimeout(() => finish(new Error("sign-in timed out")), 180000);
     });
   } catch (e) { return { ok: false, error: e.message }; }
   try {
@@ -240,16 +364,24 @@ ipcMain.handle("discord-login", async () => {
       client_id: cfg.discordClientId, grant_type: "authorization_code",
       code, redirect_uri: redirect, code_verifier: verifier
     });
-    const login = await jsonCall(cfg.url, "POST", "/api/login", { discordToken: tok.access_token });
-    if (login.ok) acctToken = login.token;
-    return login;
+    const login = await jsonCall(cfg.url, "POST", "/api/login", { discordToken: tok.access_token, bootstrapToken });
+    return login.ok ? keepAccountSecrets(login) : login;
   } catch (e) { return { ok: false, error: e.message }; }
 });
-ipcMain.handle("acct", async (ev, { method, path: p, body: b }) => {
+ipcMain.handle("acct", async (ev, request) => {
+  const { method, path: p, body: b } = request || {};
   const cfg = require("./config/22nd-package.json").accounts;
   if (!cfg || !cfg.url) return { ok: false, error: "accounts service not configured" };
   if (!acctToken) return { ok: false, error: "not signed in" };
-  try { return await jsonCall(cfg.url, method || "GET", p, b || null, acctToken); }
+  const verb = method === "POST" ? "POST" : "GET";
+  const allowed = verb === "GET"
+    ? ["/api/me", "/api/accounts", "/api/nets/access"].includes(p)
+    : p === "/api/callsign" || p === "/api/nets/access" || /^\/api\/accounts\/\d+\/role$/.test(p);
+  if (!allowed) return { ok: false, error: "unsupported account operation" };
+  try {
+    const response = await jsonCall(cfg.url, verb, p, b || null, acctToken);
+    return p === "/api/me" && response.ok ? keepAccountSecrets(response) : response;
+  }
   catch (e) { return { ok: false, error: e.message }; }
 });
 
@@ -268,14 +400,19 @@ function readUpdState() { try { return JSON.parse(fs.readFileSync(updStatePath()
    and leave it to the banner. Failing closed beats spinning. */
 function writeUpdState(s) {
   try {
-    fs.writeFileSync(updStatePath(), JSON.stringify(s));
-    return JSON.parse(fs.readFileSync(updStatePath(), "utf8")).target === s.target;
+    writeJsonAtomic(updStatePath(), s);
+    const saved = JSON.parse(fs.readFileSync(updStatePath(), "utf8"));
+    return saved.target === s.target && saved.status === s.status;
   } catch (e) { return false; }
 }
 let updateNote = null;   /* what to tell the renderer about the last attempt */
 
 function reconcileUpdate() {
-  const r = reconcileState(app.getVersion(), readUpdState(), process.argv.includes("--update-failed"));
+  const before = readUpdState();
+  const r = reconcileState(app.getVersion(), before, process.argv.includes("--update-failed"));
+  if (r.note && r.note.installed && before.backup) {
+    try { fs.unlinkSync(before.backup); } catch (error) {}
+  }
   writeUpdState(r.state);
   updateNote = r.note;
 }
@@ -288,81 +425,54 @@ ipcMain.handle("do-update", async (ev, info) => {
   const origExe = process.env.PORTABLE_EXECUTABLE_FILE;
   const tpl = pkgCfg.updates && pkgCfg.updates.exeTemplate;
   if (process.platform !== "win32" || !origExe || !tpl) return { ok: false, fallback: true };
+  if (updateInProgress) return { ok: false, error: "an update is already in progress" };
+  updateInProgress = true;
   try {
-    const url = tpl.split("{v}").join(info.version);
-    const fresh = path.join(app.getPath("temp"), "FleetComm-" + info.version + ".exe");
+    const checked = availableUpdate && availableUpdate.version === info.version ? availableUpdate : await checkUpdates();
+    if (!checked || checked.status !== "update" || checked.version !== info.version || !validVersion(checked.version))
+      throw new Error("the requested release is no longer the available update");
+    const version = checked.version;
+    const url = tpl.split("{v}").join(version);
+    const nonce = process.pid + "-" + Date.now();
+    const fresh = path.join(app.getPath("temp"), "FleetComm-" + version + "-" + nonce + ".exe");
     const bytes = await downloadFile(url, fresh, (pct) => sendWin("update-progress", pct));
     if (bytes < 40 * 1024 * 1024) throw new Error("download looks incomplete (" + bytes + " bytes)");
-    /* make sure we got a Windows binary and not an HTML error page */
-    const head = Buffer.alloc(2);
-    const fd = fs.openSync(fresh, "r"); fs.readSync(fd, head, 0, 2, 0); fs.closeSync(fd);
-    if (head.toString("latin1") !== "MZ") throw new Error("downloaded file is not a Windows executable");
+    if (!isPortableExecutable(fresh, 40 * 1024 * 1024)) throw new Error("downloaded file is not a valid Windows executable");
 
-    /* The swap script waits for the file to actually be free rather than
-       guessing with a fixed sleep, verifies the new exe is in place before it
-       relaunches, and puts the old one back if anything goes wrong — so a
-       failed update leaves a working FleetComm, never a half-swapped one. */
-    const script = path.join(app.getPath("temp"), "fleetcomm-update.cmd");
-    fs.writeFileSync(script, [
-      "@echo off",
-      'set "EXE=' + origExe + '"',
-      'set "NEW=' + fresh + '"',
-      'set "BAK=' + origExe + '.old"',
-      'set "PID=' + process.pid + '"',
-      /* Wait for THIS process to be gone before relaunching. FleetComm holds a
-         single-instance lock, so a relaunch that overlaps the old process makes
-         the fresh copy quit on startup and hand focus back to the old window —
-         which looks exactly like "it reopened the old version". */
-      "set /a w=0",
-      ":wait",
-      "set /a w+=1",
-      'tasklist /fi "PID eq %PID%" 2>nul | find "%PID%" >nul || goto gone',
-      "if %w% geq 30 goto gone",
-      "ping -n 2 127.0.0.1 >nul",
-      "goto wait",
-      ":gone",
-      "set /a n=0",
-      ":swap",
-      "set /a n+=1",
-      'move /y "%EXE%" "%BAK%" >nul 2>&1',
-      "if not errorlevel 1 goto moved",
-      "if %n% geq 30 goto fail",
-      /* NOT `timeout` — we are spawned with stdio ignored, so its stdin is NUL
-         and it exits immediately with "input redirection is not supported",
-         which is how the old script raced the still-running app, failed the
-         move, and relaunched the OLD exe. ping always waits. */
-      "ping -n 2 127.0.0.1 >nul",
-      "goto swap",
-      ":moved",
-      'move /y "%NEW%" "%EXE%" >nul 2>&1',
-      "if errorlevel 1 goto restore",
-      'if not exist "%EXE%" goto restore',
-      'del "%BAK%" >nul 2>&1',
-      'start "" "%EXE%"',
-      "goto done",
-      ":restore",
-      'if exist "%BAK%" move /y "%BAK%" "%EXE%" >nul 2>&1',
-      'start "" "%EXE%" --update-failed',
-      "goto done",
-      ":fail",
-      'if exist "%BAK%" move /y "%BAK%" "%EXE%" >nul 2>&1',
-      'start "" "%EXE%" --update-failed',
-      ":done",
-      'del "%~f0" >nul 2>&1'
-    ].join("\r\n"));
-
-    if (!writeUpdState(attempt(info.version)) && info.auto)
-      return { ok: false, error: "can't record the attempt, so it won't be installed unattended" };
-    require("child_process").spawn("cmd.exe", ["/c", script], { detached: true, stdio: "ignore", windowsHide: true }).unref();
+    const helper = path.join(app.getPath("temp"), "fleetcomm-update-helper-" + nonce + ".js");
+    const payloadFile = path.join(app.getPath("temp"), "fleetcomm-update-" + nonce + ".json");
+    fs.copyFileSync(path.join(__dirname, "src", "update-helper.js"), helper);
+    const state = attempt(version, !!info.auto);
+    if (!writeUpdState(state))
+      throw new Error("can't record the attempt safely, so the update was not installed");
+    writeJsonAtomic(payloadFile, {
+      exe: origExe, fresh, backup: origExe + ".old", parentPid: process.pid,
+      stateFile: updStatePath(), target: version, minimumBytes: 40 * 1024 * 1024,
+      logFile: path.join(app.getPath("userData"), "update-helper.log")
+    });
+    const env = Object.assign({}, process.env, { ELECTRON_RUN_AS_NODE: "1" });
+    const child = require("child_process").spawn(process.execPath, [helper, payloadFile], {
+      detached: true, stdio: "ignore", windowsHide: true, env
+    });
+    await new Promise((resolve, reject) => {
+      child.once("spawn", resolve);
+      child.once("error", reject);
+    });
+    child.unref();
     setTimeout(shutdown, 300);
     return { ok: true };
   } catch (e) {
+    updateInProgress = false;
     return { ok: false, error: e.message };
   }
 });
-ipcMain.on("open-external", (ev, url) => { if (/^https?:/.test(url)) shell.openExternal(url); });
+ipcMain.on("open-external", (ev, url) => {
+  try { const parsed = new URL(url); if (parsed.protocol === "https:") shell.openExternal(parsed.toString()); }
+  catch (error) {}
+});
 let curTheme = null;
 ipcMain.on("theme", (ev, t) => {
+  if (!t || !/^#[0-9a-f]{6}$/i.test(t.bg || "") || !/^#[0-9a-f]{6}$/i.test(t.ink || "")) return;
   curTheme = t;
   sendOverlay("ov-theme", t);
   if (process.platform !== "darwin" && win && !win.isDestroyed()) {
@@ -379,14 +489,27 @@ function createWindow() {
     backgroundColor: "#0b141f",
     title: "FleetComm",
     ...frameOpts,
-    webPreferences: { nodeIntegration: true, contextIsolation: false } // prototype; harden before wide release
+    webPreferences: {
+      preload: path.join(__dirname, "src", "preload.js"),
+      nodeIntegration: false, contextIsolation: true, sandbox: false, webSecurity: true
+    }
   });
+  lockLocalWindow(win);
   win.loadFile(path.join(__dirname, "renderer", "index.html"));
   win.removeMenu && win.removeMenu();
   win.on("closed", () => { win = null; shutdown(); });
 }
 
 app.whenReady().then(async () => {
+  reconcileUpdate();
+  session.defaultSession.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) => {
+    const isMainWindow = win && webContents === win.webContents;
+    return !!(isMainWindow && permission === "media" && (!details || !details.mediaType || details.mediaType === "audio"));
+  });
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    const isMainWindow = win && webContents === win.webContents;
+    callback(!!(isMainWindow && permission === "media" && (!details.mediaTypes || details.mediaTypes.includes("audio"))));
+  });
   try { identity = await loadOrCreate(app.getPath("userData")); }
   catch (e) { console.warn("[fleetcomm] identity cert unavailable:", e.message); }
   createWindow();
@@ -407,61 +530,92 @@ app.whenReady().then(async () => {
   } catch (e) {
     console.warn("[fleetcomm] global PTT unavailable (" + e.message + ") — in-window keys still work");
   }
-});
-
-ipcMain.handle("connect", async (ev, { host, port, callsign, nets, token, relayPassword, roleTokens }) => {
-  if (stack) stack.destroy();
-  const allTokens = [].concat(roleTokens || [], token ? [token] : []);
-  stack = new RadioStack({ host, port: port || 64738, callsign,
-    tokens: allTokens, password: relayPassword || "",
-    cert: identity && identity.cert, key: identity && identity.key });
-  stack.on("rx", (r) => sendWin("rx", { idx: r.idx, session: r.session, name: r.name, opus: r.opus, last: r.last }));
-  stack.on("chat", (m) => sendWin("chat", m));
-  stack.on("roster", (r) => sendWin("roster", r));
-  stack.on("net-down", (r) => sendWin("net-down", r));
-  stack.on("net-error", (r) => sendWin("net-error", r));
-  const results = [];
-  for (const n of nets) {
-    try { results.push({ ok: true, idx: await stack.tune(n) }); }
-    catch (e) { results.push({ ok: false, error: e.message, net: n.name }); }
-  }
-  return results;
-});
-ipcMain.handle("tune", async (ev, net) => {
-  if (!stack) return { ok: false, error: "not connected" };
-  try { return { ok: true, idx: await stack.tune(net) }; }
-  catch (e) { return { ok: false, error: e.message }; }
-});
-ipcMain.on("detune", (ev, idx) => stack && stack.detune(idx));
-ipcMain.on("tx-frame", (ev, { idx, frame, last, broadcast }) => stack && stack.txFrame(idx, Buffer.from(frame), last, broadcast));
-ipcMain.handle("arm-broadcast", (ev, idx) => stack ? stack.armBroadcast(idx) : false);
-ipcMain.on("net-mute", (ev, { idx, muted }) => stack && stack.setMuted(idx, muted));
-ipcMain.on("send-text", (ev, { idx, message }) => stack && stack.sendText(idx, message));
-ipcMain.handle("atc-view", () => stack ? stack.atcView() : []);
-const NOSTACK = { ok: false, error: "not connected to the relay" };
-ipcMain.handle("net-rename", (ev, { net, name }) => stack ? stack.renameNet(net, name) : NOSTACK);
-ipcMain.handle("net-move", (ev, { net, parent }) => stack ? stack.moveNet(net, parent) : NOSTACK);
-ipcMain.handle("net-remove", (ev, net) => stack ? stack.removeNet(net) : NOSTACK);
-ipcMain.handle("create-net", async (ev, { name, rootChannel }) => {
-  if (!stack) return { ok: false, error: "not connected" };
-  try { return { ok: true, id: await stack.createNet(name, rootChannel) }; }
-  catch (e) { return { ok: false, error: e.message }; }
-});
-ipcMain.on("disconnect", () => { if (stack) { stack.destroy(); stack = null; } });
-
-app.whenReady().then(() => {
-  reconcileUpdate();
   setTimeout(async () => {
     if (updateNote) sendWin("update-note", updateNote);
     const r = await checkUpdates();
     if (r.status !== "update") return;
     sendWin("update-available", r);
-    /* Silent path: on Windows portable builds we can fetch and swap ourselves.
-       The renderer decides whether to allow it (SYS toggle) and calls back.
-       One automatic attempt per version — after that it's the banner, so a
-       swap that can't complete can never turn into a restart loop. */
     if (!autoUpdateBlocked(r.version)) sendWin("update-auto-offer", r);
   }, 2500);
+});
+
+ipcMain.handle("connect", async (ev, request) => {
+  const generation = ++connectGeneration;
+  const input = request || {};
+  const host = boundedText(input.host, 253);
+  const port = boundedInt(input.port, 1, 65535, 64738);
+  const callsign = boundedText(input.callsign, 40);
+  const token = boundedText(input.token, 200);
+  if (!host || !/^[A-Za-z0-9.:[\]-]+$/.test(host) || !callsign || !Array.isArray(input.nets))
+    return [{ ok: false, error: "invalid relay connection request" }];
+  const nets = input.nets.slice(0, 64).map(net => ({
+    name: boundedText(net && net.name, 120), channel: boundedText(net && net.channel, 120),
+    freq: boundedText(net && net.freq, 16)
+  })).filter(net => net.name && net.channel);
+  if (stack) { stack.destroy(); stack = null; }
+  const relay = acctRelay || {};
+  const allTokens = [].concat(relay.tokens || [], !acctRelay && token ? [token] : []);
+  const radio = new RadioStack({ host, port, callsign,
+    tokens: allTokens, password: relay.password || "",
+    rootChannel: require("./config/22nd-package.json").rootChannel,
+    cert: identity && identity.cert, key: identity && identity.key });
+  stack = radio;
+  radio.on("rx", (r) => { if (stack === radio) sendWin("rx", { idx: r.idx, session: r.session, name: r.name, opus: r.opus, last: r.last }); });
+  radio.on("chat", (m) => { if (stack === radio) sendWin("chat", m); });
+  radio.on("roster", (r) => { if (stack === radio) sendWin("roster", r); });
+  radio.on("net-down", (r) => { if (stack === radio) sendWin("net-down", r); });
+  radio.on("net-error", (r) => { if (stack === radio) sendWin("net-error", r); });
+  const results = [];
+  for (const n of nets) {
+    try { results.push({ ok: true, idx: await radio.tune(n) }); }
+    catch (e) { results.push({ ok: false, error: e.message, net: n.name }); }
+  }
+  if (generation !== connectGeneration || stack !== radio)
+    return [{ ok: false, error: "connection attempt superseded" }];
+  return results;
+});
+ipcMain.handle("tune", async (ev, net) => {
+  if (!stack) return { ok: false, error: "not connected" };
+  const input = net || {};
+  const clean = { name: boundedText(input.name, 120), channel: boundedText(input.channel, 120), freq: boundedText(input.freq, 16) };
+  if (!clean.name || !clean.channel) return { ok: false, error: "invalid net" };
+  try { return { ok: true, idx: await stack.tune(clean) }; }
+  catch (e) { return { ok: false, error: e.message }; }
+});
+ipcMain.on("detune", (ev, idx) => stack && stack.detune(boundedInt(idx, 0, 255, -1)));
+ipcMain.on("tx-frame", (ev, frameInfo) => {
+  if (!stack || !frameInfo) return;
+  const frame = Buffer.from(frameInfo.frame || []);
+  const idx = boundedInt(frameInfo.idx, 0, 255, -1);
+  if (idx >= 0 && frame.length > 0 && frame.length <= 0x1fff) stack.txFrame(idx, frame, !!frameInfo.last, !!frameInfo.broadcast);
+});
+ipcMain.handle("arm-broadcast", (ev, idx) => stack ? stack.armBroadcast(boundedInt(idx, 0, 255, -1)) : false);
+ipcMain.on("net-mute", (ev, data) => {
+  if (stack && data) stack.setMuted(boundedInt(data.idx, 0, 255, -1), !!data.muted);
+});
+ipcMain.on("send-text", (ev, data) => stack && data && stack.sendText(boundedInt(data.idx, 0, 255, -1), boundedText(data.message, 2000)));
+ipcMain.handle("atc-view", () => stack ? stack.atcView() : []);
+const NOSTACK = { ok: false, error: "not connected to the relay" };
+ipcMain.handle("net-rename", (ev, data) => stack && data
+  ? stack.renameNet(boundedText(data.net, 120), boundedText(data.name, 120)) : NOSTACK);
+ipcMain.handle("net-move", (ev, data) => stack && data
+  ? stack.moveNet(boundedText(data.net, 120), boundedText(data.parent, 120)) : NOSTACK);
+ipcMain.handle("net-remove", (ev, net) => stack ? stack.removeNet(boundedText(net, 120)) : NOSTACK);
+ipcMain.handle("net-meta", (ev, data) => stack && data
+  ? stack.setNetMeta(boundedText(data.net, 120), { freq: boundedText(data.freq, 16), ship: !!data.ship }) : NOSTACK);
+ipcMain.handle("create-net", async (ev, data) => {
+  if (!stack) return { ok: false, error: "not connected" };
+  const input = data || {};
+  try { return Object.assign({ ok: true }, await stack.createNet(boundedText(input.name, 120),
+    boundedText(input.rootChannel, 120), { freq: boundedText(input.freq, 16), ship: !!input.ship })); }
+  catch (e) { return { ok: false, error: e.message }; }
+});
+ipcMain.on("disconnect", () => {
+  connectGeneration++;
+  if (stack) { stack.destroy(); stack = null; }
+  /* An explicit disconnect is also a sign-out boundary.  Do not leave a
+     bearer session or relay token available to a later renderer invocation. */
+  acctToken = null; acctRelay = null;
 });
 
 /* ── unconditional shutdown ──

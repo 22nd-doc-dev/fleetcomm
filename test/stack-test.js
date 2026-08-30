@@ -30,6 +30,13 @@ const cfg = require("../config/22nd-package.json");
   assert(got.every(g => g.name.indexOf("REAPER") === 0), "callsign attribution");
   console.log("MEDICAL roster as DOC sees it:", doc.roster(1));
 
+  let failedTune = false;
+  try { await doc.tune({ name: "MISSING TEST NET", channel: "MISSING TEST NET", freq: "299.999" }); }
+  catch (error) { failedTune = true; }
+  const failedNet = doc.nets[doc.nets.length - 1];
+  assert(failedTune && failedNet.dead, "a missing channel fails the tune");
+  assert(!failedNet.client.sock || failedNet.client.sock.destroyed, "a failed tune cannot leak a relay socket");
+
   doc.destroy(); reaper.destroy();
   console.log("✔ RadioStack PASS — per-net attribution + callsigns work");
   process.exit(0);

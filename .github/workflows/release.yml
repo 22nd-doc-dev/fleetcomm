@@ -5,7 +5,19 @@ on:
 permissions:
   contents: write
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - run: npm ci
+      - run: npm run verify
+      - run: sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq mumble-server
+      - run: sudo systemctl stop mumble-server || true
+      - run: bash test/run-relay-tests.sh
   windows:
+    needs: verify
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,8 +29,9 @@ jobs:
         with:
           files: |
             dist/*.exe
-          fail_on_unmatched_files: false
+          fail_on_unmatched_files: true
   mac:
+    needs: verify
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,4 +43,4 @@ jobs:
         with:
           files: |
             dist/*.zip
-          fail_on_unmatched_files: false
+          fail_on_unmatched_files: true

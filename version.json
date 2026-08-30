@@ -1,4 +1,4 @@
 {
-  "version": "0.9.3",
-  "notes": "Nesting is fixed. The net list was drawn in array order with the parent used only as an indent, so a re-homed net landed wherever it happened to sit in the list and a net whose parent was gone could vanish entirely. Order now follows actual parentage: children always render under their parent, nests can go deeper than one level, orphans surface at top level instead of disappearing, collapsing a nest folds only that nest, and every edit is confirmed against the relay. Also: bigger, more legible type throughout, Atkinson Hyperlegible as the default typeface, and a text size control (Ctrl + / Ctrl -)."
+  "version": "0.10.0",
+  "notes": "Security and reliability overhaul: the Windows updater no longer uses CMD or ping loops and now performs one bounded, verified swap with rollback; Electron windows use isolated preload bridges and strict navigation/CSP controls; Discord sessions expire and relay privileges use revocable per-account tokens; relay and accounts deployment is TLS-first and loopback-only; failed tunes, PTT races, audio resources, net nesting, channel naming, and relay-persisted metadata have been repaired."
 }

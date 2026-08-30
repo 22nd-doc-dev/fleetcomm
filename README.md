@@ -1,86 +1,105 @@
-# FleetComm — 22nd Expeditionary Fleet voice comms (QLink successor)
+# FleetComm
 
-Multi-net radio for Star Citizen ops: unlimited radio slots, per-net push-to-talk /
-volume / pan, frequency tuning, callsigns, radio chirp — on a self-hosted backbone
-the fleet owns. No single point of failure: the transport is the battle-tested
-Mumble protocol (this repo contains **no Mumble code**, it speaks the wire protocol
-directly); the server is a stock `mumble-server` package any fleet member can restand
-in 10 minutes from `server/setup.sh`.
+FleetComm is the 22nd Expeditionary Fleet's multi-net voice radio for Star Citizen operations. It
+speaks the Mumble protocol directly and presents the result as a radio rack: tune several nets,
+monitor them simultaneously, key one or many with global push-to-talk, broadcast through a nested
+ship net, and keep the active radios visible in an always-on-top overlay.
 
-## Architecture (30 seconds)
+## Security and reliability model
 
-- **Server**: stock `mumble-server` on any $5 VPS. Each net = one channel. `server/setup.sh` bootstraps it; `npm run seed` builds the 22nd channel tree from `config/22nd-package.json`.
-- **Client** (this app): Electron. For every net you tune, the app opens one lightweight connection ("one receiver per net", like a real rack) — that gives perfect per-net attribution, volume, pan, and later per-net access control. Voice is Opus over the TCP tunnel (v0.2 moves to UDP with OCB2 crypto for lower latency).
-- **Global PTT**: `uiohook-napi` keyboard/mouse hooks — works while Star Citizen is focused. In-window keys work even without it.
+- A stock self-hosted Mumble server carries voice and enforces channel permissions.
+- Discord OAuth uses PKCE and a loopback callback. No Discord client secret ships in the app.
+- New accounts remain pending until COMMAND approves them.
+- Every approved account receives a unique Mumble token. Promotion, demotion, and revocation rewrite
+  the relay ACLs, so an old shared COMMAND token cannot retain authority.
+- The public accounts endpoint is HTTPS-only. Its Node service binds to loopback behind nginx, keeps
+  bearer sessions in private files, and expires them after 12 hours.
+- Electron renderers have no direct Node access. Narrow preload bridges, a content security policy,
+  navigation restrictions, input validation, and HTTPS-only external links contain UI compromise.
+- The Windows portable updater uses a hidden Node helper—not CMD. It validates the downloaded PE,
+  makes one bounded swap attempt, preserves a rollback copy, records the result atomically, and
+  relaunches exactly once. A failed version is never retried automatically.
 
-## Installing (fleet members)
+## Install
 
-**Windows** — download `FleetComm-<version>.exe` from the
-[releases page](https://github.com/22nd-doc-dev/fleetcomm/releases), run it.
-SmartScreen will say "Windows protected your PC" because the exe is unsigned:
-click **More info → Run anyway**. That's expected until the project buys a
-code-signing certificate.
+Windows users download `FleetComm-<version>.exe` from the
+[GitHub releases page](https://github.com/22nd-doc-dev/fleetcomm/releases). It is a portable build;
+there is no installer.
 
-**Mac** — download the zip, unzip it, then run this one command in Terminal
-before the first open (macOS quarantines unsigned downloads and misleadingly
-calls them "damaged"):
+macOS users download the release zip and open `FleetComm.app`. Unsigned development builds may need
+their quarantine attribute removed before the first launch:
 
-    xattr -cr ~/Downloads/FleetComm.app
+```sh
+xattr -cr /path/to/FleetComm.app
+```
 
-Adjust the path if you unzipped elsewhere, then open the app normally.
-(A $99/yr Apple Developer signature makes this step disappear — planned once
-the fleet's Mac population justifies it.)
+Code signing is still required to remove the operating-system warnings on both platforms.
 
-## Run it (dev)
+## Develop
 
-1. Install Node 20+ (`brew install node` / nodejs.org).
-2. `npm install`
-3. `npm start`
-4. Enter the fleet server address + your callsign → Connect.
+FleetComm requires Node.js 20 or newer.
 
-macOS: grant Accessibility permission (System Settings → Privacy & Security →
-Accessibility) so global PTT works while the game has focus. First TALK press asks
-for microphone permission.
+```sh
+npm ci
+npm start
+```
 
-## Stand up the fleet server (once)
+On macOS, grant Accessibility permission to FleetComm (or the development terminal) for global PTT.
+Microphone permission is requested only when audio capture is first needed.
 
-1. Rent a small Ubuntu VPS (Hetzner CX22-class, ~$5/mo). Point a DNS name at it if you like (e.g. `comms.22nd.space`).
-2. `scp server/setup.sh root@<box>:` then `ssh root@<box> "bash setup.sh '<pick-a-SuperUser-password>'"`
-3. From your machine: `npm run seed -- <box-address> '<SuperUser-password>'`
-4. Put the address in `config/22nd-package.json` → `server.host`. Done — fleet members just `npm start` and connect.
+Useful checks:
 
-Fallback for anyone without the app: the official Mumble client connects to the same
-server and sits in single channels — instant insurance if QLink dies mid-op.
+```sh
+npm run verify       # lint plus all headless unit/security regressions
+npm run test:relay   # real protocol tests; requires Mumble on 127.0.0.1:64738
+npm test             # both groups
+```
 
-## Tests
+On Ubuntu, `bash test/run-relay-tests.sh` starts an isolated disposable relay and runs the live
+suite. GitHub CI runs both the headless and live-relay gates.
 
-`npm test` runs against a local server (`apt install mumble-server`, see
-`test/integration.js`): proves auth, channel seeding, multi-net listen, voice
-targets, per-net attribution, and Opus round-trip.
+## Secure server deployment
 
-## Releasing a new version (maintainers)
+The deployment scripts target Ubuntu 22.04/24.04. Before deploying:
 
-1. Bump the version in `package.json` AND `version.json` (keep them equal).
-2. Commit, then tag and push:  `git tag v0.4.0 && git push && git push --tags`
-3. GitHub Actions builds the Windows installer + portable exe and the Mac zip,
-   and attaches them to the release automatically (~10 min).
-4. Every running FleetComm shows the update banner at next launch (it reads
-   `version.json` from the repo's main branch).
+1. Point the public DNS name (for example `comms.22nd.space`) at the server.
+2. Bootstrap Mumble once with `sudo bash server/setup.sh`.
+3. Seed the org tree from a trusted workstation:
 
-## Roadmap
+   ```sh
+   npm run seed -- <server-address> '<Mumble SuperUser password>'
+   ```
 
-- **v0.2**: UDP voice (lower latency), Discord OAuth + org-package auto-load,
-  Discord double-speak auto-config, fast callsign switch without reconnect,
-  packaged installers via GitHub Actions (no Node needed).
-- **v0.3**: per-net access (channel passwords/tokens = "encryption keys"),
-  ATC board (right-click reassign), in-game overlay, Tauri port (10MB installer).
+4. Deploy the loopback accounts service, nginx, Let's Encrypt TLS, Mumble TLS, and systemd
+   hardening:
 
-## Repo map
+   ```sh
+   bash server/deploy.sh <ssh-address> <public-dns-name> <certificate-email>
+   ```
 
-    main.js                  Electron main — window, global PTT, radio stack owner
-    renderer/                UI (rack, connect, settings) + audio pipeline
-    src/mumble-client.js     Mumble wire protocol (control + tunneled voice)
-    src/radio-stack.js       one-receiver-per-net rack model
-    scripts/seed-channels.js builds the org channel tree (idempotent)
-    server/setup.sh          VPS bootstrap
-    config/22nd-package.json org comms package: nets, freqs, keys, server
+The deploy command prompts privately for the existing Mumble SuperUser password, generates the
+relay password and one-time COMMAND bootstrap code, transfers secrets as protected files, and saves
+the operator copy in the gitignored `.fleetcomm-secrets.txt` with mode 0600. Port 8722 is never
+opened publicly.
+
+Do not merge a configured public hostname until its DNS record points to the relay: strict TLS is
+intentional, and the desktop client will not fall back to an IP with certificate verification
+disabled.
+
+## Release
+
+Keep `package.json` and `version.json` on the same version. Tag the verified commit with
+`v<version>`; the release workflow reruns every test, then builds the Windows portable executable
+and macOS zip. The update artifact must remain named `FleetComm-<version>.exe`.
+
+## Repository map
+
+- `main.js` — Electron lifecycle, IPC, updater, OAuth, global PTT, and RadioStack ownership
+- `renderer/` — radio UI, isolated preload bridges, audio pipeline, and overlay
+- `src/mumble-client.js` — Mumble control and tunneled Opus protocol
+- `src/radio-stack.js` — one receiver connection per tuned net
+- `src/update-helper.js`, `src/update-guard.js` — bounded updater and anti-loop invariant
+- `server/accounts-service.js` — Discord accounts, sessions, per-account tokens, and relay ACLs
+- `server/deploy.sh`, `server/setup-accounts.sh` — secure production deployment
+- `config/22nd-package.json` — org tree, frequencies, public services, and update feed
+- `test/` — pure regressions plus real-relay protocol and permission suites
