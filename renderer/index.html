@@ -2,7 +2,11 @@
 <html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; media-src 'self' blob:; worker-src 'self' blob:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<!-- opusscript's Emscripten bindings generate small wrapper functions at codec
+     initialization time. unsafe-eval is limited to this local, isolated
+     renderer; remote scripts, inline scripts, navigation and direct network
+     access remain blocked. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-eval' blob:; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; media-src 'self' blob:; worker-src 'self' blob:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <title>FleetComm</title>
 <style>
   /* ══ FleetComm — COMM MANAGEMENT UNIT (bridge MFD identity) ══
@@ -468,6 +472,10 @@
       RELAY PACKAGE <span class="okk">LOADED · <span id="relayname">22ND EXPEDITIONARY FLEET</span></span> <a id="relayedit" style="color:var(--muted)">change</a><br>
       AWAITING OPERATOR ID —</div>
     <h2>SIGN IN</h2>
+    <div id="startupFail" style="border:1px solid var(--red);background:var(--red-tint);border-radius:4px;padding:12px;text-align:left">
+      <b style="color:var(--red);letter-spacing:1px;font-size:12px">FLEETCOMM DID NOT FINISH STARTING</b>
+      <p class="hint" style="text-align:left;margin:6px 0 0">Close FleetComm and install the latest release. If this remains visible, report the version shown at the bottom of the window.</p>
+    </div>
     <div id="signDiscord" style="display:none">
       <button class="btn big" id="discordBtn" style="border-color:#5865F2;color:#8b9bff">SIGN IN WITH DISCORD ▸</button>
       <p class="hint" style="margin-top:10px;text-align:left">Discord confirms who you are — username only, nothing else.
@@ -483,7 +491,7 @@
         <input id="csIn" class="mono" placeholder="e.g. TIBER DOC 1" list="csList" style="font-size:17px;letter-spacing:1px"><datalist id="csList"></datalist></div>
       <button class="btn big" id="connectBtn" style="display:none;margin-top:10px">CONNECT ▸</button>
     </div>
-    <div id="signLegacy">
+    <div id="signLegacy" style="display:none">
       <p class="sub">OPERATOR CALLSIGN</p>
       <div class="kv"><input id="csInLegacy" class="mono" placeholder="e.g. TIBER DOC 1" style="font-size:17px;letter-spacing:1px"></div>
       <button class="btn big" id="connectLegacyBtn">CONNECT ▸</button>

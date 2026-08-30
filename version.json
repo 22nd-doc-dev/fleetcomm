@@ -1,4 +1,4 @@
 {
-  "version": "0.10.0",
-  "notes": "Security and reliability overhaul: the Windows updater no longer uses CMD or ping loops and now performs one bounded, verified swap with rollback; Electron windows use isolated preload bridges and strict navigation/CSP controls; Discord sessions expire and relay privileges use revocable per-account tokens; relay and accounts deployment is TLS-first and loopback-only; failed tunes, PTT races, audio resources, net nesting, channel naming, and relay-persisted metadata have been repaired."
+  "version": "0.10.1",
+  "notes": "Authentication recovery: restores the Discord sign-in screen and Connect action, returns production traffic to the operator-controlled relay IP, removes the unrelated 22nd.space dependency, and supports trusted automatically renewed TLS certificates issued directly to that public IP. Startup and asynchronous UI failures are now shown instead of leaving a dead callsign form."
 }
