@@ -32,24 +32,33 @@ else
 fi
 
 echo "── you will be asked for the droplet root password once."
+# The service lives at server/accounts-service.js since the 2026-08-30 TLS
+# migration (setup-accounts.sh layout, run as user fleetcomm). An earlier
+# version of this script moved the file back to the old flat path, which the
+# systemd unit no longer points at — that would take the service down.
 tar czf - server/accounts-service.js | ssh -o StrictHostKeyChecking=accept-new "root@${SSH_HOST}" "
   set -e
   cd '$REMOTE'
   cp server/accounts-service.js server/accounts-service.js.bak 2>/dev/null || true
   tar xzf -
-  mv -f server/accounts-service.js accounts-service.js 2>/dev/null || true
+  chmod 0644 server/accounts-service.js
   # record the guild id without disturbing any other setting
   touch '$ENVFILE'
   sed -i '/^DISCORD_GUILD_ID=/d' '$ENVFILE'
   if [ -n '$GUILD' ]; then echo 'DISCORD_GUILD_ID=$GUILD' >> '$ENVFILE'; fi
   systemctl restart fleetcomm-accounts
-  sleep 2
-  systemctl is-active --quiet fleetcomm-accounts && echo '   service is running' || {
-    echo '   SERVICE FAILED TO START — rolling back' >&2
-    cp accounts-service.js.bak accounts-service.js 2>/dev/null || true
-    systemctl restart fleetcomm-accounts
-    exit 1
-  }
+  # node takes several seconds to come up on the droplet — poll, don't guess
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 2
+    systemctl is-active --quiet fleetcomm-accounts && curl -fsS --max-time 3 http://127.0.0.1:8722/api/health >/dev/null 2>&1 && break
+    [ \$i = 10 ] && {
+      echo '   SERVICE FAILED TO START — rolling back' >&2
+      cp server/accounts-service.js.bak server/accounts-service.js 2>/dev/null || true
+      systemctl restart fleetcomm-accounts
+      exit 1
+    }
+  done
+  echo '   service is running'
 "
 rc=$?
 if [ $rc -ne 0 ]; then
@@ -58,7 +67,8 @@ if [ $rc -ne 0 ]; then
 fi
 
 echo "── checking health"
-curl -fsS --max-time 10 "http://${SSH_HOST}:8722/api/health" && echo || echo "   health check did not answer — check: systemctl status fleetcomm-accounts"
+# port 8722 is loopback-only since the TLS migration; the public door is nginx on 443
+curl -fsS --max-time 10 "https://${SSH_HOST}/api/health" && echo || echo "   health check did not answer — check: systemctl status fleetcomm-accounts"
 echo
 echo "Done. Sign out and back in to test."
 echo "If members get locked out unexpectedly: bash server/set-guild.sh off"
