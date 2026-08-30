@@ -30,53 +30,67 @@ assert.strictEqual(shortFingerprint("AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:8
   "2233 4455 6677 8899", "readable short form for the UI");
 ok("loopback exempt, real hosts pinned, fingerprint displayable");
 
-/* ── against a genuinely self-signed server, over a non-loopback address ── */
-(async () => {
-  const pems = await selfsigned.generate([{ name: "commonName", value: "relay-test" }],
-    { days: 1, keySize: 2048 });
-  const server = tls.createServer({ cert: pems.cert, key: pems.private }, (s) => s.end());
-  await new Promise(r => server.listen(0, "0.0.0.0", r));
-  const port = server.address().port;
-  /* 127.0.0.2 is still loopback to the OS but not the literal string our
-     exemption matches, so the pinning path runs exactly as it would remotely */
-  const HOST = "127.0.0.2";
-  assert(pinRequired(HOST), "test host must take the pinned path");
-
-  const connect = () => new Promise((res, rej) => {
-    const s = tls.connect({ host: HOST, port, rejectUnauthorized: false }, () => {
+/* ── against a genuinely self-signed server ──
+   The two concerns are separated on purpose. Which hosts get pinned is pure
+   string logic and is asserted above. What follows is the part that needs a
+   real TLS handshake: that a self-signed relay is reachable at all, and that
+   its fingerprint pins and compares correctly.
+   It binds to 127.0.0.1 rather than a second loopback address — 127.0.0.2 is
+   an alias on Linux but not on macOS, and a test that hangs on the maintainer's
+   own laptop is worse than no test. Every socket here is bounded by a timeout
+   so this suite can never stall a release. */
+const TIMEOUT = 8000;
+function fingerprintOf(port) {
+  return new Promise((resolve, reject) => {
+    const s = tls.connect({ host: "127.0.0.1", port, rejectUnauthorized: false }, () => {
       const c = s.getPeerCertificate();
       const fp = c && c.fingerprint256 ? c.fingerprint256 : "";
-      s.destroy(); res(fp);
+      s.destroy(); clearTimeout(t); resolve(fp);
     });
-    s.on("error", rej);
+    s.on("error", (e) => { clearTimeout(t); reject(e); });
+    const t = setTimeout(() => { s.destroy(); reject(new Error("TLS connect timed out")); }, TIMEOUT);
   });
+}
+async function listen(cn) {
+  const pems = await selfsigned.generate([{ name: "commonName", value: cn }], { days: 1, keySize: 2048 });
+  const srv = tls.createServer({ cert: pems.cert, key: pems.private }, (s) => s.end());
+  srv.on("error", () => {});
+  await new Promise(r => srv.listen(0, "127.0.0.1", r));
+  return srv;
+}
 
-  /* This is the assertion that matters: a self-signed relay must be reachable. */
-  const seen = await connect();
-  assert(normalize(seen).length === 64, "got a SHA-256 fingerprint from a self-signed relay: " + seen);
-  ok("a self-signed relay is reachable and its fingerprint is readable");
+(async () => {
+  const relay = await listen("relay-test");
+  const port = relay.address().port;
+
+  /* the assertion that matters: a self-signed relay must be reachable.
+     rejectUnauthorized:true here is exactly what shipped in v0.10.x. */
+  const strict = await new Promise((resolve) => {
+    const s = tls.connect({ host: "127.0.0.1", port, rejectUnauthorized: true }, () => { s.destroy(); resolve(null); });
+    s.on("error", (e) => resolve(e));
+    setTimeout(() => { s.destroy(); resolve(new Error("timed out")); }, TIMEOUT);
+  });
+  assert(strict && /self.signed|unable to verify/i.test(strict.message),
+    "CA verification must be what fails against a self-signed relay, reproducing the shipped bug");
+  ok("reproduced the shipped failure: CA verification rejects a self-signed relay (" + strict.code + ")");
+
+  const seen = await fingerprintOf(port);
+  assert.strictEqual(normalize(seen).length, 64, "SHA-256 fingerprint read from the relay");
+  ok("the same relay is reachable when verified by fingerprint instead");
 
   const first = checkPin("", seen);
   assert(first.ok && first.learn, "first connection pins it");
-  const second = checkPin(seen, await connect());
-  assert(second.ok && !second.learn, "reconnecting to the same server is accepted");
-  ok("same server across reconnects: accepted without re-prompting");
+  const again = checkPin(seen, await fingerprintOf(port));
+  assert(again.ok && !again.learn, "reconnecting to the same relay is accepted silently");
+  ok("trust on first use, then reconnect without re-prompting");
 
-  /* a different server on the same address must be refused */
-  const pems2 = await selfsigned.generate([{ name: "commonName", value: "impostor" }], { days: 1, keySize: 2048 });
-  const impostor = tls.createServer({ cert: pems2.cert, key: pems2.private }, (s) => s.end());
-  await new Promise(r => impostor.listen(0, "0.0.0.0", r));
-  const p2 = impostor.address().port;
-  const otherFp = await new Promise((res, rej) => {
-    const s = tls.connect({ host: HOST, port: p2, rejectUnauthorized: false },
-      () => { const c = s.getPeerCertificate(); s.destroy(); res(c.fingerprint256); });
-    s.on("error", rej);
-  });
-  const swapped = checkPin(seen, otherFp);
-  assert(!swapped.ok, "a substituted certificate must be refused");
+  const impostor = await listen("impostor");
+  const otherFp = await fingerprintOf(impostor.address().port);
+  assert(normalize(otherFp) !== normalize(seen), "the impostor really is a different certificate");
+  assert(!checkPin(seen, otherFp).ok, "a substituted certificate must be refused");
   ok("a substituted certificate is refused — the relay password is not handed over");
 
-  server.close(); impostor.close();
+  relay.close(); impostor.close();
   console.log("\n✔ RELAY TRUST PASS — self-signed relays work, and only the one you first trusted");
   process.exit(0);
 })().catch(e => { console.error("✘ FAIL:", e); process.exit(1); });
