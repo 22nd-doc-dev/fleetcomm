@@ -217,7 +217,14 @@ ipcMain.handle("sounds-list", () => {
       }).filter(Boolean);
   } catch (e) { return []; }
 });
+/* The soundboard keys the net for everyone, so COMMAND-only is enforced here as
+   well as in the UI — a renderer-side check alone is a suggestion, not a rule. */
+function isCommand() {
+  const r = acctRelay || {};
+  return !!r.adminToken;
+}
 ipcMain.handle("sounds-add", async () => {
+  if (!isCommand()) return { ok: false, error: "COMMAND authority required" };
   const { dialog } = require("electron");
   const r = await dialog.showOpenDialog(win, {
     title: "Add soundboard clips",
@@ -525,7 +532,9 @@ ipcMain.on("theme", (ev, t) => {
 function createWindow() {
   const frameOpts = process.platform === "darwin"
     ? { titleBarStyle: "hidden", trafficLightPosition: { x: 12, y: 12 } }
-    : { titleBarStyle: "hidden", titleBarOverlay: { color: "#0b141f", symbolColor: "#93a7ba", height: 38 } };
+    /* first paint before the renderer reports its theme — match the night bezel,
+       not an older palette, so the controls never flash a foreign colour */
+    : { titleBarStyle: "hidden", titleBarOverlay: { color: "#1c2126", symbolColor: "#e8edf1", height: 38 } };
   win = new BrowserWindow({
     width: 1180, height: 800, minWidth: 760, minHeight: 500,
     backgroundColor: "#0b141f",
@@ -538,6 +547,11 @@ function createWindow() {
   });
   lockLocalWindow(win);
   win.loadFile(path.join(__dirname, "renderer", "index.html"));
+  /* the theme can arrive before the frame is ready; re-apply it once shown */
+  win.on("show", () => {
+    if (process.platform === "darwin" || !curTheme) return;
+    try { win.setTitleBarOverlay({ color: curTheme.bg, symbolColor: curTheme.ink }); } catch (e) {}
+  });
   win.removeMenu && win.removeMenu();
   win.on("closed", () => { win = null; shutdown(); });
 }

@@ -132,6 +132,20 @@ const isShip = (n) => !!n.cfg.ship;
 function hexRgb(h) { h = h.replace("#", ""); return [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)]; }
 function mixHex(h1, h2, t) { const a = hexRgb(h1), b = hexRgb(h2); return "rgb(" + a.map((v,i) => Math.round(v + (b[i]-v)*t)).join(",") + ")"; }
 function rgbaHex(h, al) { return "rgba(" + hexRgb(h).join(",") + "," + al + ")"; }
+/* Read a live CSS custom property as #rrggbb.
+   The window controls are painted by Windows from colors we hand it, so they
+   have to come from the palette that is ACTUALLY applied — not a copy. They
+   were hardcoded to the pre-0.6 palette (#0c1b23 / #e9eff4) while the bezel had
+   moved to #1c2126, which is why the minimise/maximise/close buttons sat in a
+   slightly different colour to the header right beside them. */
+function cssHex(name, fallback) {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  if (/^#[0-9a-f]{6}$/i.test(v)) return v.toLowerCase();
+  if (/^#[0-9a-f]{3}$/i.test(v)) return "#" + v.slice(1).split("").map(c => c + c).join("").toLowerCase();
+  const m = v.match(/^rgba?\(\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)/i);
+  if (m) return "#" + [1, 2, 3].map(i => Number(m[i]).toString(16).padStart(2, "0")).join("");
+  return fallback;
+}
 function luminance(h) { const [r,g,b] = hexRgb(h); return (0.299*r + 0.587*g + 0.114*b) / 255; }
 let dark = themeMode !== "light";
 function applyTheme() {
@@ -160,12 +174,15 @@ function applyTheme() {
     set("--ok", t.grn); set("--ok-tint", rgbaHex(t.grn, 0.12));
     set("--red", t.red); set("--red-tint", rgbaHex(t.red, 0.14));
     set("--lamp-off", mixHex(t.panel, t.ink, 0.2));
-    msg = { dark, bg: t.bez, ink: t.ink,
+    msg = { dark, bg: cssHex("--bez", t.bez), ink: cssHex("--ink", t.ink),
       palette: { panelRGB: hexRgb(t.panel).join(","), ink: t.ink, muted: t.muted, accent: t.grn, accentRGB: hexRgb(t.grn).join(",") } };
   } else {
     dark = themeMode === "dark";
     r.setAttribute("data-theme", dark ? "dark" : "light");
-    msg = { dark, bg: dark ? "#0c1b23" : "#e9eff4", ink: dark ? "#d9edf4" : "#12242e", palette: null };
+    /* take the bezel and text colours from the stylesheet that just applied, so
+       the window controls always match the header they sit in */
+    msg = { dark, bg: cssHex("--bez", dark ? "#1c2126" : "#c8cdd2"),
+            ink: cssHex("--ink", dark ? "#e8edf1" : "#12242e"), palette: null };
   }
   store.set("themeMode", themeMode); store.set("customTheme", customTheme);
   $("sthemesel").value = themeMode;
@@ -913,12 +930,27 @@ async function refreshSounds() {
   sbSounds = await ipcRenderer.invoke("sounds-list");
   renderSoundboard();
 }
+/* ── shipwide soundboard ──
+   COMMAND only, and only on a ship net. It plays down the same TX path as the
+   mic, so a clip goes out to everyone on the net (or the whole nest when
+   broadcast is armed) — that is not something a rating should be able to key.
+   Non-COMMAND operators never see the panel at all.
+   For COMMAND it stays visible on a ship net even before the net is tuned, with
+   a line saying what is missing: an empty space you have to guess your way into
+   is how this ended up feeling like it wasn't there. */
 function renderSoundboard() {
   const n = sel();
-  const show = n && isShip(n) && n.tuned;
+  const ship = !!(n && isShip(n));
+  const show = ship && !!cmdToken;
   $("sbPanel").style.display = show ? "block" : "none";
   if (!show) return;
   $("sbNet").textContent = n.cfg.name + (n.bcast ? " (NEST)" : "");
+  $("sbAdd").style.display = n.tuned ? "" : "none";
+  if (!n.tuned) {
+    $("sbList").innerHTML = '<span class="hint">tune ' + esc(n.cfg.name) +
+      ' to play clips across the ship</span>';
+    return;
+  }
   $("sbList").innerHTML = sbSounds.length
     ? sbSounds.map(s => '<button class="sbBtn' + (sbPlaying === s.name ? " playing" : "") + '" data-snd="' + escAttr(s.name) + '">' +
         esc(s.name.replace(/\.[^.]+$/, "")) + '<span class="del" data-del="' + escAttr(s.name) + '">✕</span></button>').join("")
@@ -1125,6 +1157,7 @@ $("connectLegacyBtn").addEventListener("click", function () { doConnect($("csInL
 function applyLogin(r) {
   acct = { account: r.account, authorized: !!r.authorized };
   cmdToken = r.account.role === "command" ? "account-command" : "";
+  renderSoundboard();   /* COMMAND gates the shipwide soundboard */
   if (connected) {
     $("oprole").textContent = r.account.role === "member" ? "" : r.account.role.toUpperCase();
     $("authRole").textContent = r.account.role.toUpperCase();
@@ -1168,7 +1201,7 @@ if ($("recheckBtn")) $("recheckBtn").addEventListener("click", async () => {
 $("disconnBtn").addEventListener("click", () => {
   clearTxState(); ipcRenderer.send("disconnect"); connected = false;
   if (discordMode) {
-    acct = null; cmdToken = "";
+    acct = null; cmdToken = ""; renderSoundboard();
     $("discordBtn").disabled = false; $("discordBtn").textContent = "SIGN IN WITH DISCORD ▸";
     $("pendingBox").style.display = "none"; $("bootstrapRow").style.display = "none";
     $("csRow2").style.display = "none"; $("connectBtn").style.display = "none";
@@ -1207,7 +1240,7 @@ $("atcGrid").addEventListener("click", async (e) => {
 function showPage(id) {
   if (id === "pgAtc" && !connected) { toast("Connect first."); return; }
   const leavingSys = document.getElementById("settings").classList.contains("on") && id !== "settings";
-  if (leavingSys && !discordMode) { cmdToken = $("tokenIn").value.trim(); store.set("cmdToken", cmdToken); renderTxTargets(); }
+  if (leavingSys && !discordMode) { cmdToken = $("tokenIn").value.trim(); store.set("cmdToken", cmdToken); renderTxTargets(); renderSoundboard(); }
   document.querySelectorAll(".page").forEach(p => p.classList.toggle("on", p.id === id));
   document.querySelectorAll(".pkey").forEach(k => k.classList.toggle("on", k.dataset.page === id));
   if (id === "pgAtc") refreshAtc();
@@ -1504,6 +1537,31 @@ if (bridge.autotestHost) {
       .map(el => nets[+el.dataset.i].cfg.name + "@" + (el.style.getPropertyValue("--lvl") || "0"));
     L("tree-order", shown.join(" | "));
     L("tree-rows-vs-nets", tree.rows.length + "/" + nets.length);
+
+    /* titlebar colours must equal the live bezel/ink, in every mode */
+    const bez = () => getComputedStyle(document.documentElement).getPropertyValue("--bez").trim();
+    themeMode = "dark"; applyTheme();
+    L("titlebar-dark", cssHex("--bez", "?") + " vs bezel " + bez());
+    themeMode = "light"; applyTheme();
+    L("titlebar-light", cssHex("--bez", "?") + " vs bezel " + bez());
+    customTheme.bez = "#402030"; themeMode = "custom"; applyTheme();
+    L("titlebar-custom", cssHex("--bez", "?") + " (set #402030)");
+    themeMode = "dark"; customTheme = Object.assign({}, THEME_DEFAULTS); applyTheme();
+
+    /* soundboard: COMMAND-gated, and visible on a ship net */
+    const shipIdx = nets.findIndex(n => n.cfg.ship);
+    if (shipIdx >= 0) {
+      selectedI = shipIdx;
+      cmdToken = ""; renderSoundboard();
+      L("sb-hidden-without-command", document.getElementById("sbPanel").style.display === "none");
+      cmdToken = "autotest-token"; renderSoundboard();
+      L("sb-shown-for-command", document.getElementById("sbPanel").style.display !== "none");
+      L("sb-net-label", document.getElementById("sbNet").textContent || "(none)");
+      const nonShip = nets.findIndex(n => !n.cfg.ship);
+      selectedI = nonShip; renderSoundboard();
+      L("sb-hidden-on-nonship", document.getElementById("sbPanel").style.display === "none");
+      selectedI = shipIdx; cmdToken = ""; renderSoundboard();
+    } else L("sb-skip", "no ship net");
 
     L("normfreq", ["250","290.5","118.25","290,500","junk",""]
         .map(v => v + "->" + (normFreq(v) || "-")).join(" "));
