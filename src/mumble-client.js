@@ -7,6 +7,7 @@
  * channel seeding) and inside Electron main.
  */
 const tls = require("tls");
+const { checkPin, pinRequired, normalize } = require("./relay-trust");
 const net = require("net");
 const fs = require("fs");
 const path = require("path");
@@ -54,13 +55,31 @@ class MumbleClient extends EventEmitter {
       }, this.opts.connectTimeout || 12000);
       const s = tls.connect(
         { host: this.opts.host, port: this.opts.port,
-          rejectUnauthorized: !(loopback || this.opts.insecureTls === true),
+          /* Verified by fingerprint after the handshake, not by CA chain — see
+             src/relay-trust.js. Mumble servers are self-signed by design, so a
+             CA check can only ever fail; pinning is the check that actually
+             protects the relay password. */
+          rejectUnauthorized: false,
           servername: this.opts.servername || (net.isIP(this.opts.host) ? undefined : this.opts.host),
           cert: this.opts.cert, key: this.opts.key,
           /* murmur requests client certs in a way node's TLS1.3 stack won't answer;
              TLS1.2 exchanges them in-handshake and murmur fully supports it */
           maxVersion: this.opts.cert ? "TLSv1.2" : undefined },
         () => {
+          if (pinRequired(this.opts.host)) {
+            const peer = s.getPeerCertificate();
+            const seen = peer && peer.fingerprint256 ? peer.fingerprint256 : "";
+            const verdict = checkPin(this.opts.pin, seen);
+            if (!verdict.ok) {
+              if (!settled) { settled = true; clearTimeout(timeout); }
+              try { s.destroy(); } catch (e) {}
+              return reject(new Error(verdict.error));
+            }
+            this.fingerprint = normalize(seen);
+            if (verdict.learn && typeof this.opts.onPin === "function") {
+              try { this.opts.onPin(this.fingerprint); } catch (e) {}
+            }
+          }
           this.send("Version", {
             versionV1: VERSION_1_4_230,
             release: this.opts.release, os: process.platform, osVersion: process.version

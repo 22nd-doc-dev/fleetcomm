@@ -317,6 +317,10 @@
     padding:7px 11px;font-size:13px;border-radius:3px}
   .ctxi:hover{background:var(--tint);color:var(--holo)}
   .ctxi:disabled{opacity:.4;cursor:default}
+  #acctEpRow{display:flex;align-items:center;gap:6px}
+  #acctEp{flex:1;min-width:160px;background:var(--tint);border:1px solid var(--line);
+    border-radius:4px;padding:5px 8px;font-size:12px}
+  #acctEpNote.bad{color:var(--amber)}
   #scalerow{display:flex;align-items:center;gap:6px}
   #scalerow .btn{padding:4px 9px}
   #scaleval{min-width:46px;text-align:center;color:var(--muted)}
@@ -414,6 +418,11 @@
       <div class="togrow"><div class="tl"><b>Radio chirp</b><span>Squelch click on key-up / key-down</span></div><button class="switch on" id="sfx"></button></div>
       <div class="togrow"><div class="tl"><b>Radio voice effect</b><span>How much "over the net" character voices get</span></div>
         <select class="orgsel" id="fxsel"><option value="clean">Clean</option><option value="standard">Standard</option><option value="heavy">Heavy</option></select></div>
+      <div class="miniheading">NETWORK</div>
+      <div class="togrow"><div class="tl"><b>Accounts service</b><span id="acctEpNote">Where sign-in talks to the fleet server</span></div>
+        <div id="acctEpRow"><input id="acctEp" class="mono" placeholder="http://host:port" spellcheck="false">
+          <button class="btn" id="acctEpSave">SAVE</button>
+          <button class="btn" id="acctEpReset" title="Back to the address this build shipped with">DEFAULT</button></div></div>
       <div class="miniheading">DISPLAY</div>
       <div class="togrow"><div class="tl"><b>Typeface</b><span>Atkinson Hyperlegible is drawn so I/l/1 and O/0 stay apart</span></div>
         <select class="orgsel" id="sfontsel"><option value="legible">High legibility</option><option value="system">System</option></select></div>

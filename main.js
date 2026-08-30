@@ -271,13 +271,8 @@ function postForm(url, form) {
     req.write(data); req.end();
   });
 }
-function accountBase(raw) {
-  const u = new URL(raw);
-  const loopback = ["127.0.0.1", "::1", "localhost"].includes(u.hostname);
-  if (u.protocol !== "https:" && !(u.protocol === "http:" && loopback))
-    throw new Error("accounts service must use HTTPS");
-  return u;
-}
+const { accountBase, isInsecure, insecureNote } = require("./src/accounts-url");
+const { shortFingerprint } = require("./src/relay-trust");
 function jsonCall(base, method, pathName, bodyObj, bearer) {
   return new Promise((resolve, reject) => {
     let root, u;
@@ -311,9 +306,56 @@ function keepAccountSecrets(response) {
   delete out.relay;
   return out;
 }
+/* ── accounts endpoint override ──
+   The accounts URL is baked into the packaged config, so if a release ever ships
+   pointing at an endpoint that isn't live (v0.10.1 shipped aimed at :443 for a
+   TLS deployment that was never performed), sign-in is dead for everyone until a
+   whole new build reaches every operator. That is far too slow a recovery for a
+   one-line mistake, so the address is overridable at runtime and persisted here.
+   Empty override = use whatever the build shipped with. */
+/* Pinned relay certificate — trust on first use, per host. See src/relay-trust.js. */
+const pinFile = () => path.join(app.getPath("userData"), "relay-pins.json");
+function readPins() { try { return JSON.parse(fs.readFileSync(pinFile(), "utf8")) || {}; } catch (e) { return {}; } }
+function writePins(p) { try { fs.writeFileSync(pinFile(), JSON.stringify(p)); return true; } catch (e) { return false; } }
+function getPin(host) { return readPins()[String(host)] || ""; }
+function setPin(host, fp) { const p = readPins(); p[String(host)] = fp; writePins(p); }
+ipcMain.handle("relay-pin", (ev, req) => {
+  const host = String((req && req.host) || "");
+  if (req && req.clear) { const p = readPins(); delete p[host]; writePins(p);
+    return { ok: true, host, pin: "", shown: "" }; }
+  const fp = getPin(host);
+  return { ok: true, host, pin: fp, shown: shortFingerprint(fp) };
+});
+const endpointFile = () => path.join(app.getPath("userData"), "endpoint.json");
+function accountsOverride() {
+  try {
+    const v = JSON.parse(fs.readFileSync(endpointFile(), "utf8")).accountsUrl;
+    return /^https?:\/\/[^\s]+$/.test(v || "") ? v : "";
+  } catch (e) { return ""; }
+}
+function accountsCfg() {
+  const cfg = Object.assign({}, require("./config/22nd-package.json").accounts);
+  const o = accountsOverride();
+  if (o) cfg.url = o;
+  return cfg;
+}
+ipcMain.handle("accounts-endpoint", (ev, req) => {
+  const shipped = (require("./config/22nd-package.json").accounts || {}).url || "";
+  const activeNow = accountsCfg().url || "";
+  if (!req || req.get) return { shipped, override: accountsOverride(), active: activeNow,
+                                insecure: isInsecure(activeNow), note: insecureNote(activeNow) };
+  const v = String(req.url || "").trim();
+  if (v && !/^https?:\/\/[^\s]+$/.test(v)) return { ok: false, error: "must start with http:// or https://" };
+  try {
+    fs.writeFileSync(endpointFile(), JSON.stringify({ accountsUrl: v }));
+    const active = v || shipped;
+    return { ok: true, shipped, override: v, active, insecure: isInsecure(active), note: insecureNote(active) };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
 ipcMain.handle("discord-login", async (ev, request) => {
-  const cfg = require("./config/22nd-package.json").accounts;
+  const cfg = accountsCfg();
   if (!cfg || !cfg.url || !cfg.discordClientId) return { ok: false, unconfigured: true };
+  if (isInsecure(cfg.url)) console.warn("[fleetcomm] accounts endpoint is not encrypted:", cfg.url);
   const bootstrapToken = String(request && request.bootstrapToken || "").trim().slice(0, 200);
   try {
     const status = await jsonCall(cfg.url, "GET", "/api/status");
@@ -370,7 +412,7 @@ ipcMain.handle("discord-login", async (ev, request) => {
 });
 ipcMain.handle("acct", async (ev, request) => {
   const { method, path: p, body: b } = request || {};
-  const cfg = require("./config/22nd-package.json").accounts;
+  const cfg = accountsCfg();
   if (!cfg || !cfg.url) return { ok: false, error: "accounts service not configured" };
   if (!acctToken) return { ok: false, error: "not signed in" };
   const verb = method === "POST" ? "POST" : "GET";
@@ -558,7 +600,8 @@ ipcMain.handle("connect", async (ev, request) => {
   const radio = new RadioStack({ host, port, callsign,
     tokens: allTokens, password: relay.password || "",
     rootChannel: require("./config/22nd-package.json").rootChannel,
-    cert: identity && identity.cert, key: identity && identity.key });
+    cert: identity && identity.cert, key: identity && identity.key,
+    pin: getPin(host), onPin: (fp) => setPin(host, fp) });
   stack = radio;
   radio.on("rx", (r) => { if (stack === radio) sendWin("rx", { idx: r.idx, session: r.session, name: r.name, opus: r.opus, last: r.last }); });
   radio.on("chat", (m) => { if (stack === radio) sendWin("chat", m); });

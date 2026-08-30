@@ -1238,6 +1238,30 @@ function pollOps() {
 }
 
 /* ══ header / settings / theme wiring ══ */
+/* Accounts endpoint — editable so a build that points somewhere dead can be
+   recovered by the operator instead of waiting for a new release. */
+async function refreshAcctEp() {
+  const r = await bridge.ipc.invoke("accounts-endpoint", { get: true });
+  if (!r) return;
+  $("acctEp").value = r.override || "";
+  $("acctEp").placeholder = r.shipped || "http://host:port";
+  const parts = [];
+  if (r.override) parts.push("Overridden — this build shipped with " + r.shipped);
+  if (r.note) parts.push(r.note);
+  $("acctEpNote").textContent = parts.length ? parts.join("  ·  ") : "Where sign-in talks to the fleet server";
+  $("acctEpNote").classList.toggle("bad", !!(r.override || r.insecure));
+}
+$("acctEpSave").addEventListener("click", async function () {
+  const r = await bridge.ipc.invoke("accounts-endpoint", { url: $("acctEp").value.trim() });
+  if (r && r.ok === false) { toast("Not saved — " + r.error); return; }
+  await refreshAcctEp();
+  toast("Accounts service set to " + (r.active || "the shipped default") + ". Sign in again.");
+});
+$("acctEpReset").addEventListener("click", async function () {
+  await bridge.ipc.invoke("accounts-endpoint", { url: "" });
+  await refreshAcctEp();
+  toast("Back to the address this build shipped with.");
+});
 $("sfontsel").addEventListener("change", function () { uiFont = this.value; applyFont(); });
 $("scaleup").addEventListener("click", () => bumpScale(0.1));
 $("scaledn").addEventListener("click", () => bumpScale(-0.1));
@@ -1355,7 +1379,7 @@ try {
 $("sfx").classList.toggle("on", fx);
 $("sautoupd").classList.toggle("on", autoUpdate);
 $("fxsel").value = fxPreset;
-applyFont(); applyScale(); applyTheme(); renderCsList(); renderMasterBinds(); renderMic(); renderNets(); refreshSounds();
+applyFont(); applyScale(); applyTheme(); refreshAcctEp(); renderCsList(); renderMasterBinds(); renderMic(); renderNets(); refreshSounds();
 $("startupFail").style.display = "none";
 $("signDiscord").style.display = discordMode ? "block" : "none";
 $("signLegacy").style.display = discordMode ? "none" : "block";

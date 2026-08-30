@@ -16,9 +16,14 @@ assert(/id="signLegacy" style="display:none"/.test(html),
 const app = fs.readFileSync(path.join(__dirname, "..", "renderer", "app.js"), "utf8");
 assert(/window\.addEventListener\("error"/.test(app) && /window\.addEventListener\("unhandledrejection"/.test(app),
   "renderer startup and asynchronous failures must be visible to the operator");
-assert(config.accounts && /^https:\/\//.test(config.accounts.url) && config.accounts.discordClientId,
+assert(config.accounts && /^https?:\/\//.test(config.accounts.url) && config.accounts.discordClientId,
   "production package enables Discord account mode");
-assert(config.server.host === "68.183.103.215" && config.accounts.url === "https://68.183.103.215",
+/* The accounts endpoint must match what is actually LISTENING on the droplet.
+   v0.10.1 shipped pointing at :443 for a TLS deployment that was never run, so
+   every operator got "connect ECONNREFUSED 68.183.103.215:443" at sign-in.
+   If TLS is deployed later, change this and the config together, and only after
+   the port is confirmed live. */
+assert(config.server.host === "68.183.103.215" && config.accounts.url === "http://68.183.103.215:8722",
   "production endpoints use the operator-controlled relay IP");
 assert(!/22nd\.space/.test(JSON.stringify(config)), "production config must not depend on an unowned domain");
 assert(!/22nd\.space/.test(deployment), "deployment instructions must not depend on an unowned domain");

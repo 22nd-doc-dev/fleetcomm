@@ -28,7 +28,9 @@ class RadioStack extends EventEmitter {
     const client = new MumbleClient({
       host: this.opts.host, port: this.opts.port,
       username, tokens: this.opts.tokens || [], password: this.opts.password || "",
-      cert: this.opts.cert, key: this.opts.key, release: "FleetComm"
+      cert: this.opts.cert, key: this.opts.key, release: "FleetComm",
+      /* every net shares one pinned relay certificate */
+      pin: this.opts.pin || "", onPin: this.opts.onPin
     });
     const net = { cfg: netCfg, client, channelId: null, idx };
     this.nets.push(net);

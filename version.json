@@ -1,4 +1,4 @@
 {
-  "version": "0.10.1",
-  "notes": "Authentication recovery: restores the Discord sign-in screen and Connect action, returns production traffic to the operator-controlled relay IP, removes the unrelated 22nd.space dependency, and supports trusted automatically renewed TLS certificates issued directly to that public IP. Startup and asynchronous UI failures are now shown instead of leaving a dead callsign form."
+  "version": "0.10.3",
+  "notes": "Fixes sign-in and relay connection. v0.10.1 shipped three changes that only work together with a TLS deployment that was never performed: accounts traffic aimed at port 443, an HTTPS-only requirement, and full CA verification of the relay certificate. Each one blocked operators in turn \u2014 ECONNREFUSED, then \"must use HTTPS\", then \"self signed certificate\". Mumble servers are self-signed by design, so the relay is now verified the way Mumble clients actually do it: trust on first use, then pin the certificate and refuse it if it ever changes. Plain-HTTP accounts traffic is permitted and clearly labelled as unencrypted rather than blocked, and the accounts address is editable under SYS > NETWORK. No server change required."
 }
