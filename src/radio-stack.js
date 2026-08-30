@@ -139,6 +139,17 @@ class RadioStack extends EventEmitter {
         const id = client.channelByName(channelName(rootChannelName));
         if (id != null) { net.channelId = id; client.joinChannel(id); }
       }
+      /* The control link must be watched like any net. Unmonitored, a dropped
+         control socket stayed marked live, so _anyClient() kept routing every
+         relay question (ATC board, net editing, subnet resolution) through a
+         destroyed socket — forever, silently. Attached only after a successful
+         connect so a failed dial reports through the throw below, not twice. */
+      client.on("close", () => {
+        if (net.dead) return;                   /* deliberate teardown */
+        net.dead = true;
+        this.emit("control-down", { idx });
+      });
+      client.on("error", () => {});             /* surfaced via close */
       return idx;
     } catch (error) {
       net.dead = true;
@@ -312,6 +323,8 @@ class RadioStack extends EventEmitter {
     return { id: await c.createChannel(name, parentId, encodeMeta(meta)), name };
   }
 
-  destroy() { this.nets.forEach(n => { try { n.client.disconnect(); } catch (e) {} }); }
+  /* dead is set BEFORE the sockets close, so teardown never masquerades as a
+     link drop and triggers a reconnect of a stack the operator just left */
+  destroy() { this.nets.forEach(n => { n.dead = true; try { n.client.disconnect(); } catch (e) {} }); }
 }
 module.exports = { RadioStack, sanitizeUser };

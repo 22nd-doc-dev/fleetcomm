@@ -1594,6 +1594,12 @@ document.querySelectorAll(".pkey").forEach(k => k.addEventListener("click", () =
 let opsTimer = null;
 function pollOps() {
   clearInterval(opsTimer);
+  /* The account heartbeat used to eject on ANY failed poll — one ECONNRESET out
+     of ~300 requests an hour tore down every tuned net and the Discord session,
+     while the voice connections rode the same blip out on TCP retransmit.
+     src/acct-heartbeat.js now separates a server VERDICT (expired, revoked —
+     sign out) from a transport blip (hold: stay on comms, keep polling). */
+  let acctFails = 0;
   opsTimer = setInterval(async () => {
     if (!connected) return;
     const view = await ipcRenderer.invoke("atc-view");
@@ -1601,10 +1607,13 @@ function pollOps() {
     $("opsCount").textContent = names.size;
     if (discordMode) {
       const current = await ipcRenderer.invoke("acct", { method: "GET", path: "/api/me" });
-      if (!current.ok || !current.authorized) {
+      const verdict = bridge.acctHeartbeat.assess(current, acctFails);
+      acctFails = verdict.fails;
+      if (verdict.warn) addLog("sys", "", "accounts service unreachable — staying on comms, still checking");
+      if (verdict.action === "eject") {
         $("disconnBtn").click();
-        toast(current.error || "Your FleetComm access changed. Sign in again.");
-      } else if (!acct || current.account.role !== acct.account.role) {
+        toast(verdict.reason);
+      } else if (verdict.action === "ok" && (!acct || current.account.role !== acct.account.role)) {
         applyLogin(current);
         toast("Your FleetComm role is now " + current.account.role.toUpperCase() + ".");
       }

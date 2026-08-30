@@ -434,7 +434,10 @@ ipcMain.handle("acct", async (ev, request) => {
     const response = await jsonCall(cfg.url, verb, p, b || null, acctToken);
     return p === "/api/me" && response.ok ? keepAccountSecrets(response) : response;
   }
-  catch (e) { return { ok: false, error: e.message }; }
+  /* transport:true = the request never completed (reset, timeout, DNS) — the
+     server rendered NO verdict. The heartbeat must not treat this as revoked
+     access; see src/acct-heartbeat.js. */
+  catch (e) { return { ok: false, transport: true, error: e.message }; }
 });
 
 /* ── update attempt bookkeeping ──
@@ -645,10 +648,28 @@ ipcMain.handle("connect", async (ev, request) => {
   radio.on("roster", (r) => { if (stack === radio) sendWin("roster", r); });
   radio.on("net-down", (r) => { if (stack === radio) sendWin("net-down", r); });
   radio.on("net-error", (r) => { if (stack === radio) sendWin("net-error", r); });
+  /* ── control relink ──
+     Tuned nets heal themselves in the renderer; the control connection is
+     invisible there, so it heals here. Same shape as the renderer's backoff
+     (4s, 8s, 16s, 30s, then 60s, with jitter) and it stops the moment this
+     stack is no longer the live one. Main-process timers are not throttled,
+     so this keeps working while the operator is in-game. */
+  const rootChannel = require("./config/22nd-package.json").rootChannel;
+  let ctlTries = 0;
+  const relinkControl = () => {
+    if (stack !== radio) return;
+    const wait = Math.min(60000, 4000 * Math.pow(2, Math.min(3, ctlTries++))) + Math.random() * 1500;
+    setTimeout(async () => {
+      if (stack !== radio) return;
+      try { await radio.connectControl(rootChannel); ctlTries = 0; }
+      catch (ignore) { relinkControl(); }
+    }, wait);
+  };
+  radio.on("control-down", relinkControl);
   /* One silent control connection first: operators arrive tuned to nothing, but
      the ATC board and net editing still need a way to talk to the relay. */
   try {
-    await radio.connectControl(require("./config/22nd-package.json").rootChannel);
+    await radio.connectControl(rootChannel);
   } catch (e) {
     if (stack === radio) { try { radio.destroy(); } catch (ignore) {} stack = null; }
     return [{ ok: false, error: e.message }];

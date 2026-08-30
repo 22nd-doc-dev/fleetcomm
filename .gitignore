@@ -1,5 +1,10 @@
 node_modules/
 .fleetcomm-secrets.txt
+# local maintainer notes — the repo is public and these discuss infrastructure
+# state (unrotated credentials, open security items) that must not be published
+CLAUDE.md
+FLEETCOMM-HANDOFF.md
+.claude/
 dist/
 *.log
 .DS_Store
