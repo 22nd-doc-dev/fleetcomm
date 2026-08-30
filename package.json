@@ -1,6 +1,6 @@
 {
   "name": "fleetcomm",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "description": "FleetComm \u2014 multi-net voice radio for the 22nd Expeditionary Fleet (QLink successor). Mumble-protocol backbone, radio-rack UI.",
   "author": "Rook \"Doc\" Sabbah \u2014 22nd Expeditionary Fleet",
   "main": "main.js",
@@ -8,7 +8,7 @@
     "start": "electron .",
     "seed": "node scripts/seed-channels.js",
     "lint": "eslint .",
-    "test:unit": "node test/update-test.js && node test/update-helper-test.js && node test/net-tree-test.js && node test/net-meta-test.js && node test/channel-name-test.js && node test/varint-test.js && node test/identity-test.js && node test/mumble-client-unit-test.js && node test/radio-stack-unit-test.js && node test/accounts-security-test.js",
+    "test:unit": "node test/update-test.js && node test/update-helper-test.js && node test/renderer-bootstrap-test.js && node test/net-tree-test.js && node test/net-meta-test.js && node test/channel-name-test.js && node test/varint-test.js && node test/identity-test.js && node test/mumble-client-unit-test.js && node test/radio-stack-unit-test.js && node test/accounts-security-test.js",
     "test:relay": "node test/integration.js && node test/stack-test.js && node test/permissions-test.js && node test/comms-test.js && node test/nest-test.js && node test/netedit-test.js && node test/accounts-test.js",
     "verify": "npm run lint && npm run test:unit",
     "test": "npm run verify && npm run test:relay",

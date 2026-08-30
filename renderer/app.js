@@ -3,6 +3,14 @@
 const bridge = window.fleetcomm;
 if (!bridge) throw new Error("FleetComm preload bridge unavailable");
 const ipcRenderer = bridge.ipc;
+function reportRendererError(error) {
+  const message = error && (error.message || error.reason && error.reason.message) || String(error || "unknown error");
+  console.error("[fleetcomm] renderer error:", message);
+  const output = document.getElementById("connErr");
+  if (output) output.textContent = "FleetComm interface error: " + message;
+}
+window.addEventListener("error", event => reportRendererError(event.error || event.message));
+window.addEventListener("unhandledrejection", event => reportRendererError(event.reason));
 const webFrame = { setZoomFactor: factor => bridge.zoom.set(factor) };
 const pkg = bridge.config;
 class OpusScript {
@@ -1064,12 +1072,23 @@ async function doConnect(cs, btn) {
   renderCsList();
   $("connErr").textContent = ""; btn.textContent = "CONNECTING…";
   const wanted = nets.map((n, i) => i).filter(i => nets[i].cfg.monitor || nets[i].cfg.defaultKey);
-  const res = await ipcRenderer.invoke("connect", {
-    host, port: pkg.server.port, callsign: cs,
-    nets: wanted.map(i => ({ name: nets[i].cfg.name, freq: nets[i].cfg.freq, channel: nets[i].cfg.name })),
-    token: !discordMode && cmdToken ? cmdToken : null
-  });
-  btn.textContent = "CONNECT ▸";
+  let res;
+  try {
+    res = await ipcRenderer.invoke("connect", {
+      host, port: pkg.server.port, callsign: cs,
+      nets: wanted.map(i => ({ name: nets[i].cfg.name, freq: nets[i].cfg.freq, channel: nets[i].cfg.name })),
+      token: !discordMode && cmdToken ? cmdToken : null
+    });
+  } catch (error) {
+    $("connErr").textContent = "Connection failed: " + (error.message || "unknown error");
+    return;
+  } finally {
+    btn.textContent = "CONNECT ▸";
+  }
+  if (!Array.isArray(res)) {
+    $("connErr").textContent = "Connection failed: FleetComm received an invalid relay response.";
+    return;
+  }
   const okCount = res.filter(r => r.ok).length;
   if (!okCount) {
     const raw = (res[0] && res[0].error) || "unknown";
@@ -1125,7 +1144,14 @@ function applyLogin(r) {
 }
 if ($("discordBtn")) $("discordBtn").addEventListener("click", async function () {
   this.textContent = "WAITING FOR DISCORD… (check your browser)";
-  const r = await ipcRenderer.invoke("discord-login", { bootstrapToken: $("bootstrapIn").value.trim() });
+  let r;
+  try {
+    r = await ipcRenderer.invoke("discord-login", { bootstrapToken: $("bootstrapIn").value.trim() });
+  } catch (error) {
+    this.textContent = "SIGN IN WITH DISCORD ▸";
+    $("connErr").textContent = "Sign-in failed: " + (error.message || "unknown error");
+    return;
+  }
   if (!r.ok) {
     this.textContent = "SIGN IN WITH DISCORD ▸";
     if (r.bootstrapRequired) { $("bootstrapRow").style.display = "flex"; $("bootstrapIn").focus(); }
@@ -1330,6 +1356,7 @@ $("sfx").classList.toggle("on", fx);
 $("sautoupd").classList.toggle("on", autoUpdate);
 $("fxsel").value = fxPreset;
 applyFont(); applyScale(); applyTheme(); renderCsList(); renderMasterBinds(); renderMic(); renderNets(); refreshSounds();
+$("startupFail").style.display = "none";
 $("signDiscord").style.display = discordMode ? "block" : "none";
 $("signLegacy").style.display = discordMode ? "none" : "block";
 $("legacyCommandAuth").style.display = discordMode ? "none" : "block";
