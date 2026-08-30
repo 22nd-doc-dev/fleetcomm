@@ -2,7 +2,7 @@
   "org": "22nd Expeditionary Fleet",
   "shortname": "22ND EF",
   "server": {
-    "host": "comms.22nd.space",
+    "host": "68.183.103.215",
     "port": 64738
   },
   "rootChannel": "22ND EXPEDITIONARY FLEET",
@@ -130,7 +130,7 @@
     "exeTemplate": "https://github.com/22nd-doc-dev/fleetcomm/releases/download/v{v}/FleetComm-{v}.exe"
   },
   "accounts": {
-    "url": "https://comms.22nd.space",
+    "url": "https://68.183.103.215",
     "discordClientId": "1543138637838024744"
   }
 }

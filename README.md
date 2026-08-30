@@ -60,21 +60,21 @@ suite. GitHub CI runs both the headless and live-relay gates.
 
 ## Secure server deployment
 
-The deployment scripts target Ubuntu 22.04/24.04. Before deploying:
+The deployment scripts target Ubuntu 22.04/24.04. They support a public IPv4 address directly; no
+domain name is required. Before deploying:
 
-1. Point the public DNS name (for example `comms.22nd.space`) at the server.
-2. Bootstrap Mumble once with `sudo bash server/setup.sh`.
-3. Seed the org tree from a trusted workstation:
+1. Bootstrap Mumble once with `sudo bash server/setup.sh`.
+2. Seed the org tree from a trusted workstation:
 
    ```sh
    npm run seed -- <server-address> '<Mumble SuperUser password>'
    ```
 
-4. Deploy the loopback accounts service, nginx, Let's Encrypt TLS, Mumble TLS, and systemd
+3. Deploy the loopback accounts service, nginx, Let's Encrypt IP-address TLS, Mumble TLS, and systemd
    hardening:
 
    ```sh
-   bash server/deploy.sh <ssh-address> <public-dns-name> <certificate-email>
+   bash server/deploy.sh <ssh-address> <public-ip-address> <certificate-email>
    ```
 
 The deploy command prompts privately for the existing Mumble SuperUser password, generates the
@@ -82,9 +82,9 @@ relay password and one-time COMMAND bootstrap code, transfers secrets as protect
 the operator copy in the gitignored `.fleetcomm-secrets.txt` with mode 0600. Port 8722 is never
 opened publicly.
 
-Do not merge a configured public hostname until its DNS record points to the relay: strict TLS is
-intentional, and the desktop client will not fall back to an IP with certificate verification
-disabled.
+The public address in `config/22nd-package.json` must be an address you control. The deployment uses
+a short-lived, automatically renewed Let's Encrypt certificate for that IP; the desktop client does
+not disable certificate verification or depend on an unrelated third-party domain.
 
 ## Release
 

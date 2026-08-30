@@ -1,4 +1,4 @@
 {
   "version": "0.10.1",
-  "notes": "Authentication startup hotfix: restores the Discord sign-in screen and Connect action by permitting FleetComm's bundled Opus codec to initialize inside the otherwise isolated local renderer. A visible startup diagnostic now replaces the misleading legacy callsign fallback if initialization ever fails again."
+  "notes": "Authentication recovery: restores the Discord sign-in screen and Connect action, returns production traffic to the operator-controlled relay IP, removes the unrelated 22nd.space dependency, and supports trusted automatically renewed TLS certificates issued directly to that public IP. Startup and asynchronous UI failures are now shown instead of leaving a dead callsign form."
 }
