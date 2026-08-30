@@ -7,6 +7,8 @@
  */
 const EventEmitter = require("events");
 const { MumbleClient } = require("./mumble-client");
+const { decodeMeta, encodeMeta } = require("./net-meta");
+const { channelName } = require("./channel-name");
 
 function sanitizeUser(name) { return name.replace(/[^\-=\w\[\]{}()@|.]+/g, "-").slice(0, 40) || "OPERATOR"; }
 
@@ -45,14 +47,21 @@ class RadioStack extends EventEmitter {
     client.on("close", () => this.emit("net-down", { idx }));
     client.on("error", (e) => this.emit("net-error", { idx, error: e.message }));
 
-    await client.connect();
-    await new Promise(r => setTimeout(r, 250)); // channel states settle
-    const chan = client.channelByName(netCfg.channel || netCfg.name);
-    if (chan == null) throw new Error("net channel not found on server: " + (netCfg.channel || netCfg.name));
-    net.channelId = chan;
-    client.joinChannel(chan);
-    this.emit("tuned", { idx, net: netCfg });
-    return idx;
+    try {
+      await client.connect();
+      await new Promise(r => setTimeout(r, 250)); // channel states settle
+      const relayName = channelName(netCfg.channel || netCfg.name);
+      const chan = client.channelByName(relayName);
+      if (chan == null) throw new Error("net channel not found on server: " + relayName);
+      net.channelId = chan;
+      client.joinChannel(chan);
+      this.emit("tuned", { idx, net: netCfg });
+      return idx;
+    } catch (error) {
+      net.dead = true;
+      try { client.disconnect(); } catch (ignore) {}
+      throw error;
+    }
   }
 
   detune(idx) {
@@ -101,11 +110,26 @@ class RadioStack extends EventEmitter {
   /* org-wide view for the ATC board: every channel with its occupants */
   atcView() {
     const c = this._anyClient(); if (!c) return [];
+    let allowed = null;
+    if (this.opts.rootChannel) {
+      const root = c.channelByName(channelName(this.opts.rootChannel));
+      if (root == null) return [];
+      allowed = new Set([root]);
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const [id, channel] of c.channels) {
+          if (!allowed.has(id) && allowed.has(channel.parent)) { allowed.add(id); changed = true; }
+        }
+      }
+    }
     const chans = [];
     for (const [id, ch] of c.channels) {
+      if (allowed && !allowed.has(id)) continue;
       const users = [];
       for (const [, u] of c.users) if (u.channelId === id || (u.channelId == null && id === 0)) users.push(this._stripFreq(u.name));
-      chans.push({ id, name: ch.name || "?", parent: ch.parent, users });
+      const meta = decodeMeta(ch.description);
+      chans.push({ id, name: ch.name || "?", parent: ch.parent, users, freq: meta.freq, ship: meta.ship });
     }
     return chans;
   }
@@ -126,8 +150,11 @@ class RadioStack extends EventEmitter {
      Each one waits for the relay's answer and reports what actually happened. */
   _resolve(name) {
     const c = this._anyClient(); if (!c) return null;
-    const id = c.channelByName(name);
+    const id = c.channelByName(channelName(name));
     return id == null ? null : { c, id };
+  }
+  _isOrgRoot(name) {
+    return !!this.opts.rootChannel && channelName(name) === channelName(this.opts.rootChannel);
   }
   /* keep our own record in step so a tuned net doesn't keep its old label */
   _relabel(oldName, newName) {
@@ -135,34 +162,68 @@ class RadioStack extends EventEmitter {
     if (net) net.cfg = Object.assign({}, net.cfg, { name: newName });
   }
   async renameNet(name, newName) {
+    if (this._isOrgRoot(name)) return { ok: false, error: "the org root channel is immutable" };
     const r = this._resolve(name);
     if (!r) return { ok: false, error: "not connected to the relay" };
-    try { await r.c.editChannel(r.id, { name: newName }); this._relabel(name, newName); return { ok: true }; }
+    const relayNewName = channelName(newName);
+    const duplicate = r.c.channelByName(relayNewName);
+    if (relayNewName !== channelName(name) && duplicate != null) return { ok: false, error: "a net named " + relayNewName + " already exists" };
+    try { await r.c.editChannel(r.id, { name: relayNewName }); this._relabel(name, relayNewName); return { ok: true, name: relayNewName }; }
     catch (e) { return { ok: false, error: e.message }; }
   }
   async moveNet(name, newParentName) {
+    if (this._isOrgRoot(name)) return { ok: false, error: "the org root channel is immutable" };
     const r = this._resolve(name);
     if (!r) return { ok: false, error: "not connected to the relay" };
-    let parentId = 0;
+    let parentId = this.opts.rootChannel ? r.c.channelByName(channelName(this.opts.rootChannel)) : 0;
+    if (parentId == null) return { ok: false, error: "org root channel is missing" };
     if (newParentName) {
-      parentId = r.c.channelByName(newParentName);
+      parentId = r.c.channelByName(channelName(newParentName));
       if (parentId == null) return { ok: false, error: "no net named " + newParentName + " on the relay" };
+    }
+    let cursor = parentId;
+    while (cursor != null) {
+      if (cursor === r.id) return { ok: false, error: "a net cannot be nested under itself or its descendants" };
+      const channel = r.c.channels.get(cursor);
+      cursor = channel && channel.parent;
     }
     try { await r.c.editChannel(r.id, { parent: parentId }); return { ok: true }; }
     catch (e) { return { ok: false, error: e.message }; }
   }
   async removeNet(name) {
+    if (this._isOrgRoot(name)) return { ok: false, error: "the org root channel is immutable" };
     const r = this._resolve(name);
     if (!r) return { ok: false, error: "not connected to the relay" };
     try { await r.c.removeChannel(r.id); return { ok: true }; }
     catch (e) { return { ok: false, error: e.message }; }
   }
 
-  async createNet(name, parentChannelName) {
+  async setNetMeta(name, meta) {
+    if (this._isOrgRoot(name)) return { ok: false, error: "the org root channel metadata is managed by the relay" };
+    const r = this._resolve(name);
+    if (!r) return { ok: false, error: "not connected to the relay" };
+    try { await r.c.editChannel(r.id, { description: encodeMeta(meta) }); return { ok: true }; }
+    catch (e) { return { ok: false, error: e.message }; }
+  }
+
+  async createNet(name, parentChannelName, meta) {
     const c = this._anyClient(); if (!c) throw new Error("not connected");
-    const parentId = c.channelByName(parentChannelName);
+    name = channelName(name);
+    if (!name) throw new Error("net name is empty");
+    if (c.channelByName(name) != null) throw new Error("a net named " + name + " already exists");
+    const parentId = c.channelByName(channelName(parentChannelName));
     if (parentId == null) throw new Error("parent channel not found: " + parentChannelName);
-    return c.createChannel(name, parentId);
+    if (this.opts.rootChannel) {
+      const rootId = c.channelByName(channelName(this.opts.rootChannel));
+      let cursor = parentId, insideOrg = false;
+      while (cursor != null) {
+        if (cursor === rootId) { insideOrg = true; break; }
+        const channel = c.channels.get(cursor);
+        cursor = channel && channel.parent;
+      }
+      if (!insideOrg) throw new Error("parent must be inside the org channel tree");
+    }
+    return { id: await c.createChannel(name, parentId, encodeMeta(meta)), name };
   }
 
   destroy() { this.nets.forEach(n => { try { n.client.disconnect(); } catch (e) {} }); }

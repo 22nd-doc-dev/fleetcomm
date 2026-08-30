@@ -23,7 +23,7 @@ ok("version comparison");
 /* ── the happy path: the update lands ── */
 {
   const st = attempt("0.9.1");
-  assert(st.target === "0.9.1" && st.fails === 0);
+  assert(st.target === "0.9.1" && st.fails === 0 && st.status === "pending");
   const r = reconcile("0.9.1", st, false);        /* we came back as the new version */
   assert(r.note.installed === "0.9.1", "reports the install");
   assert(!r.state.target, "slate is wiped so the next version starts clean");
@@ -34,7 +34,7 @@ ok("version comparison");
 /* ── the loop: swap fails, app returns on the old version ── */
 {
   let state = attempt("0.9.1");
-  assert(!blocked(state, "0.9.1"), "first automatic attempt is allowed");
+  assert(blocked(state, "0.9.1"), "a recorded pending attempt blocks a duplicate launch");
 
   /* relaunch #1 — still 0.9.0, so the swap didn't take */
   let r = reconcile("0.9.0", state, false);
@@ -48,7 +48,7 @@ ok("version comparison");
     state = r.state;
     assert(blocked(state, "0.9.1"), "still blocked on pass " + i);
   }
-  assert(state.fails >= 26, "each return is counted");
+  assert(state.fails >= 26, "each return is counted without resetting the guard");
   ok("a failed swap can never spin — one automatic try per version, ever");
 
   /* the operator is still free to install it by hand, and a LATER release

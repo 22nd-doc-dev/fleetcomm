@@ -7,6 +7,7 @@
  * channel seeding) and inside Electron main.
  */
 const tls = require("tls");
+const net = require("net");
 const fs = require("fs");
 const path = require("path");
 const EventEmitter = require("events");
@@ -46,8 +47,15 @@ class MumbleClient extends EventEmitter {
 
   connect() {
     return new Promise((resolve, reject) => {
+      let settled = false;
+      const loopback = ["127.0.0.1", "::1", "localhost"].includes(this.opts.host);
+      const timeout = setTimeout(() => {
+        if (!settled) { settled = true; this.disconnect(); reject(new Error("relay handshake timed out")); }
+      }, this.opts.connectTimeout || 12000);
       const s = tls.connect(
-        { host: this.opts.host, port: this.opts.port, rejectUnauthorized: false,
+        { host: this.opts.host, port: this.opts.port,
+          rejectUnauthorized: !(loopback || this.opts.insecureTls === true),
+          servername: this.opts.servername || (net.isIP(this.opts.host) ? undefined : this.opts.host),
           cert: this.opts.cert, key: this.opts.key,
           /* murmur requests client certs in a way node's TLS1.3 stack won't answer;
              TLS1.2 exchanges them in-handshake and murmur fully supports it */
@@ -68,15 +76,30 @@ class MumbleClient extends EventEmitter {
       );
       this.sock = s;
       s.on("data", (d) => this._onData(d));
-      s.on("error", (e) => { this.emit("error", e); reject(e); });
-      s.on("close", () => this.emit("close"));
+      s.on("error", (e) => {
+        if (this.listenerCount("error")) this.emit("error", e);
+        if (!settled) { settled = true; clearTimeout(timeout); this.disconnect(); reject(e); }
+      });
+      s.on("close", () => {
+        clearInterval(this._pinger);
+        this.emit("close");
+        if (!settled) { settled = true; clearTimeout(timeout); reject(new Error("relay closed during handshake")); }
+      });
       this.once("ServerSync", (m) => {
+        if (settled) return;
+        settled = true; clearTimeout(timeout);
         this.session = m.session;
-        this._pinger = setInterval(() => this.send("Ping", { timestamp: Date.now() }), 15000);
+        this._pinger = setInterval(() => {
+          if (this.sock && !this.sock.destroyed) this.send("Ping", { timestamp: Date.now() });
+        }, 15000);
         this.emit("ready", m);
         resolve(m);
       });
-      this.once("Reject", (m) => reject(new Error("Server rejected: " + (m.reason || m.type))));
+      this.once("Reject", (m) => {
+        if (settled) return;
+        settled = true; clearTimeout(timeout); this.disconnect();
+        reject(new Error("Server rejected: " + (m.reason || m.type)));
+      });
     });
   }
 
@@ -87,6 +110,7 @@ class MumbleClient extends EventEmitter {
 
   /* ── control channel ── */
   send(name, payload) {
+    if (!this.sock || this.sock.destroyed) throw new Error("relay connection is closed");
     const T = this._types[name];
     const body = T.encode(T.fromObject(payload || {})).finish();
     this._raw(MSG[name], body);
@@ -102,6 +126,11 @@ class MumbleClient extends EventEmitter {
     while (this._buf.length >= 6) {
       const type = this._buf.readUInt16BE(0);
       const size = this._buf.readUInt32BE(2);
+      if (size > 8 * 1024 * 1024) {
+        const error = new Error("relay frame exceeds safety limit");
+        if (this.listenerCount("error")) this.emit("error", error);
+        this.disconnect(); return;
+      }
       if (this._buf.length < 6 + size) break;
       const body = this._buf.subarray(6, 6 + size);
       this._buf = this._buf.subarray(6 + size);
@@ -135,12 +164,15 @@ class MumbleClient extends EventEmitter {
 
   /* ── voice: legacy framing over the TCP tunnel ── */
   sendVoice(opusFrame, target = 0, last = false) {
+    if (!Buffer.isBuffer(opusFrame)) opusFrame = Buffer.from(opusFrame || []);
+    if (!opusFrame.length || opusFrame.length > 0x1fff) throw new RangeError("Opus frame exceeds Mumble's 13-bit size field");
     const header = Buffer.from([(OPUS_TYPE << 5) | (target & 0x1F)]);
     const seqB = varint.encode(this.seq++);
     const lenB = varint.encode(opusFrame.length | (last ? 0x2000 : 0));
     this._raw(MSG.UDPTunnel, Buffer.concat([header, seqB, lenB, opusFrame]));
   }
   _onVoice(buf) {
+    if (!buf || buf.length < 2) return;
     const type = buf[0] >> 5, context = buf[0] & 0x1F;
     if (type !== OPUS_TYPE) return; // ignore CELT/ping
     let off = 1;
@@ -148,6 +180,7 @@ class MumbleClient extends EventEmitter {
     const seq = varint.decode(buf, off); if (!seq) return; off += seq.length;
     const len = varint.decode(buf, off); if (!len) return; off += len.length;
     const size = len.value & 0x1FFF, last = !!(len.value & 0x2000);
+    if (off + size > buf.length) return;
     const opus = buf.subarray(off, off + size);
     this.emit("voice", { session: sess.value, sequence: seq.value, opus, context, last });
   }
@@ -167,7 +200,7 @@ class MumbleClient extends EventEmitter {
         if (m.name === name && m.parent === parent) { cleanup(); resolve(m.channelId); }
       };
       const onDenied = (m) => { cleanup(); reject(new Error("PermissionDenied type=" + m.type)); };
-      const cleanup = () => { this.off("ChannelState", onState); this.off("PermissionDenied", onDenied); };
+      const cleanup = () => { this.off("ChannelState", onState); this.off("PermissionDenied", onDenied); clearTimeout(t); };
       this.on("ChannelState", onState);
       this.on("PermissionDenied", onDenied);
       this.send("ChannelState", { parent, name, description });

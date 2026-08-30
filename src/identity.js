@@ -7,7 +7,11 @@ const selfsigned = require("selfsigned");
 
 async function loadOrCreate(dir, name) {
   const file = path.join(dir, "fleetcomm-identity.json");
-  try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch (e) {}
+  try {
+    const existing = JSON.parse(fs.readFileSync(file, "utf8"));
+    try { fs.chmodSync(file, 0o600); } catch (error) {}
+    return existing;
+  } catch (e) {}
   const pems = await selfsigned.generate(
     [{ name: "commonName", value: name || "FleetComm Operator" }],
     { days: 3650, keySize: 2048, algorithm: "sha256",
@@ -19,7 +23,11 @@ async function loadOrCreate(dir, name) {
       ] }
   );
   const id = { cert: pems.cert, key: pems.private };
-  try { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(file, JSON.stringify(id)); } catch (e) {}
+  try {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(file, JSON.stringify(id), { mode: 0o600 });
+    fs.chmodSync(file, 0o600);
+  } catch (e) {}
   return id;
 }
 module.exports = { loadOrCreate };

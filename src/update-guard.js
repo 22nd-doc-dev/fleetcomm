@@ -31,18 +31,21 @@ function reconcile(currentVersion, state, failedFlag) {
   if (cmpVer(currentVersion, st.target) >= 0) {
     return { state: {}, note: { installed: st.target } };      /* it landed — clear the slate */
   }
-  st.fails = (st.fails || 0) + 1;
-  st.reason = failedFlag ? "the swap couldn't complete" : "the app restarted on the old version";
+  st.status = "failed";
+  st.fails = Math.min(1000, (st.fails || 0) + 1);
+  st.reason = st.reason || (failedFlag ? "the swap couldn't complete" : "the app restarted on the old version");
   return { state: st, note: { failed: true, target: st.target, reason: st.reason } };
 }
 
 /* May we install this version automatically, with no human in the loop? */
 function blocked(state, version) {
   const st = state || {};
-  return st.target === version && (st.fails || 0) >= 1;
+  return st.target === version && ["pending", "launched", "failed"].includes(st.status);
 }
 
 /* Recorded immediately before we hand off to the swap script. */
-function attempt(version) { return { target: version, at: Date.now(), fails: 0 }; }
+function attempt(version, automatic) {
+  return { target: version, attemptedAt: Date.now(), automatic: !!automatic, status: "pending", fails: 0 };
+}
 
 module.exports = { cmpVer, reconcile, blocked, attempt };

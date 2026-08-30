@@ -5,9 +5,10 @@
  * Idempotent: skips channels that already exist.
  */
 const { MumbleClient } = require("../src/mumble-client");
+const { encodeMeta } = require("../src/net-meta");
+const { channelName: chanName } = require("../src/channel-name");
 
 /* Mumble's default channel-name rules disallow some chars (e.g. "/") */
-function chanName(name) { return name.replace(/[^ \-=\w#\[\]{}()@|]/g, "-"); }
 const pause = (ms) => new Promise(r => setTimeout(r, ms));
 
 async function seed(host, superPw, cfg, port) {
@@ -17,18 +18,17 @@ async function seed(host, superPw, cfg, port) {
   let rootId = c.channelByName(chanName(cfg.rootChannel));
   if (rootId == null) { rootId = await c.createChannel(chanName(cfg.rootChannel), 0, cfg.org + " operating area"); await pause(400); }
   const ids = { __root: rootId };
-  for (const net of cfg.nets) {
-    const nm = chanName(net.name);
-    let id = c.channelByName(nm);
-    if (id == null) { id = await c.createChannel(nm, rootId, "Net " + net.freq + (net.enc ? " · ENCRYPTED" : "")); await pause(400); } // stay under the server's flood limiter
-    ids[net.name] = id;
-    for (const sub of net.subnets || []) {
-      const sn = chanName(sub.name);
-      let sid = c.channelByName(sn);
-      if (sid == null) { sid = await c.createChannel(sn, id, "Subnet " + sub.freq); await pause(400); }
-      ids[net.name + "/" + sub.name] = sid;
+  async function addAll(items, parentId, prefix) {
+    for (const item of items || []) {
+      const name = chanName(item.name);
+      let id = c.channelByName(name);
+      if (id == null) { id = await c.createChannel(name, parentId, encodeMeta(item)); await pause(400); } // stay under the server's flood limiter
+      const key = prefix ? prefix + "/" + item.name : item.name;
+      ids[key] = id;
+      await addAll(item.subnets, id, key);
     }
   }
+  await addAll(cfg.nets, rootId, "");
   c.disconnect();
   return ids;
 }

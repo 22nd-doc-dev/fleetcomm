@@ -1,6 +1,7 @@
 "use strict";
 /* Mumble varint (positive subset for encode; full decode) */
 function encode(n) {
+  if (!Number.isSafeInteger(n) || n < 0 || n > 0xffffffff) throw new RangeError("varint encode expects uint32");
   if (n < 0x80) return Buffer.from([n]);
   if (n < 0x4000) return Buffer.from([0x80 | (n >> 8), n & 0xff]);
   if (n < 0x200000) return Buffer.from([0xC0 | (n >> 16), (n >> 8) & 0xff, n & 0xff]);
@@ -22,7 +23,7 @@ function decode(buf, off) {
   }
   if ((b0 & 0xF0) === 0xE0) {
     if (off + 4 > buf.length) return null;
-    return { value: ((b0 & 0x0F) << 24) | (buf[off + 1] << 16) | (buf[off + 2] << 8) | buf[off + 3], length: 4 };
+    return { value: (((b0 & 0x0F) << 24) | (buf[off + 1] << 16) | (buf[off + 2] << 8) | buf[off + 3]) >>> 0, length: 4 };
   }
   if ((b0 & 0xFC) === 0xF0) {
     if (off + 5 > buf.length) return null;

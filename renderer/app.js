@@ -1,8 +1,31 @@
 "use strict";
 /* FleetComm v0.5 renderer — command console. */
-const { ipcRenderer, webFrame } = require("electron");
-const OpusScript = require("opusscript");
-const pkg = require("../config/22nd-package.json");
+const bridge = window.fleetcomm;
+if (!bridge) throw new Error("FleetComm preload bridge unavailable");
+const ipcRenderer = bridge.ipc;
+const webFrame = { setZoomFactor: factor => bridge.zoom.set(factor) };
+const pkg = bridge.config;
+class OpusScript {
+  constructor(sampleRate, channels, application) { this.id = bridge.opus.create(sampleRate, channels, application); }
+  encode(pcm, frameSize) { return bridge.opus.encode(this.id, exactBuffer(pcm), frameSize); }
+  decode(frame) { return bridge.opus.decode(this.id, exactBuffer(frame)); }
+  encoderCTL(request, value) { return bridge.opus.ctl(this.id, request, value); }
+  delete() { bridge.opus.destroy(this.id); }
+}
+OpusScript.Application = bridge.opus.applications;
+function exactBuffer(value) {
+  if (value instanceof ArrayBuffer) return value;
+  if (ArrayBuffer.isView(value)) return value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+  throw new TypeError("expected binary audio data");
+}
+function pcm16(floatSamples) {
+  const buffer = new ArrayBuffer(floatSamples.length * 2), view = new DataView(buffer);
+  for (let i = 0; i < floatSamples.length; i++) {
+    const sample = Math.max(-1, Math.min(1, floatSamples[i]));
+    view.setInt16(i * 2, (sample * 32767) | 0, true);
+  }
+  return buffer;
+}
 
 const store = {
   get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
@@ -56,15 +79,18 @@ function buildNets() {
   nets = [];
   const add = (cfg, depth, parent) => {
     const p = netPrefs[cfg.freq] || {};
+    const localCfg = Object.assign({}, cfg);
     nets.push({
-      cfg, depth, parent, tuned: false, idx: null,
+      cfg: localCfg, depth, parent, tuned: false, idx: null,
       mon: p.mon !== undefined ? p.mon : true,
-      txOn: p.txOn || false, vol: p.vol !== undefined ? p.vol : 75, pan: p.pan || 0,
+      txOn: !!p.txOn, vol: Math.max(0, Math.min(100, Number(p.vol !== undefined ? p.vol : 75) || 0)),
+      pan: Math.max(-100, Math.min(100, Number(p.pan) || 0)),
       bind: p.bind || null, bcast: p.bcast || false,
       roster: new Map(), speaking: new Map(), chat: [], tx: false
     });
+    for (const child of cfg.subnets || []) add(child, depth + 1, cfg.name);
   };
-  for (const n of pkg.nets) { add(n, 0, null); for (const s of n.subnets || []) add(s, 1, n.name); }
+  for (const n of pkg.nets) add(n, 0, null);
 }
 buildNets();
 function savePrefs() {
@@ -73,7 +99,7 @@ function savePrefs() {
   store.set("collapsed", collapsed);
 }
 const sel = () => nets[selectedI];
-const { buildTree, validParents } = require("../src/net-tree");
+const { buildTree, validParents, channelName } = bridge.netTree;
 /* The display order is derived from parentage every render — see src/net-tree.js.
    `tree` is rebuilt by renderNets and read by anything that needs to know the
    shape of the board (PgUp/PgDn order, the parent dropdown, nest counts). */
@@ -176,11 +202,11 @@ function onKeyDown(src, code, label, mods) {
   if (matchDown(masterBinds.cycUp, src, code, label, mods)) { cycleSel(-1); return; }
   if (matchDown(masterBinds.cycDn, src, code, label, mods)) { cycleSel(1); return; }
   if (matchDown(masterBinds.active, src, code, label, mods)) { pttAll(true); return; }
-  nets.forEach((n, i) => { if (n.tuned && matchDown(n.bind, src, code, label, mods)) startTX(i); });
+  nets.forEach((n, i) => { if (n.tuned && matchDown(n.bind, src, code, label, mods)) requestTX(i, "bind"); });
 }
 function onKeyUp(src, code, label) {
   if (matchUp(masterBinds.active, src, code, label)) pttAll(false);
-  nets.forEach((n, i) => { if (n.tx && matchUp(n.bind, src, code, label) && !n._latched) endTX(i); });
+  nets.forEach((n, i) => { if (matchUp(n.bind, src, code, label)) releaseTX(i, "bind"); });
 }
 ipcRenderer.on("gkey", (ev, k) => {
   gActive = true;
@@ -220,14 +246,16 @@ async function ensureMic() {
           if(this.n===${FRAME}){this.port.postMessage(this.buf.slice(0));this.n=0;}}
         return true;}}
       registerProcessor("cap",Cap);`;
-    await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([workletCode], { type: "application/javascript" })));
+    const workletUrl = URL.createObjectURL(new Blob([workletCode], { type: "application/javascript" }));
+    try { await ctx.audioWorklet.addModule(workletUrl); } finally { URL.revokeObjectURL(workletUrl); }
     capNode = new AudioWorkletNode(ctx, "cap");
     src.connect(capNode);
+    const silent = ctx.createGain(); silent.gain.value = 0;
+    capNode.connect(silent); silent.connect(ctx.destination); // keep the pull-based worklet graph alive without monitoring the mic
     capNode.port.onmessage = (ev) => {
       if (txSet.size === 0 && txEndPending.size === 0) return;
-      const f32 = ev.data, i16 = Buffer.alloc(FRAME * 2);
-      for (let i = 0; i < FRAME; i++) { const s = Math.max(-1, Math.min(1, f32[i])); i16.writeInt16LE((s * 32767) | 0, i * 2); }
-      let opus; try { opus = Buffer.from(encoder.encode(i16, FRAME)); } catch (e) { return; }
+      const f32 = ev.data, i16 = pcm16(f32);
+      let opus; try { opus = encoder.encode(i16, FRAME); } catch (e) { return; }
       for (const idx of txSet) ipcRenderer.send("tx-frame", { idx, frame: opus, last: false, broadcast: bcastIdx.has(idx) });
       for (const idx of txEndPending) { ipcRenderer.send("tx-frame", { idx, frame: opus, last: true, broadcast: bcastIdx.has(idx) }); txEndPending.delete(idx); }
     };
@@ -286,15 +314,23 @@ const decoders = new Map();
 function playFrame(n, session, opusBuf) {
   const key = n.cfg.freq + ":" + session;
   let d = decoders.get(key);
-  if (!d) { d = { dec: new OpusScript(48000, 1), cursor: 0 }; decoders.set(key, d); }
-  let pcm; try { pcm = d.dec.decode(Buffer.from(opusBuf)); } catch (e) { return; }
-  const cnt = pcm.length / 2, ab = ctx.createBuffer(1, cnt, 48000), chd = ab.getChannelData(0);
-  const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.byteLength);
+  if (!d) { d = { dec: new OpusScript(48000, 1), cursor: 0, lastUsed: 0 }; decoders.set(key, d); }
+  d.lastUsed = Date.now();
+  let pcm; try { pcm = d.dec.decode(opusBuf); } catch (e) { return; }
+  const cnt = pcm.byteLength / 2, ab = ctx.createBuffer(1, cnt, 48000), chd = ab.getChannelData(0);
+  const view = new DataView(pcm);
   for (let i = 0; i < cnt; i++) chd[i] = view.getInt16(i * 2, true) / 32768;
   const src = ctx.createBufferSource(); src.buffer = ab; src.connect(n.gainNode);
   d.cursor = Math.max(ctx.currentTime + 0.06, d.cursor);
+  if (d.cursor > ctx.currentTime + 0.75) d.cursor = ctx.currentTime + 0.06;
   src.start(d.cursor); d.cursor += cnt / 48000;
 }
+setInterval(() => {
+  const cutoff = Date.now() - 60000;
+  for (const [key, value] of decoders) {
+    if (value.lastUsed < cutoff) { value.dec.delete(); decoders.delete(key); }
+  }
+}, 30000);
 function beep(f1, f2, dur, g0) {
   if (!fx) return;
   try {
@@ -310,19 +346,46 @@ const chirpDown = () => beep(1650, 1250, 0.07, 0.06);
 const chirpUp = () => beep(1150, 1500, 0.05, 0.045);
 
 /* ══ TX control ══ */
-async function startTX(i, latched) {
+function txReasons(n) { if (!n._txReasons) n._txReasons = new Set(); return n._txReasons; }
+async function requestTX(i, reason) {
   const n = nets[i];
-  if (!n || !n.tuned || n.tx || !connected) return;
+  if (!n || !n.tuned || !connected) return;
+  txReasons(n).add(reason);
+  if (n.tx) return;
   if (!(await ensureMic())) return;
-  n.tx = true; n._latched = !!latched; txSet.add(n.idx);
+  /* The key/open-mic control may have been released while the browser's mic
+     permission prompt was open. Re-check intent after the await or the radio
+     can become stuck transmitting without any key still held. */
+  if (!connected || !n.tuned || txReasons(n).size === 0 || n.tx) return;
+  n.tx = true; txEndPending.delete(n.idx); txSet.add(n.idx);
   if (n.bcast) { bcastIdx.add(n.idx); await ipcRenderer.invoke("arm-broadcast", n.idx); } else bcastIdx.delete(n.idx);
   netDyn(i); sendOv(); renderTxTargets();
 }
-function endTX(i) {
+function finishTX(i) {
   const n = nets[i];
   if (!n || !n.tx) return;
-  n.tx = false; n._latched = false; txSet.delete(n.idx); txEndPending.add(n.idx);
+  n.tx = false; txSet.delete(n.idx); txEndPending.add(n.idx);
   netDyn(i); sendOv(); renderTxTargets();
+}
+function releaseTX(i, reason) {
+  const n = nets[i]; if (!n) return;
+  txReasons(n).delete(reason);
+  if (txReasons(n).size === 0) finishTX(i);
+}
+function syncReasonTargets(reason, active) {
+  const targets = active ? new Set(txTargetIdxs()) : new Set();
+  nets.forEach((n, i) => {
+    if (targets.has(i)) requestTX(i, reason);
+    else releaseTX(i, reason);
+  });
+}
+function syncActiveTxTargets() {
+  syncReasonTargets("ptt", pttHeld);
+  syncReasonTargets("open", openMic);
+}
+function clearTxState() {
+  nets.forEach((n, i) => { if (n._txReasons) n._txReasons.clear(); finishTX(i); });
+  txSet.clear(); txEndPending.clear(); bcastIdx.clear(); pttHeld = false; openMic = false;
 }
 function txTargetIdxs() {
   return nets.map((n, i) => i).filter(i => nets[i].tuned && (override ? true : nets[i].txOn));
@@ -336,11 +399,13 @@ async function pttAll(down) {
   if (down) {
     if (!t.length) { toast("No net has TX enabled — toggle TX on at least one net."); pttHeld = false; $("ptt").classList.remove("hot"); return; }
     chirpDown(); addLog("tx", txNames(t), "TX START — " + callsign);
-    for (const i of t) await startTX(i);
+    syncReasonTargets("ptt", true);
   } else if (!openMic) {
     chirpUp();
-    nets.forEach((n, i) => { if (n.tx && !n._latched) endTX(i); });
+    syncReasonTargets("ptt", false);
     addLog("tx", "", "TX END");
+  } else {
+    syncReasonTargets("ptt", false);
   }
 }
 function txNames(t) { return t.map(i => nets[i].cfg.name).join(", "); }
@@ -353,9 +418,9 @@ async function setOpenMic(on) {
   if (on) {
     if (!t.length) { toast("No net has TX enabled."); setOpenMic(false); return; }
     chirpDown(); addLog("tx", txNames(t), "OPEN MIC ENGAGED — " + callsign);
-    for (const i of t) await startTX(i, true);
+    syncReasonTargets("open", true);
   } else {
-    chirpUp(); nets.forEach((n, i) => { if (n.tx) endTX(i); });
+    chirpUp(); syncReasonTargets("open", false);
     addLog("tx", "", "OPEN MIC ENDED");
   }
 }
@@ -365,7 +430,7 @@ function setOverride(on) {
   $("overrideBtn").classList.toggle("latched", on);
   $("overrideBtn").textContent = on ? "OVERRIDE ENGAGED — click to end" : "CMD OVERRIDE — all tuned";
   addLog("sys", "", on ? "COMMAND OVERRIDE ENGAGED — PTT now keys every tuned net" : "Command override disengaged");
-  if (!on && (openMic || pttHeld)) { nets.forEach((n, i) => { if (n.tx && !n.txOn) endTX(i); }); }
+  if (openMic || pttHeld) syncActiveTxTargets();
   renderTxTargets();
 }
 
@@ -398,7 +463,7 @@ function renderNets() {
         '<button class="ann' + (n.mon ? " lit-g" : "") + '" data-mon>LSN</button>' +
         '<button class="ann' + (n.txOn ? " lit-a" : "") + '" data-txon>TX</button>' +
         (par ? '<button class="ann' + (n.bcast ? " lit-a" : "") + '" data-bcast title="Transmit to this net AND every subnet under it">NEST</button>' : "") +
-        '<button class="keyb mono" data-key title="Per-net talk key — click, press a key or combo">' + (n.bind ? n.bind.label : "KEY") + '</button>' +
+        '<button class="keyb mono" data-key title="Per-net talk key — click, press a key or combo">' + esc(n.bind ? n.bind.label : "KEY") + '</button>' +
         '<button class="x" data-x title="Detune">✕</button></div>' +
         '<div class="srow"><label>VOL</label><input type="range" min="0" max="100" value="' + n.vol + '" data-vol>' +
         '<label style="width:20px">L·R</label><input type="range" class="pan" min="-100" max="100" value="' + n.pan + '" data-pan></div>';
@@ -441,11 +506,11 @@ function renderRoster() {
   if (!n || !n.tuned) { box.innerHTML = '<span class="hint">' + (n ? "net not tuned — TUNE it to see who's aboard" : "") + '</span>'; $("rosterCount").textContent = ""; return; }
   const now = Date.now(); let h = "";
   const meSpeaking = n.tx;
-  h += '<div class="rchip me' + (meSpeaking ? " speaking" : "") + '"><b>' + callsign + '</b><span>YOU' + (meSpeaking ? " · TX" : "") + '</span></div>';
+  h += '<div class="rchip me' + (meSpeaking ? " speaking" : "") + '"><b>' + esc(callsign) + '</b><span>YOU' + (meSpeaking ? " · TX" : "") + '</span></div>';
   for (const [sess, name] of n.roster) {
     if (name === callsign) continue;
     const sp = (n.speaking.get(sess) || 0) > now;
-    h += '<div class="rchip' + (sp ? " speaking" : "") + '"><b>' + name + '</b><span>' + (sp ? "SPEAKING" : "ON NET") + '</span></div>';
+    h += '<div class="rchip' + (sp ? " speaking" : "") + '"><b>' + esc(name) + '</b><span>' + (sp ? "SPEAKING" : "ON NET") + '</span></div>';
   }
   box.innerHTML = h;
   $("rosterCount").textContent = n.roster.size + " KNOWN";
@@ -453,11 +518,15 @@ function renderRoster() {
 function renderChat() {
   const n = sel(), feed = $("chatFeed");
   feed.innerHTML = !n ? "" : n.chat.map(m =>
-    '<div class="cm' + (m.mine ? " mine" : "") + '"><span class="t">' + m.t + '</span><b>' + m.from + '</b>' + esc(m.msg) + '</div>'
+    '<div class="cm' + (m.mine ? " mine" : "") + '"><span class="t">' + esc(m.t) + '</span><b>' + esc(m.from) + '</b>' + esc(m.msg) + '</div>'
   ).join("");
   feed.scrollTop = feed.scrollHeight;
 }
 function esc(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
+function escAttr(s) {
+  return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
 function renderTxTargets() {
   const t = txTargetIdxs(), el = $("txTargets");
   if (override) el.innerHTML = '<span class="ann lit-a">OVERRIDE — ALL TUNED</span>';
@@ -519,15 +588,40 @@ async function syncTreeFromRelay() {
   try { view = await ipcRenderer.invoke("atc-view"); } catch (e) { return false; }
   if (!Array.isArray(view) || !view.length) return false;
   const byId = new Map(view.map(c => [c.id, c]));
+  const relayRows = view.filter(c => c.name && c.name !== channelName(pkg.rootChannel));
+  if (!relayRows.length) return false;
+  const relayNames = new Set(relayRows.map(c => c.name));
+  const selectedName = sel() && sel().cfg.name;
   let changed = false;
-  nets.forEach(n => {
-    const ch = view.find(c => c.name === n.cfg.name);
-    if (!ch) return;                                  /* not on the relay (local-only net) */
+  for (const ch of relayRows) {
+    let n = nets.find(item => channelName(item.cfg.channel || item.cfg.name) === ch.name);
+    if (!n) {
+      const pref = netPrefs[ch.freq] || {};
+      n = { cfg: { name: ch.name, freq: ch.freq || "———.———", enc: false, ship: !!ch.ship, subnets: [] },
+        depth: 0, parent: null, tuned: false, idx: null, mon: pref.mon !== false, txOn: !!pref.txOn,
+        vol: Math.max(0, Math.min(100, Number(pref.vol == null ? 75 : pref.vol) || 0)),
+        pan: Math.max(-100, Math.min(100, Number(pref.pan) || 0)), bind: pref.bind || null,
+        bcast: !!pref.bcast, roster: new Map(), speaking: new Map(), chat: [], tx: false };
+      nets.push(n); changed = true;
+    }
+    if (ch.freq && n.cfg.freq !== ch.freq) { n.cfg.freq = ch.freq; changed = true; }
+    if (ch.ship != null && !!n.cfg.ship !== !!ch.ship) { n.cfg.ship = !!ch.ship; changed = true; }
+  }
+  const beforeLength = nets.length;
+  nets = nets.filter(n => n.tuned || relayNames.has(channelName(n.cfg.channel || n.cfg.name)));
+  if (nets.length !== beforeLength) changed = true;
+  for (const n of nets) {
+    const ch = relayRows.find(c => c.name === channelName(n.cfg.channel || n.cfg.name));
+    if (!ch) continue;
     const par = byId.get(ch.parent);
-    /* the relay's root is not one of our nets, so it reads as top level */
-    const parentName = par && nets.some(x => x.cfg.name === par.name) ? par.name : null;
+    const parentNet = par && nets.find(item => channelName(item.cfg.channel || item.cfg.name) === par.name);
+    const parentName = parentNet ? parentNet.cfg.name : null;
     if ((n.parent || null) !== parentName) { n.parent = parentName; changed = true; }
-  });
+  }
+  if (selectedName) {
+    const selected = nets.findIndex(n => n.cfg.name === selectedName);
+    if (selected >= 0) selectedI = selected;
+  }
   if (changed) { savePrefs(); renderNets(); }
   return changed;
 }
@@ -559,9 +653,8 @@ function armTxExclusive(i) {
   nets.forEach((x, j) => {
     if (!x.tuned) return;
     x.txOn = (j === i);
-    if (!x.txOn && x.tx && !override) endTX(j);
   });
-  if (keyed && !override && !n.tx) startTX(i, openMic);
+  if (keyed && !override) syncActiveTxTargets();
   savePrefs();
   renderTxTargets();
 }
@@ -607,9 +700,10 @@ netlist.addEventListener("click", async (e) => {
   }
   if (e.target.closest("[data-tune]")) { await tuneNet(i); return; }
   if (e.target.closest("[data-mon]")) { n.mon = !n.mon; ipcRenderer.send("net-mute", { idx: n.idx, muted: !n.mon }); savePrefs(); renderNets(); return; }
-  if (e.target.closest("[data-txon]")) { n.txOn = !n.txOn; savePrefs(); renderNets(); return; }
+  if (e.target.closest("[data-txon]")) { n.txOn = !n.txOn; if (pttHeld || openMic) syncActiveTxTargets(); savePrefs(); renderNets(); return; }
   if (e.target.closest("[data-x]")) {
     ipcRenderer.send("detune", n.idx);
+    txSet.delete(n.idx); txEndPending.delete(n.idx); bcastIdx.delete(n.idx); txReasons(n).clear();
     n.tuned = false; n.idx = null; n.roster.clear(); n.speaking.clear(); n.tx = false;
     addLog("sys", n.cfg.name, "detuned"); savePrefs(); renderNets(); return;
   }
@@ -633,8 +727,11 @@ async function tuneNet(i, silent) {
   if (!r.ok && /not found/.test(r.error || "")) {
     if (!cmdToken) { if (!silent) toast("Net \"" + n.cfg.name + "\" doesn't exist on the relay yet — command authority required to create it."); return false; }
     const parent = n.parent || pkg.rootChannel;
-    const made = await ipcRenderer.invoke("create-net", { name: n.cfg.name, rootChannel: parent });
+    const made = await ipcRenderer.invoke("create-net", { name: n.cfg.name, rootChannel: parent, freq: n.cfg.freq, ship: !!n.cfg.ship });
     if (!made.ok) { if (!silent) toast(/PermissionDenied/.test(made.error) ? "The relay refused: your command token doesn't grant net creation." : "Create failed: " + made.error); return false; }
+    if (made.name && made.name !== n.cfg.name) {
+      renameLocal(n.cfg.name, made.name); n.cfg.name = made.name; cfg.name = made.name; cfg.channel = made.name;
+    }
     addLog("sys", n.cfg.name, "net created on relay by " + callsign);
     r = await ipcRenderer.invoke("tune", cfg);
   }
@@ -664,7 +761,7 @@ function openNetDialog(mode, i) {
     ? validParents(nets.map(x => ({ name: x.cfg.name, parent: x.parent })), i)
     : nets.map((x, j) => j);
   const opts = ['<option value="">— top level —</option>'].concat(
-    legal.map(j => nets[j]).map(n => '<option value="' + esc(n.cfg.name) + '">under ' +
+    legal.map(j => nets[j]).map(n => '<option value="' + escAttr(n.cfg.name) + '">under ' +
       "  ".repeat(n.depth || 0) + esc(n.cfg.name) + "</option>"));
   $("dlgParent").innerHTML = opts.join("");
   if (mode === "edit") {
@@ -711,15 +808,19 @@ $("dlgOk").addEventListener("click", async function () {
     let r = { ok: true };
     if (newName && newName !== n.cfg.name) {
       r = await ipcRenderer.invoke("net-rename", { net: n.cfg.name, name: newName });
-      if (r.ok) { addLog("sys", n.cfg.name, "renamed to " + newName + " by " + callsign);
-                  renameLocal(n.cfg.name, newName); n.cfg.name = newName; }
+      if (r.ok) { const acceptedName = r.name || newName;
+                  addLog("sys", n.cfg.name, "renamed to " + acceptedName + " by " + callsign);
+                  renameLocal(n.cfg.name, acceptedName); n.cfg.name = acceptedName; }
     }
     if (r.ok && (newParent || "") !== (n.parent || "")) {
       r = await ipcRenderer.invoke("net-move", { net: n.cfg.name, parent: newParent });
       if (r.ok) { n.parent = newParent || null; n.depth = newParent ? 1 : 0;
                   addLog("sys", n.cfg.name, newParent ? "nested under " + newParent : "moved to top level"); }
     }
-    n.cfg.freq = newFreq; n.cfg.ship = $("dlgShip").checked;
+    if (r.ok && (newFreq !== n.cfg.freq || !!$("dlgShip").checked !== !!n.cfg.ship)) {
+      r = await ipcRenderer.invoke("net-meta", { net: n.cfg.name, freq: newFreq, ship: !!$("dlgShip").checked });
+      if (r.ok) { n.cfg.freq = newFreq; n.cfg.ship = $("dlgShip").checked; }
+    }
     this.disabled = false; this.textContent = "CREATE ▸";
     if (!r.ok) { $("dlgErr").textContent = r.error || "The relay refused that change."; return; }
     savePrefs(); $("dlg").classList.remove("on"); renderNets(); renderSoundboard();
@@ -811,8 +912,8 @@ function renderSoundboard() {
   if (!show) return;
   $("sbNet").textContent = n.cfg.name + (n.bcast ? " (NEST)" : "");
   $("sbList").innerHTML = sbSounds.length
-    ? sbSounds.map(s => '<button class="sbBtn' + (sbPlaying === s.name ? " playing" : "") + '" data-snd="' + esc(s.name) + '">' +
-        esc(s.name.replace(/\.[^.]+$/, "")) + '<span class="del" data-del="' + esc(s.name) + '">✕</span></button>').join("")
+    ? sbSounds.map(s => '<button class="sbBtn' + (sbPlaying === s.name ? " playing" : "") + '" data-snd="' + escAttr(s.name) + '">' +
+        esc(s.name.replace(/\.[^.]+$/, "")) + '<span class="del" data-del="' + escAttr(s.name) + '">✕</span></button>').join("")
     : '<span class="hint">no clips yet — ADD CLIPS to build the ship\'s soundboard</span>';
 }
 $("sbAdd").addEventListener("click", async () => {
@@ -853,21 +954,25 @@ async function playClipOnNet(name, net) {
   src.connect(g); g.connect(ctx.destination); src.start();
 
   const enc = new OpusScript(48000, 1, OpusScript.Application.AUDIO);
-  const i16 = Buffer.alloc(FRAME * 2);
+  const i16 = new ArrayBuffer(FRAME * 2), i16view = new DataView(i16);
   let pos = 0;
   const pump = setInterval(() => {
+    if (!connected || !net.tuned || net.idx == null) {
+      clearInterval(pump); enc.delete(); sbPlaying = null; renderSoundboard(); return;
+    }
     if (pos >= len) {
       clearInterval(pump);
-      try { ipcRenderer.send("tx-frame", { idx: net.idx, frame: Buffer.from(enc.encode(Buffer.alloc(FRAME * 2), FRAME)), last: true, broadcast: !!net.bcast }); } catch (e) {}
+      try { ipcRenderer.send("tx-frame", { idx: net.idx, frame: enc.encode(new ArrayBuffer(FRAME * 2), FRAME), last: true, broadcast: !!net.bcast }); } catch (e) {}
+      enc.delete();
       sbPlaying = null; renderSoundboard();
       return;
     }
     for (let i = 0; i < FRAME; i++) {
       const s = pos + i < len ? Math.max(-1, Math.min(1, mono[pos + i])) : 0;
-      i16.writeInt16LE((s * 32767) | 0, i * 2);
+      i16view.setInt16(i * 2, (s * 32767) | 0, true);
     }
     pos += FRAME;
-    try { ipcRenderer.send("tx-frame", { idx: net.idx, frame: Buffer.from(enc.encode(i16, FRAME)), last: false, broadcast: !!net.bcast }); } catch (e) {}
+    try { ipcRenderer.send("tx-frame", { idx: net.idx, frame: enc.encode(i16, FRAME), last: false, broadcast: !!net.bcast }); } catch (e) {}
   }, 20);
 }
 
@@ -926,7 +1031,8 @@ $("chatIn").addEventListener("keydown", (e) => { if (e.key === "Enter") sendChat
 ipcRenderer.on("net-down", (ev, r) => {
   const i = nets.findIndex(x => x.idx === r.idx); if (i < 0) return;
   if (connected) { addLog("sys", nets[i].cfg.name, "LINK LOST — retune to reconnect"); toast(nets[i].cfg.name + " link lost."); }
-  nets[i].tuned = false; nets[i].idx = null; renderNets();
+  txSet.delete(nets[i].idx); txEndPending.delete(nets[i].idx); bcastIdx.delete(nets[i].idx); txReasons(nets[i]).clear();
+  nets[i].tuned = false; nets[i].idx = null; nets[i].tx = false; renderNets();
 });
 ipcRenderer.on("net-error", (ev, r) => toast("Net error: " + r.error));
 
@@ -940,12 +1046,13 @@ $("openMicBtn").addEventListener("click", () => setOpenMic(!openMic));
 $("overrideBtn").addEventListener("click", () => setOverride(!override));
 
 /* ══ CONNECT / SIGN-IN ══ */
-let acct = null; // {account:{role,callsign,discordName}, relay:{password,tokens,adminToken}}
-const discordMode = !!(pkg.accounts && pkg.accounts.url && pkg.accounts.discordClientId) && !process.env.FLEETCOMM_AUTOTEST;
+let acct = null; // public account state only; relay credentials stay in Electron main
+const discordMode = !!(pkg.accounts && pkg.accounts.url && pkg.accounts.discordClientId) && !bridge.autotestHost;
+if (discordMode && cmdToken) { cmdToken = ""; store.set("cmdToken", ""); }
 function currentHost() { return store.get("hostOverride", "") || pkg.server.host; }
 $("relayname").textContent = pkg.org.toUpperCase();
 $("relayedit").addEventListener("click", () => { $("hostrow").style.display = "flex"; $("hostIn").value = currentHost(); $("hostIn").focus(); });
-function renderCsList() { $("csList").innerHTML = myCallsigns.map(c => '<option value="' + esc(c) + '">').join(""); }
+function renderCsList() { $("csList").innerHTML = myCallsigns.map(c => '<option value="' + escAttr(c) + '">').join(""); }
 $("csIn").value = callsign;
 async function doConnect(cs, btn) {
   const host = ($("hostrow").style.display !== "none" ? $("hostIn").value.trim() : currentHost());
@@ -960,9 +1067,7 @@ async function doConnect(cs, btn) {
   const res = await ipcRenderer.invoke("connect", {
     host, port: pkg.server.port, callsign: cs,
     nets: wanted.map(i => ({ name: nets[i].cfg.name, freq: nets[i].cfg.freq, channel: nets[i].cfg.name })),
-    token: cmdToken || null,
-    relayPassword: acct && acct.relay ? acct.relay.password : "",
-    roleTokens: acct && acct.relay ? acct.relay.tokens : []
+    token: !discordMode && cmdToken ? cmdToken : null
   });
   btn.textContent = "CONNECT ▸";
   const okCount = res.filter(r => r.ok).length;
@@ -982,6 +1087,7 @@ async function doConnect(cs, btn) {
   });
   connected = true;
   if (acct && cs !== acct.account.callsign) ipcRenderer.invoke("acct", { method: "POST", path: "/api/callsign", body: { callsign: cs } });
+  await syncTreeFromRelay();
   selectedI = nets.findIndex(n => n.tuned);
   $("connectOv").classList.add("hidden");
   $("relayLbl").className = "v ok"; $("relayLbl").textContent = "LIVE · " + pkg.shortname;
@@ -998,14 +1104,20 @@ $("connectLegacyBtn").addEventListener("click", function () { doConnect($("csInL
 
 /* Discord sign-in flow */
 function applyLogin(r) {
-  acct = { account: r.account, relay: r.relay };
-  if (r.account.role === "pending" || !r.relay) {
+  acct = { account: r.account, authorized: !!r.authorized };
+  cmdToken = r.account.role === "command" ? "account-command" : "";
+  if (connected) {
+    $("oprole").textContent = r.account.role === "member" ? "" : r.account.role.toUpperCase();
+    $("authRole").textContent = r.account.role.toUpperCase();
+    $("acctKey").style.display = r.account.role === "command" ? "" : "none";
+    renderTxTargets();
+  }
+  if (r.account.role === "pending" || !r.authorized) {
     $("pendingBox").style.display = "block";
     $("csRow2").style.display = "none"; $("connectBtn").style.display = "none";
     return;
   }
   $("pendingBox").style.display = "none";
-  if (r.relay.adminToken) cmdToken = r.relay.adminToken; /* command role carries authority automatically */
   $("csRow2").style.display = "flex"; $("connectBtn").style.display = "block";
   $("csIn").value = r.account.callsign || callsign || "";
   $("discordBtn").textContent = "✓ " + r.account.discordName.toUpperCase() + " — " + r.account.role.toUpperCase();
@@ -1013,9 +1125,10 @@ function applyLogin(r) {
 }
 if ($("discordBtn")) $("discordBtn").addEventListener("click", async function () {
   this.textContent = "WAITING FOR DISCORD… (check your browser)";
-  const r = await ipcRenderer.invoke("discord-login");
+  const r = await ipcRenderer.invoke("discord-login", { bootstrapToken: $("bootstrapIn").value.trim() });
   if (!r.ok) {
     this.textContent = "SIGN IN WITH DISCORD ▸";
+    if (r.bootstrapRequired) { $("bootstrapRow").style.display = "flex"; $("bootstrapIn").focus(); }
     $("connErr").textContent = r.unconfigured ? "Discord sign-in isn't configured yet." : ("Sign-in failed: " + (r.error || "unknown"));
     return;
   }
@@ -1027,7 +1140,14 @@ if ($("recheckBtn")) $("recheckBtn").addEventListener("click", async () => {
   if (r.ok) applyLogin(r); else toast(r.error || "still pending");
 });
 $("disconnBtn").addEventListener("click", () => {
-  ipcRenderer.send("disconnect"); connected = false;
+  clearTxState(); ipcRenderer.send("disconnect"); connected = false;
+  if (discordMode) {
+    acct = null; cmdToken = "";
+    $("discordBtn").disabled = false; $("discordBtn").textContent = "SIGN IN WITH DISCORD ▸";
+    $("pendingBox").style.display = "none"; $("bootstrapRow").style.display = "none";
+    $("csRow2").style.display = "none"; $("connectBtn").style.display = "none";
+    $("bootstrapIn").value = "";
+  }
   buildNets(); renderNets(); showPage("pgComms");
   $("connectOv").classList.remove("hidden");
   $("relayLbl").className = "v dim"; $("relayLbl").textContent = "OFFLINE";
@@ -1043,7 +1163,7 @@ async function refreshAtc() {
   $("atcGrid").innerHTML = boxes.map(c =>
     '<div class="atcbox"><h4>' + esc(c.name) + '<span class="c">' + c.users.length + '</span></h4>' +
     '<div class="who">' + (c.users.length ? c.users.map(u => "<i>" + esc(u) + "</i>").join("") : '<span class="empty">empty</span>') + '</div>' +
-    '<button class="tunelink" data-name="' + esc(c.name) + '">TUNE ME HERE ▸</button></div>'
+    '<button class="tunelink" data-name="' + escAttr(c.name) + '">TUNE ME HERE ▸</button></div>'
   ).join("");
 }
 $("atcGrid").addEventListener("click", async (e) => {
@@ -1061,13 +1181,13 @@ $("atcGrid").addEventListener("click", async (e) => {
 function showPage(id) {
   if (id === "pgAtc" && !connected) { toast("Connect first."); return; }
   const leavingSys = document.getElementById("settings").classList.contains("on") && id !== "settings";
-  if (leavingSys) { cmdToken = $("tokenIn").value.trim(); store.set("cmdToken", cmdToken); renderTxTargets(); }
+  if (leavingSys && !discordMode) { cmdToken = $("tokenIn").value.trim(); store.set("cmdToken", cmdToken); renderTxTargets(); }
   document.querySelectorAll(".page").forEach(p => p.classList.toggle("on", p.id === id));
   document.querySelectorAll(".pkey").forEach(k => k.classList.toggle("on", k.dataset.page === id));
   if (id === "pgAtc") refreshAtc();
   if (id === "pgAcct") refreshAccts();
   if (id === "pgChat") { renderChatTabs(); renderChat(); }
-  if (id === "settings") $("tokenIn").value = cmdToken;
+  if (id === "settings" && !discordMode) $("tokenIn").value = cmdToken;
 }
 document.querySelectorAll(".pkey").forEach(k => k.addEventListener("click", () => showPage(k.dataset.page)));
 let opsTimer = null;
@@ -1078,6 +1198,16 @@ function pollOps() {
     const view = await ipcRenderer.invoke("atc-view");
     const names = new Set(); view.forEach(c => c.users.forEach(u => names.add(u)));
     $("opsCount").textContent = names.size;
+    if (discordMode) {
+      const current = await ipcRenderer.invoke("acct", { method: "GET", path: "/api/me" });
+      if (!current.ok || !current.authorized) {
+        $("disconnBtn").click();
+        toast(current.error || "Your FleetComm access changed. Sign in again.");
+      } else if (!acct || current.account.role !== acct.account.role) {
+        applyLogin(current);
+        toast("Your FleetComm role is now " + current.account.role.toUpperCase() + ".");
+      }
+    }
   }, 12000);
 }
 
@@ -1192,7 +1322,7 @@ setInterval(() => { $("clock").textContent = utc(); }, 1000);
 
 /* init */
 try {
-  const _v = "v" + require("../package.json").version;
+  const _v = "v" + bridge.version;
   $("verlbl").textContent = "FLEETCOMM " + _v + ' — native unit: in-game PTT + overlay · developed by Rook "Doc" Sabbah, UEE 22nd Expeditionary Fleet';
   $("verlbl2").textContent = _v;
 } catch (e) {}
@@ -1202,6 +1332,7 @@ $("fxsel").value = fxPreset;
 applyFont(); applyScale(); applyTheme(); renderCsList(); renderMasterBinds(); renderMic(); renderNets(); refreshSounds();
 $("signDiscord").style.display = discordMode ? "block" : "none";
 $("signLegacy").style.display = discordMode ? "none" : "block";
+$("legacyCommandAuth").style.display = discordMode ? "none" : "block";
 if (discordMode) $("signFoot").textContent = "Access is gated: Discord confirms who you are, COMMAND decides who gets in, and the relay itself refuses anyone unapproved.";
 addLog("sys", "", "FleetComm console initialized — awaiting sign-in");
 
@@ -1222,7 +1353,7 @@ async function refreshAccts() {
       (x.role === "command" ? '<button class="ann" data-role="member">DEMOTE</button>' : "") +
       (x.role !== "revoked" ? '<button class="ann" style="border-color:var(--red);color:var(--red)" data-role="revoked">REVOKE</button>'
                             : '<button class="ann lit-g" data-role="member">REINSTATE</button>');
-    return '<div class="acctrow" data-id="' + x.discordId + '"><div class="nm"><b>' + esc(x.callsign || "(no callsign yet)") + '</b>' +
+    return '<div class="acctrow" data-id="' + escAttr(x.discordId) + '"><div class="nm"><b>' + esc(x.callsign || "(no callsign yet)") + '</b>' +
       '<span>discord: ' + esc(x.discordName) + " · " + (x.lastSeen ? "seen " + new Date(x.lastSeen).toLocaleString() : "never seen") + "</span></div>" +
       '<span class="ann rolelbl ' + (x.role === "command" ? "lit-a" : x.role === "member" ? "lit-g" : "") + '">' + x.role.toUpperCase() + "</span>" + btns + "</div>";
   }).join("");
@@ -1230,7 +1361,7 @@ async function refreshAccts() {
   const rows = [];
   nets.forEach(n => rows.push({ name: n.cfg.name, freq: n.cfg.freq }));
   $("netAccess").innerHTML = rows.map(r =>
-    '<div class="narow" data-net="' + esc(r.name) + '"><b>' + esc(r.name) + '</b><span class="fq2 num">' + r.freq + "</span>" +
+    '<div class="narow" data-net="' + escAttr(r.name) + '"><b>' + esc(r.name) + '</b><span class="fq2 num">' + esc(r.freq) + "</span>" +
     '<select class="orgsel" data-lvl>' + levels.map(l =>
       '<option value="' + l + '"' + (((rn.ok && rn.access[r.name]) || "open") === l ? " selected" : "") + ">" +
       (l === "open" ? "OPEN — anyone approved" : l === "member" ? "MEMBERS+" : "COMMAND ONLY") + "</option>").join("") + "</select></div>"
@@ -1250,11 +1381,11 @@ $("netAccess").addEventListener("change", async (e) => {
 });
 
 /* headless CI hook */
-if (process.env.FLEETCOMM_AUTOTEST) {
+if (bridge.autotestHost) {
   setTimeout(() => {
-    store.set("hostOverride", process.env.FLEETCOMM_AUTOTEST);
+    store.set("hostOverride", bridge.autotestHost);
     $("hostrow").style.display = "flex";
-    $("hostIn").value = process.env.FLEETCOMM_AUTOTEST;
+    $("hostIn").value = bridge.autotestHost;
     $("csIn").value = "AUTOTEST-RIG";
     $("connectBtn").click();
     setTimeout(async () => {

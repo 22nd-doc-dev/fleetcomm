@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # FleetComm server bootstrap — run as root on a fresh Ubuntu 22.04/24.04 VPS (a $5 box is plenty for 60+ operators).
-#   curl -fsSL <raw-url>/setup.sh | bash -s -- 'YourSuperUserPassword'
-# or: bash setup.sh 'YourSuperUserPassword'
+# Run interactively so the SuperUser password is not persisted in shell history
+# or written to disk; it is used only by the short-lived password setup command.
+#   sudo bash setup.sh
 set -euo pipefail
-SUPW="${1:?usage: setup.sh <SuperUser-password>}"
+read -r -s -p "New Mumble SuperUser password: " SUPW
+echo
+test -n "$SUPW" || { echo "password is required" >&2; exit 1; }
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
@@ -30,8 +33,9 @@ INI
 
 # set SuperUser password (service must be stopped)
 systemctl stop mumble-server || true
-su -s /bin/sh mumble-server -c "mumble-server -ini /etc/mumble-server.ini -supw '$SUPW'" 2>/dev/null \
-  || mumble-server -ini /etc/mumble-server.ini -supw "$SUPW"
+command -v runuser >/dev/null || { echo "runuser is required to set the SuperUser password safely" >&2; exit 1; }
+runuser -u mumble-server -- mumble-server -ini /etc/mumble-server.ini -supw "$SUPW"
+unset SUPW
 systemctl enable --now mumble-server
 
 # firewall (if ufw is active)
@@ -42,6 +46,6 @@ fi
 echo
 echo "══════════════════════════════════════════════════════"
 echo " FleetComm relay is up on port 64738."
-echo " Next, from your own machine, seed the 22nd channel tree:"
-echo "   npm run seed -- <this-server-ip-or-domain> '$SUPW'"
+echo " Next, seed the 22nd channel tree from your workstation."
+echo " Then configure DNS and run server/deploy.sh from the repository."
 echo "══════════════════════════════════════════════════════"

@@ -1,70 +1,54 @@
 #!/usr/bin/env bash
-# FleetComm — one-shot accounts-service deploy.
-# Run from the fleetcomm-app folder on your Mac:
-#     bash server/deploy.sh '<current-mumble-SuperUser-password>'
-# Generates the relay password + command token for you, ships everything over a
-# single SSH connection (one password prompt), and prints the result.
-set -uo pipefail   # NOTE: deliberately not -e; we report failures ourselves
+# Secure one-shot deployment from a maintainer workstation.
+# Usage: bash server/deploy.sh [ssh-host] [public-host] <letsencrypt-email>
+set -euo pipefail
+umask 077
 
-if [ $# -lt 1 ]; then
-  echo "usage: bash server/deploy.sh '<mumble-SuperUser-password>' [host]" >&2
-  exit 1
-fi
-SUPW="$1"
-HOST="${2:-68.183.103.215}"
+SSH_HOST="${1:-68.183.103.215}"
+PUBLIC_HOST="${2:-comms.22nd.space}"
+LE_EMAIL="${3:-}"
+test -n "$LE_EMAIL" || { echo "usage: bash server/deploy.sh [ssh-host] [public-host] <letsencrypt-email>" >&2; exit 1; }
+[[ "$SSH_HOST" =~ ^[A-Za-z0-9._:-]+$ ]] || { echo "invalid SSH host" >&2; exit 1; }
+[[ "$PUBLIC_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "invalid public host" >&2; exit 1; }
+[[ "$LE_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+$ ]] || { echo "invalid email" >&2; exit 1; }
 
-# openssl ships on macOS and Linux; avoids the tr|head SIGPIPE trap
-RELAYPW="$(openssl rand -hex 16)"
-ADMTOK="cmd-$(openssl rand -hex 10)"
-if [ -z "$RELAYPW" ] || [ -z "$ADMTOK" ]; then
-  echo "FAILED: could not generate secrets (openssl missing?)" >&2; exit 1
-fi
-
-echo "── FleetComm accounts deploy → $HOST"
-echo "   generated relay password + command token (saved locally when done)"
-echo "   you will be asked for the DROPLET ROOT PASSWORD once."
+read -r -s -p "Current Mumble SuperUser password: " SUPW
 echo
-
-for f in server/accounts-service.js server/setup-accounts.sh src/mumble-client.js src/varint.js proto/Mumble.proto; do
-  [ -f "$f" ] || { echo "FAILED: missing $f — run this from the fleetcomm-app folder" >&2; exit 1; }
+test -n "$SUPW" || { echo "password is required" >&2; exit 1; }
+RELAYPW="$(openssl rand -hex 24)"
+BOOTTOK="boot-$(openssl rand -hex 24)"
+STAGE="$(mktemp -d)"
+trap 'rm -rf "$STAGE"' EXIT
+mkdir -p "$STAGE"/{server,src,proto,config,deploy-secrets}
+for file in server/accounts-service.js server/setup-accounts.sh src/channel-name.js src/mumble-client.js src/varint.js proto/Mumble.proto config/22nd-package.json; do
+  cp "$file" "$STAGE/$(dirname "$file")/"
 done
-echo "── uploading and installing (this is the password prompt)…"
+printf '%s' "$SUPW" > "$STAGE/deploy-secrets/superuser-password"
+printf '%s' "$RELAYPW" > "$STAGE/deploy-secrets/relay-password"
+printf '%s' "$BOOTTOK" > "$STAGE/deploy-secrets/bootstrap-token"
 
-tar czf - server/accounts-service.js server/setup-accounts.sh src/mumble-client.js src/varint.js proto/Mumble.proto |
-ssh -o StrictHostKeyChecking=accept-new "root@$HOST" \
-  "set -e
-   rm -rf /tmp/fcdeploy && mkdir -p /tmp/fcdeploy && cd /tmp/fcdeploy
-   tar xzf -
-   mv server/accounts-service.js server/setup-accounts.sh src/mumble-client.js src/varint.js proto/Mumble.proto . 2>/dev/null || true
-   bash setup-accounts.sh '$SUPW' '$RELAYPW' '$ADMTOK'"
-RC=$?
-if [ $RC -ne 0 ]; then
-  echo
-  echo "══ DEPLOY FAILED (exit $RC) — nothing was saved. Common causes:" >&2
-  echo "   · wrong droplet root password" >&2
-  echo "   · wrong mumble SuperUser password (arg 1)" >&2
-  echo "   · droplet unreachable" >&2
-  exit $RC
-fi
+echo "Deploying FleetComm securely to ${SSH_HOST} as ${PUBLIC_HOST}…"
+printf -v REMOTE_PUBLIC '%q' "${PUBLIC_HOST}"
+printf -v REMOTE_EMAIL '%q' "${LE_EMAIL}"
+tar -C "$STAGE" -czf - . | ssh -o StrictHostKeyChecking=accept-new "root@${SSH_HOST}" \
+  "set -e; rm -rf /tmp/fcdeploy; mkdir -m 700 /tmp/fcdeploy; cd /tmp/fcdeploy; tar xzf -; bash server/setup-accounts.sh ${REMOTE_PUBLIC} ${REMOTE_EMAIL}"
+unset SUPW
 
-cat > .fleetcomm-secrets.txt << SEC
+cat > .fleetcomm-secrets.txt << SECRETS
 FleetComm relay secrets — generated $(date)
 KEEP THIS FILE PRIVATE. It is gitignored.
 
-Relay password (handed out only by the accounts service, never typed by humans):
-  $RELAYPW
+Relay password:
+  ${RELAYPW}
 
-Command token (COMMAND accounts receive this automatically on sign-in):
-  $ADMTOK
+Initial COMMAND setup code (usable only while no COMMAND account exists):
+  ${BOOTTOK}
 
-Droplet: $HOST   ·   accounts service: http://$HOST:8722
-SEC
-grep -q fleetcomm-secrets .gitignore 2>/dev/null || echo ".fleetcomm-secrets.txt" >> .gitignore
+COMMAND relay tokens are unique per account and are never written to this file.
 
-echo
-echo "══════════════════════════════════════════════════════════════"
-echo " DONE. Secrets saved to .fleetcomm-secrets.txt (gitignored)."
-echo
-echo " NEXT: launch FleetComm and SIGN IN WITH DISCORD *first*."
-echo " The first account registered becomes COMMAND — that must be you."
-echo "══════════════════════════════════════════════════════════════"
+Droplet: ${SSH_HOST}
+Accounts service: https://${PUBLIC_HOST}
+Mumble relay: ${PUBLIC_HOST}:64738
+SECRETS
+chmod 0600 .fleetcomm-secrets.txt
+echo "Deployment complete. Secrets saved to .fleetcomm-secrets.txt (mode 600)."

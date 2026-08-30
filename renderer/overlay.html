@@ -2,6 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <style>
   :root{
     --panelRGB:13,18,23; --holoRGB:73,209,124;
@@ -63,44 +64,6 @@
   <div id="empty">FleetComm overlay — connect to see nets</div>
   <div id="rows"></div>
 </div>
-<script>
-const { ipcRenderer } = require("electron");
-const $ = (id) => document.getElementById(id);
-let cfg = { opacity: 72, scale: 100 };
-
-function applyCfg() {
-  document.documentElement.style.setProperty("--bgA", cfg.opacity / 100);
-  $("box").style.transform = "scale(" + cfg.scale / 100 + ")";
-  $("op").value = cfg.opacity; $("sc").value = cfg.scale;
-}
-ipcRenderer.on("ov-config", (ev, c) => { cfg = Object.assign(cfg, c); applyCfg(); });
-ipcRenderer.on("ov-theme", (ev, t) => {
-  const r = document.documentElement;
-  ["--panelRGB","--holoRGB","--ink","--muted","--holo"].forEach(k => r.style.removeProperty(k));
-  if (t.palette) {
-    document.body.classList.remove("light");
-    r.style.setProperty("--panelRGB", t.palette.panelRGB);
-    r.style.setProperty("--holoRGB", t.palette.accentRGB);
-    r.style.setProperty("--ink", t.palette.ink);
-    r.style.setProperty("--muted", t.palette.muted);
-    r.style.setProperty("--holo", t.palette.accent);
-  } else {
-    document.body.classList.toggle("light", !t.dark);
-  }
-});
-ipcRenderer.on("ov-edit", (ev, on) => document.body.classList.toggle("editing", !!on));
-ipcRenderer.on("ov-state", (ev, nets) => {
-  $("empty").style.display = nets.length ? "none" : "block";
-  $("rows").innerHTML = nets.map(n =>
-    '<div class="row' + (n.tx ? " tx" : (n.who ? " rx" : "")) + (n.active ? " active" : "") + (n.mon ? "" : " inactive-muted") + '">' +
-      '<span class="lamp"></span><span class="nm">' + n.name +
-      '<small>' + n.freq + '</small> <span class="act">◈</span></span>' +
-      '<span class="who">' + (n.tx ? "TX·" + n.me : (n.who || "")) + '</span></div>'
-  ).join("");
-});
-$("op").addEventListener("input", function(){ cfg.opacity = +this.value; applyCfg(); ipcRenderer.send("ov-set", cfg); });
-$("sc").addEventListener("input", function(){ cfg.scale = +this.value; applyCfg(); ipcRenderer.send("ov-set", cfg); });
-$("lock").addEventListener("click", () => ipcRenderer.send("ov-lock"));
-</script>
+<script src="overlay.js"></script>
 </body>
 </html>
