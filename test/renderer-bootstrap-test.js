@@ -21,9 +21,10 @@ assert(config.accounts && /^https?:\/\//.test(config.accounts.url) && config.acc
 /* The accounts endpoint must match what is actually LISTENING on the droplet.
    v0.10.1 shipped pointing at :443 for a TLS deployment that was never run, so
    every operator got "connect ECONNREFUSED 68.183.103.215:443" at sign-in.
-   If TLS is deployed later, change this and the config together, and only after
-   the port is confirmed live. */
-assert(config.server.host === "68.183.103.215" && config.accounts.url === "http://68.183.103.215:8722",
+   TLS was deployed 2026-08-30 (nginx on :443, LE shortlived IP certificate,
+   plain :8722 loopback-only) and confirmed live before this line changed —
+   which is the only order in which it may ever change. */
+assert(config.server.host === "68.183.103.215" && config.accounts.url === "https://68.183.103.215",
   "production endpoints use the operator-controlled relay IP");
 assert(!/22nd\.space/.test(JSON.stringify(config)), "production config must not depend on an unowned domain");
 assert(!/22nd\.space/.test(deployment), "deployment instructions must not depend on an unowned domain");

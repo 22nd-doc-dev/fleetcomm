@@ -20,7 +20,7 @@ BOOTTOK="boot-$(openssl rand -hex 24)"
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE"/{server,src,proto,config,deploy-secrets}
-for file in server/accounts-service.js server/setup-accounts.sh src/channel-name.js src/mumble-client.js src/varint.js proto/Mumble.proto config/22nd-package.json; do
+for file in server/accounts-service.js server/setup-accounts.sh src/channel-name.js src/mumble-client.js src/relay-trust.js src/varint.js proto/Mumble.proto config/22nd-package.json; do
   cp "$file" "$STAGE/$(dirname "$file")/"
 done
 printf '%s' "$SUPW" > "$STAGE/deploy-secrets/superuser-password"

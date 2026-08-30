@@ -43,7 +43,9 @@ install -d -m 0755 -o root -g root /opt/fleetcomm-accounts
 install -d -m 0700 -o fleetcomm -g fleetcomm /opt/fleetcomm-accounts/data
 for dir in server src proto config; do install -d -m 0755 -o root -g root "/opt/fleetcomm-accounts/$dir"; done
 install -m 0644 server/accounts-service.js /opt/fleetcomm-accounts/server/
-install -m 0644 src/channel-name.js src/mumble-client.js src/varint.js /opt/fleetcomm-accounts/src/
+# relay-trust.js is a hard require of mumble-client.js — omitting it crash-loops
+# the service with MODULE_NOT_FOUND (found the hard way on the 2026-08-30 deploy)
+install -m 0644 src/channel-name.js src/mumble-client.js src/relay-trust.js src/varint.js /opt/fleetcomm-accounts/src/
 install -m 0644 proto/Mumble.proto /opt/fleetcomm-accounts/proto/
 install -m 0644 config/22nd-package.json /opt/fleetcomm-accounts/config/
 cd /opt/fleetcomm-accounts

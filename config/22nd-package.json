@@ -130,7 +130,7 @@
     "exeTemplate": "https://github.com/22nd-doc-dev/fleetcomm/releases/download/v{v}/FleetComm-{v}.exe"
   },
   "accounts": {
-    "url": "http://68.183.103.215:8722",
+    "url": "https://68.183.103.215",
     "discordClientId": "1543138637838024744"
   }
 }
