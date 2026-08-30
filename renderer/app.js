@@ -1715,6 +1715,42 @@ function showUpdate(r) {
   $("updbar").dataset.url = r.url; $("updbar").dataset.version = r.version;
 }
 ipcRenderer.on("update-available", (ev, r) => showUpdate(r));
+/* ── update visibility ──
+   An update used to run inside a one-line banner, and success was announced by
+   a 4.6-second toast at the next launch — so a finished update and one that
+   silently died looked identical, and operators couldn't say what version they
+   were actually on. Two rules now:
+     1. While an update runs, a full-screen state that cannot be missed.
+     2. After ANY version change — auto, manual, or hand-installed exe — the
+        next launch says what happened and waits for the operator to confirm
+        they saw it. The last acknowledged version is the operator's own
+        record; update-state.json only knows about swaps the app itself ran. */
+function showUpdBusy(version, line) {
+  $("updOv").dataset.version = version;
+  $("updOvTitle").textContent = "UPDATING FLEETCOMM";
+  $("updOvState").textContent = line;
+  $("updOvNote").textContent = "FleetComm will close and reopen itself when the install finishes. " +
+    "Leave it alone — don't launch it manually. If nothing happens within a minute, start it yourself; " +
+    "it will tell you whether the update took.";
+  $("updOvOk").style.display = "none";
+  $("updOv").classList.remove("hidden");
+}
+function hideUpdOv() { $("updOv").classList.add("hidden"); }
+function ackVersionCheck() {
+  const note = bridge.updateGuard.versionNote(store.get("ackVersion", null), bridge.version);
+  if (note.store) { store.set("ackVersion", bridge.version); return; }
+  if (!note.show) return;
+  $("updOvTitle").textContent = note.upgraded ? "FLEETCOMM UPDATED" : "FLEETCOMM VERSION CHANGED";
+  $("updOvState").textContent = "v" + note.from + "  →  v" + note.to;
+  $("updOvNote").textContent = note.upgraded
+    ? "The update finished. You are now running v" + note.to + "."
+    : "You were last on v" + note.from + " and are now on v" + note.to +
+      ". If you didn't install this yourself, a failed update may have restored an older build.";
+  $("updOvOk").style.display = "";
+  $("updOv").classList.remove("hidden");
+}
+$("updOvOk").addEventListener("click", () => { store.set("ackVersion", bridge.version); hideUpdOv(); });
+ackVersionCheck();
 /* what happened to the last automatic attempt, reported on the way back up */
 ipcRenderer.on("update-note", (ev, note) => {
   if (!note) return;
@@ -1729,10 +1765,17 @@ ipcRenderer.on("update-auto-offer", async (ev, r) => {
   if (!autoUpdate || connected) return;   /* never yank the app out from under a live op */
   $("updtext").textContent = "Installing FleetComm v" + r.version + " automatically…";
   $("updgo").style.display = "none";
+  showUpdBusy(r.version, "Downloading FleetComm v" + r.version + "…");
   const res = await ipcRenderer.invoke("do-update", { version: r.version, auto: true });
-  if (res && res.ok) { $("updtext").textContent = "Update installed — restarting…"; return; }
+  if (res && res.ok) {
+    $("updtext").textContent = "Update installed — restarting…";
+    $("updOvState").textContent = "Installing — FleetComm is closing and will reopen itself.";
+    return;
+  }
+  hideUpdOv();
   $("updgo").style.display = "";
   $("updtext").textContent = "FleetComm v" + r.version + " is available";
+  if (res && res.error) toast("Automatic update failed: " + res.error);
 });
 $("sautoupd").addEventListener("click", function () {
   autoUpdate = !autoUpdate; this.classList.toggle("on", autoUpdate); store.set("autoUpdate", autoUpdate);
@@ -1740,13 +1783,24 @@ $("sautoupd").addEventListener("click", function () {
 });
 $("updgo").addEventListener("click", async function () {
   this.disabled = true; this.textContent = "Updating…";
-  const r = await ipcRenderer.invoke("do-update", { version: $("updbar").dataset.version });
-  if (r && r.ok) { $("updtext").textContent = "Restarting…"; return; }
+  const version = $("updbar").dataset.version;
+  showUpdBusy(version, "Downloading FleetComm v" + version + "…");
+  const r = await ipcRenderer.invoke("do-update", { version });
+  if (r && r.ok) {
+    $("updtext").textContent = "Restarting…";
+    $("updOvState").textContent = "Installing — FleetComm is closing and will reopen itself.";
+    return;
+  }
+  hideUpdOv();
   this.disabled = false; this.textContent = "Install & restart";
   if (r && r.error) toast("Auto-update failed (" + r.error + ") — opening the releases page instead.");
   ipcRenderer.send("open-external", $("updbar").dataset.url);
 });
-ipcRenderer.on("update-progress", (ev, pct) => { $("updtext").textContent = "Downloading update… " + pct + "%"; });
+ipcRenderer.on("update-progress", (ev, pct) => {
+  $("updtext").textContent = "Downloading update… " + pct + "%";
+  if (!$("updOv").classList.contains("hidden"))
+    $("updOvState").textContent = "Downloading FleetComm v" + ($("updOv").dataset.version || "") + " — " + pct + "%";
+});
 $("upddismiss").addEventListener("click", () => $("updbar").style.display = "none");
 $("updcheck").addEventListener("click", async function () {
   this.textContent = "Checking…";
@@ -2053,6 +2107,20 @@ if (bridge.autotestHost) {
     masterBinds.active = savedActive; renderMasterBinds();
     L("sys-key-cog", (document.getElementById("sysKey").textContent || "").indexOf("\u2699") >= 0);
     L("device-pickers", !!document.getElementById("micSel") && !!document.getElementById("outSel"));
+
+    /* update visibility: busy overlay shows and clears; a version change
+       demands acknowledgement and OK records it */
+    showUpdBusy("9.9.9", "Downloading FleetComm v9.9.9\u2026");
+    L("upd-busy-shown", !$("updOv").classList.contains("hidden") && /9\.9\.9/.test($("updOvState").textContent));
+    hideUpdOv();
+    L("upd-busy-cleared", $("updOv").classList.contains("hidden"));
+    const savedAck = store.get("ackVersion", null);
+    store.set("ackVersion", "0.0.1"); ackVersionCheck();
+    L("upd-ack-shown", !$("updOv").classList.contains("hidden") && $("updOvOk").style.display !== "none");
+    L("upd-ack-text", $("updOvState").textContent);
+    $("updOvOk").click();
+    L("upd-ack-cleared", $("updOv").classList.contains("hidden") && store.get("ackVersion", null) === bridge.version);
+    store.set("ackVersion", savedAck === null ? bridge.version : savedAck);
     L("bezel-wraps", getComputedStyle(document.getElementById("bezel")).flexWrap);
     /* narrow the window and confirm nothing overflows the bezel horizontally */
     document.body.style.width = "720px";

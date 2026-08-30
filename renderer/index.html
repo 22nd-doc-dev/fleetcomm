@@ -567,6 +567,21 @@
   </aside>
 </div>
 
+<!-- update status: unmissable while an update is running, and an acknowledgement
+     gate after any version change. A 4.6s toast was the only success signal an
+     update ever gave, so operators couldn't tell a finished update from one
+     that silently died — this stays up until a person confirms they saw it.
+     Sits above the sign-in overlay (z-index) so the version change is
+     acknowledged before anything else happens. -->
+<div class="overlay hidden" id="updOv" style="z-index:90">
+  <div class="modal" style="width:min(460px,100%);background:var(--bg);border:1px solid var(--bezline);border-radius:6px;padding:26px 28px;box-shadow:var(--shadow);max-height:92vh;overflow:auto">
+    <h2 id="updOvTitle" style="margin:0 0 10px;font-size:20px;letter-spacing:3px">UPDATING</h2>
+    <div id="updOvState" style="font-size:15px;font-weight:800;margin-bottom:10px"></div>
+    <div id="updOvNote" style="font-size:12.5px;color:var(--muted);line-height:1.6"></div>
+    <button class="btn big" id="updOvOk" style="display:none;margin-top:18px">UNDERSTOOD ▸</button>
+  </div>
+</div>
+
 <!-- sign-in -->
 <div class="overlay" id="connectOv">
   <div class="modal">

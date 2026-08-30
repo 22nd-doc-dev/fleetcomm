@@ -7,7 +7,7 @@
  * tried again — forever.
  */
 const assert = require("assert");
-const { cmpVer, reconcile, blocked, attempt } = require("../src/update-guard");
+const { cmpVer, reconcile, blocked, attempt, versionNote } = require("../src/update-guard");
 
 let n = 0;
 const ok = (m) => console.log("  ✓ " + m, ++n);
@@ -77,6 +77,25 @@ ok("version comparison");
   const r = reconcile("1.0.0", attempt("0.9.1"), false);
   assert(r.note.installed === "0.9.1", "running newer than the target means it landed");
   ok("running ahead of the target counts as installed");
+}
+
+/* ── every version change is announced and acknowledged, however installed ──
+   A 4.6s toast was the only success signal an update ever gave, so a finished
+   update and one that silently died looked identical. The acknowledgement is
+   keyed on what the operator last CONFIRMED seeing — not update-state.json,
+   which knows nothing about a hand-installed exe. */
+{
+  let n2 = versionNote(null, "0.12.4");
+  assert(!n2.show && n2.store, "a fresh install announces nothing and starts tracking");
+  n2 = versionNote("0.12.4", "0.12.4");
+  assert(!n2.show && !n2.store, "an acknowledged version stays quiet");
+  n2 = versionNote("0.12.3", "0.12.4");
+  assert(n2.show && n2.upgraded && n2.from === "0.12.3" && n2.to === "0.12.4",
+    "an upgrade is announced — including one installed by hand");
+  n2 = versionNote("0.12.4", "0.12.3");
+  assert(n2.show && !n2.upgraded,
+    "a DOWNGRADE is announced too — a failed swap restoring the old exe must not pass silently");
+  ok("version changes demand acknowledgement; only what the operator confirmed stays quiet");
 }
 
 console.log("\n✔ UPDATE GUARD PASS — a failed swap falls back to the banner instead of looping");

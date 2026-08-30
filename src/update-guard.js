@@ -48,4 +48,17 @@ function attempt(version, automatic) {
   return { target: version, attemptedAt: Date.now(), automatic: !!automatic, status: "pending", fails: 0 };
 }
 
-module.exports = { cmpVer, reconcile, blocked, attempt };
+/* Should this launch announce a version change, and require the operator to
+   acknowledge it? Keyed on the last version the operator ACKNOWLEDGED — not on
+   update-state.json, which only knows about swaps this app performed itself. A
+   hand-installed exe changes the version without ever touching that state, and
+   "did the update actually take?" must have a visible answer either way.
+   ackVersion == null is a fresh install: nothing to announce, start tracking. */
+function versionNote(ackVersion, currentVersion) {
+  if (ackVersion == null) return { show: false, store: true };
+  if (ackVersion === currentVersion) return { show: false, store: false };
+  return { show: true, store: false, from: ackVersion, to: currentVersion,
+           upgraded: cmpVer(currentVersion, ackVersion) > 0 };
+}
+
+module.exports = { cmpVer, reconcile, blocked, attempt, versionNote };
