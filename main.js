@@ -491,20 +491,33 @@ ipcMain.handle("do-update", async (ev, info) => {
     if (bytes < 40 * 1024 * 1024) throw new Error("download looks incomplete (" + bytes + " bytes)");
     if (!isPortableExecutable(fresh, 40 * 1024 * 1024)) throw new Error("downloaded file is not a valid Windows executable");
 
-    const helper = path.join(app.getPath("temp"), "fleetcomm-update-helper-" + nonce + ".js");
-    const payloadFile = path.join(app.getPath("temp"), "fleetcomm-update-" + nonce + ".json");
-    fs.copyFileSync(path.join(__dirname, "src", "update-helper.js"), helper);
+    /* ── running the swap ──
+       NOT with process.execPath. On a portable build that is the Electron binary
+       inside the temp directory electron-builder unpacks into — and the portable
+       launcher DELETES that directory when we exit. The helper was being killed
+       by our own shutdown, mid-wait, every single time: no swap, no error, and
+       the operator relaunches into the old version.
+       powershell.exe lives in System32, cannot be removed by our shutdown, and
+       is resolved here by absolute path so a broken PATH can't break updates
+       either. */
+    const logFile = path.join(app.getPath("userData"), "update-helper.log");
+    const swap = path.join(app.getPath("temp"), "fleetcomm-swap-" + nonce + ".ps1");
+    fs.copyFileSync(path.join(__dirname, "src", "update-swap.ps1"), swap);
     const state = attempt(version, !!info.auto);
     if (!writeUpdState(state))
       throw new Error("can't record the attempt safely, so the update was not installed");
-    writeJsonAtomic(payloadFile, {
-      exe: origExe, fresh, backup: origExe + ".old", parentPid: process.pid,
-      stateFile: updStatePath(), target: version, minimumBytes: 40 * 1024 * 1024,
-      logFile: path.join(app.getPath("userData"), "update-helper.log")
-    });
-    const env = Object.assign({}, process.env, { ELECTRON_RUN_AS_NODE: "1" });
-    const child = require("child_process").spawn(process.execPath, [helper, payloadFile], {
-      detached: true, stdio: "ignore", windowsHide: true, env
+
+    const sysRoot = process.env.SystemRoot || process.env.windir || "C:\\Windows";
+    const powershell = path.join(sysRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+    if (!fs.existsSync(powershell)) throw new Error("PowerShell was not found, so the update can't be installed");
+    const args = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", swap,
+      "-Exe", origExe, "-Fresh", fresh, "-Backup", origExe + ".old",
+      "-ParentPid", String(process.pid), "-StateFile", updStatePath(),
+      "-Target", version, "-LogFile", logFile];
+    try { fs.appendFileSync(logFile, new Date().toISOString() + " app: handing off to " + powershell + "\n"); } catch (e) {}
+    const child = require("child_process").spawn(powershell, args, {
+      detached: true, stdio: "ignore", windowsHide: true,
+      cwd: app.getPath("temp")     /* never our own unpack dir, which is about to vanish */
     });
     await new Promise((resolve, reject) => {
       child.once("spawn", resolve);
