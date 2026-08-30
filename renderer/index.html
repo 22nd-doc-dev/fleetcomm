@@ -255,9 +255,18 @@
 
   /* ═ SYS page ═ */
   #settings{flex-direction:column}
-  #sysScroll{flex:1;overflow-y:auto;padding:14px 18px;max-width:660px}
+  /* The settings column was pinned to 660px, so on a wide window the rows just
+     stopped partway across and the page looked clipped rather than laid out.
+     It grows now, keeps a readable measure, and centres so the space either
+     side reads as deliberate. */
+  #sysScroll{flex:1;overflow-y:auto;padding:14px 18px;width:100%;
+    max-width:min(100%, 980px);margin:0 auto}
   .miniheading{font-size:11px;font-weight:900;letter-spacing:2px;color:var(--muted);margin:16px 0 6px}
-  .togrow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 2px;border-bottom:1px solid var(--line)}
+  /* and each row wraps rather than squeezing its own label at narrow widths */
+  .togrow{display:flex;align-items:center;justify-content:space-between;gap:10px;row-gap:6px;
+    flex-wrap:wrap;padding:10px 2px;border-bottom:1px solid var(--line)}
+  .togrow .tl{flex:1 1 240px;min-width:0}
+  .togrow .tl b,.togrow .tl span{overflow-wrap:anywhere}
   .togrow:last-of-type{border-bottom:none}
   .togrow .tl b{display:block;font-size:13.5px}
   .togrow .tl span{font-size:12.5px;color:var(--muted)}
@@ -470,11 +479,6 @@
       <div class="togrow"><div class="tl"><b>Radio chirp</b><span>Squelch click on key-up / key-down</span></div><button class="switch on" id="sfx"></button></div>
       <div class="togrow"><div class="tl"><b>Radio voice effect</b><span>How much "over the net" character voices get</span></div>
         <select class="orgsel" id="fxsel"><option value="clean">Clean</option><option value="standard">Standard</option><option value="heavy">Heavy</option></select></div>
-      <div class="miniheading">NETWORK</div>
-      <div class="togrow"><div class="tl"><b>Accounts service</b><span id="acctEpNote">Where sign-in talks to the fleet server</span></div>
-        <div id="acctEpRow"><input id="acctEp" class="mono" placeholder="http://host:port" spellcheck="false">
-          <button class="btn" id="acctEpSave">SAVE</button>
-          <button class="btn" id="acctEpReset" title="Back to the address this build shipped with">DEFAULT</button></div></div>
       <div class="miniheading">DISPLAY</div>
       <div class="togrow"><div class="tl"><b>Typeface</b><span>Atkinson Hyperlegible is drawn so I/l/1 and O/0 stay apart</span></div>
         <select class="orgsel" id="sfontsel"><option value="legible">High legibility</option><option value="system">System</option></select></div>
@@ -506,6 +510,12 @@
       <div class="miniheading">UPDATES</div>
       <div class="togrow"><div class="tl"><b>Install updates automatically</b><span>Downloads and applies new versions at launch, before you connect</span></div><button class="switch on" id="sautoupd"></button></div>
       <div class="togrow"><div class="tl"><b>FleetComm <span id="verlbl2"></span></b><span>Also checks automatically at startup</span></div><button class="icobtn" id="updcheck">Check for updates</button></div>
+      <div class="miniheading">ADVANCED — RECOVERY</div>
+      <div class="togrow"><div class="tl"><b>Fleet server address</b>
+        <span id="acctEpNote">Leave this alone unless sign-in is broken and you have been told to change it. It is where FleetComm checks who you are — not the voice relay.</span></div>
+        <div id="acctEpRow"><input id="acctEp" class="mono" placeholder="use the built-in address" spellcheck="false">
+          <button class="btn" id="acctEpSave">SAVE</button>
+          <button class="btn" id="acctEpReset" title="Back to the address this build shipped with">DEFAULT</button></div></div>
       <div class="wnav"><button class="btn ghost" id="disconnBtn">DISCONNECT</button><button class="btn big" id="closeSet">APPLY · RETURN ▸</button></div>
     </div>
   </div>

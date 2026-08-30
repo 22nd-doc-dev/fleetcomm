@@ -1499,10 +1499,12 @@ async function refreshAcctEp() {
   if (!r) return;
   $("acctEp").value = r.override || "";
   $("acctEp").placeholder = r.shipped || "http://host:port";
-  const parts = [];
+  /* the guidance always shows; warnings are added to it, not swapped for it */
+  const parts = ["Leave this alone unless sign-in is broken and you have been told to change it. " +
+                 "It is where FleetComm checks who you are — not the voice relay."];
   if (r.override) parts.push("Overridden — this build shipped with " + r.shipped);
   if (r.note) parts.push(r.note);
-  $("acctEpNote").textContent = parts.length ? parts.join("  ·  ") : "Where sign-in talks to the fleet server";
+  $("acctEpNote").textContent = parts.join("  ·  ");
   $("acctEpNote").classList.toggle("bad", !!(r.override || r.insecure));
 }
 $("acctEpSave").addEventListener("click", async function () {
@@ -1777,6 +1779,29 @@ if (bridge.autotestHost) {
     customTheme.bez = "#402030"; themeMode = "custom"; applyTheme();
     L("titlebar-custom", cssHex("--bez", "?") + " (set #402030)");
     themeMode = "dark"; customTheme = Object.assign({}, THEME_DEFAULTS); applyTheme();
+
+    /* SYS page: it was pinned to 660px and stopped partway across a wide window */
+    showPage("settings");
+    const sys = document.getElementById("sysScroll");
+    const page = document.getElementById("settings");
+    for (const w of [1400, 1000, 700]) {
+      document.body.style.width = w + "px";
+      const sw = Math.round(sys.getBoundingClientRect().width);
+      const pw = Math.round(page.getBoundingClientRect().width);
+      L("sys-width-at-" + w, sw + "px of " + pw + "px  overflow=" +
+        Math.max(0, sys.scrollWidth - sys.clientWidth));
+    }
+    document.body.style.width = "";
+    L("acct-note-text", JSON.stringify((document.getElementById("acctEpNote").textContent || "").slice(0, 70)));
+    L("acct-under-advanced", (function () {
+      let el = document.getElementById("acctEpNote").closest(".togrow");
+      while (el && el.previousElementSibling) {
+        el = el.previousElementSibling;
+        if (el.classList.contains("miniheading")) return el.textContent.trim();
+      }
+      return "(no heading found)";
+    })());
+    showPage("pgComms");
 
     /* the reported bug: a ship name crushed to "UEE…" by the badges beside it.
        Squeeze the rail to the width in the screenshot and check what survives. */
