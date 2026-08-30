@@ -72,22 +72,31 @@
     font-size:11.5px;letter-spacing:4px;font-weight:700;color:var(--muted);user-select:none;background:var(--bez)}
 
   /* ── bezel row: page keys + readouts ── */
-  #bezel{flex:0 0 auto;display:flex;align-items:stretch;gap:8px;padding:6px 10px 8px;background:var(--bez);
-    border-bottom:2px solid var(--bezline)}
+  /* The bezel used to be one rigid non-wrapping row of fixed-width readouts with
+     nowrap values, so at anything narrower than a wide window the right-hand
+     instruments simply ran off the edge — OPERATOR couldn't even fit its own
+     label. It now wraps to a second row and every readout can shrink, so the
+     text and its container stay in step at any window size. */
+  #bezel{flex:0 0 auto;display:flex;align-items:stretch;flex-wrap:wrap;gap:8px;row-gap:6px;
+    padding:6px 10px 8px;background:var(--bez);border-bottom:2px solid var(--bezline)}
   #logo{display:flex;flex-direction:column;justify-content:center;padding:0 12px;border-right:1px solid var(--bezline)}
   #logo b{font-size:15px;letter-spacing:2.5px}
   #logo span{font-size:10.5px;letter-spacing:1.6px;color:var(--muted);font-weight:700}
-  .pkey{min-width:76px;border:1px solid var(--bezline);border-bottom-width:3px;border-radius:5px;
+  .pkey{min-width:0;flex:0 1 auto;white-space:nowrap;border:1px solid var(--bezline);border-bottom-width:3px;border-radius:5px;
     background:linear-gradient(var(--bez2),var(--bez));font-size:12px;font-weight:800;letter-spacing:1.6px;
     color:var(--muted);padding:8px 12px}
   .pkey:active{transform:translateY(1px);border-bottom-width:2px}
   .pkey.on{color:var(--ink);border-color:var(--holo);background:linear-gradient(var(--bez2),var(--bez2));
     box-shadow:inset 0 -3px 0 var(--holo)}
-  #bezel .sp{flex:1}
-  .rd{display:flex;flex-direction:column;justify-content:center;min-width:74px;padding:3px 10px;
+  #bezel .sp{flex:1 1 6px;min-width:0}
+  .rd{display:flex;flex-direction:column;justify-content:center;min-width:0;flex:0 1 auto;
+    max-width:230px;overflow:hidden;padding:3px 10px;
     border:1px solid var(--bezline);border-radius:5px;background:var(--bg)}
-  .rd label{font-size:10px;font-weight:800;letter-spacing:1.4px;color:var(--muted)}
-  .rd .v{font-size:13px;font-weight:800;letter-spacing:.5px;white-space:nowrap}
+  .rd label{font-size:10px;font-weight:800;letter-spacing:1.4px;color:var(--muted);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  /* a long callsign truncates inside its instrument instead of pushing the row */
+  .rd .v{font-size:13px;font-weight:800;letter-spacing:.5px;white-space:nowrap;
+    overflow:hidden;text-overflow:ellipsis;display:block;min-width:0}
   .rd .v.ok{color:var(--grn)} .rd .v.warn{color:var(--amber)} .rd .v.dim{color:var(--muted)}
   .rd .v .role{color:var(--amber);font-size:10.5px;letter-spacing:1px;margin-left:5px}
   .icobtn{border:1px solid var(--bezline);border-bottom-width:3px;border-radius:5px;
@@ -142,13 +151,37 @@
     border:1px solid var(--holo);border-radius:3px;padding:1px 4px}
   .net.sel{border-color:var(--holo);box-shadow:0 0 0 1px var(--holo)}
   .net.untuned{opacity:.55}
-  .nt{display:flex;align-items:baseline;gap:8px;cursor:pointer}
-  .nt .fq{font-size:18px;font-weight:700;letter-spacing:1px}
+  /* Name first. The frequency used to be the 18px headline with the net's name
+     as a small grey subtitle, which is backwards: mid-op you scan for COMMAND
+     NET or BRIDGE, not for 121.850. The name now leads and the frequency sits
+     under it as reference detail. */
+  /* The name is the one thing that must stay readable. Badges have nowrap
+     content so they can't shrink, which meant the name — the only element that
+     CAN shrink — absorbed every pixel of squeeze and collapsed to "UEE…".
+     The row wraps instead, and the name keeps a floor width. */
+  .nt{display:flex;align-items:center;gap:8px;cursor:pointer;flex-wrap:wrap;row-gap:4px}
+  .nmwrap{display:flex;flex-direction:column;flex:1 1 auto;min-width:118px;line-height:1.2}
+  .nt .shipbadge,.nt .nestcount,.nt .cnt{flex:0 0 auto}
+  .nt b.nm{font-size:15px;font-weight:800;letter-spacing:.6px;min-width:0;white-space:nowrap;
+    overflow:hidden;text-overflow:ellipsis;color:var(--ink)}
+  .net.untuned .nt b.nm{color:var(--muted)}
+  .net.sel .nt b.nm{color:var(--ink)}
+  .nt .fq{font-size:11px;font-weight:700;letter-spacing:1px;color:var(--muted)}
+  .net.rx-live .nt b.nm{color:var(--grn)}
+  .net.tx-live .nt b.nm{color:var(--amber)}
   .net.rx-live .fq{color:var(--grn)}
   .net.tx-live .fq{color:var(--amber)}
-  .nt b{font-size:12px;font-weight:800;letter-spacing:.8px;flex:1;min-width:0;white-space:nowrap;
-    overflow:hidden;text-overflow:ellipsis;color:var(--muted)}
-  .net.sel .nt b{color:var(--ink)}
+
+  /* drag handle + drop feedback */
+  .grip{color:var(--muted);opacity:.45;cursor:grab;font-size:13px;letter-spacing:-1px;flex:0 0 auto}
+  .net:hover .grip{opacity:.9}
+  .net.dragging{opacity:.5}
+  .net.dropok{outline:2px solid var(--holo);outline-offset:1px}
+  .net.dropno{outline:2px dashed var(--red);outline-offset:1px}
+
+  /* a ship is a group of nets, not a channel you sit in */
+  .net.shipgroup{border-left:3px solid var(--holo)}
+  .ann.wide{flex:1;letter-spacing:1px}
   .nt .cnt{font-size:11.5px;color:var(--muted)}
   .nt .enc{color:var(--amber);font-size:11.5px}
   .nrow{display:flex;align-items:center;gap:5px;margin-top:6px}
@@ -157,10 +190,14 @@
   .nrow .keyb.listen{border-color:var(--amber);color:var(--amber);border-style:solid}
   .nrow .x{border:none;background:none;color:var(--muted);font-size:12px;padding:0 3px}
   .nrow .x:hover{color:var(--red)}
-  .srow{display:flex;align-items:center;gap:6px;margin-top:5px}
-  .srow label{font-size:10px;font-weight:900;letter-spacing:1px;color:var(--muted);width:22px}
-  .srow input[type=range]{flex:1;height:13px;accent-color:var(--holo)}
-  .srow input.pan{max-width:60px}
+  /* A range input has a wide intrinsic minimum, and a flex item won't shrink
+     below that without min-width:0 — so the VOL slider refused to give ground
+     and pushed the L·R slider clean off the right edge of the rail. */
+  .srow{display:flex;align-items:center;gap:6px;margin-top:5px;flex-wrap:wrap;row-gap:4px}
+  .srow label{font-size:10px;font-weight:900;letter-spacing:1px;color:var(--muted);
+    width:22px;flex:0 0 auto}
+  .srow input[type=range]{flex:1 1 54px;min-width:0;height:13px;accent-color:var(--holo)}
+  .srow input.pan{flex:0 1 60px;min-width:0;max-width:60px}
   .tunebtn{width:100%;margin-top:6px;border:1px solid var(--line2);background:transparent;color:var(--muted);
     border-radius:3px;padding:4px;font-size:11px;font-weight:900;letter-spacing:1.5px}
   .tunebtn:hover{border-color:var(--grn);color:var(--grn)}
@@ -321,6 +358,17 @@
   #acctEp{flex:1;min-width:160px;background:var(--tint);border:1px solid var(--line);
     border-radius:4px;padding:5px 8px;font-size:12px}
   #acctEpNote.bad{color:var(--amber)}
+  /* an operator with no talk key can't transmit at all, so say so loudly
+     until they set one — this is the single setting the app can't work without */
+  #ptt.needsbind{border-color:var(--amber);color:var(--amber);opacity:.75}
+  #ptt.needsbind::after{content:"NO KEY SET";display:block;font-size:10px;letter-spacing:1px;color:var(--amber)}
+  #pttRow.unbound{border:1px solid var(--amber);border-radius:5px;padding:6px 8px;
+    background:var(--amber-tint)}
+  #pttRow.unbound #pttHint{color:var(--amber);font-weight:700}
+  #pttRow.unbound #bindActive{border-color:var(--amber);color:var(--amber);
+    animation:pttpulse 1.4s ease-in-out infinite}
+  @keyframes pttpulse{0%,100%{opacity:1}50%{opacity:.45}}
+  @media (prefers-reduced-motion:reduce){#pttRow.unbound #bindActive{animation:none}}
   #scalerow{display:flex;align-items:center;gap:6px}
   #scalerow .btn{padding:4px 9px}
   #scaleval{min-width:46px;text-align:center;color:var(--muted)}
@@ -341,7 +389,7 @@
   <button class="pkey" data-page="pgChat">CHAT</button>
   <button class="pkey" data-page="pgAtc">ATC</button>
   <button class="pkey" data-page="pgAcct" id="acctKey" style="display:none">ACCTS</button>
-  <button class="pkey" data-page="settings">SYS</button>
+  <button class="pkey" data-page="settings" id="sysKey" title="Settings">⚙ SYS</button>
   <div class="sp"></div>
   <div class="rd" id="opchip" style="display:none"><label>OPERATOR</label><span class="v"><span id="opname"></span><span class="role" id="oprole"></span></span></div>
   <div class="rd"><label>RELAY</label><span class="v dim" id="relayLbl">OFFLINE</span></div>
@@ -411,10 +459,14 @@
     <div class="ph">SYS — CONFIGURATION</div>
     <div id="sysScroll">
       <div class="miniheading">MASTER KEYS</div>
-      <div class="togrow"><div class="tl"><b>Push to talk</b><span>Transmits on every net with TX armed</span></div><button class="keybadge" id="bindActive">SPACE</button></div>
+      <div class="togrow" id="pttRow"><div class="tl"><b>Push to talk</b><span id="pttHint">Transmits on every net with TX armed</span></div><button class="keybadge" id="bindActive">set key</button></div>
       <div class="togrow"><div class="tl"><b>Cycle selected net</b><span>Defaults: Page Up / Page Down</span></div>
         <span><button class="keybadge" id="bindCycUp">PageUp</button> <button class="keybadge" id="bindCycDn">PageDown</button></span></div>
       <div class="miniheading">AUDIO</div>
+      <div class="togrow"><div class="tl"><b>Microphone</b><span>Which input FleetComm transmits from</span></div>
+        <select class="orgsel" id="micSel"><option value="">System default</option></select></div>
+      <div class="togrow"><div class="tl"><b>Output</b><span>Where received traffic plays — headset, not speakers, ideally</span></div>
+        <select class="orgsel" id="outSel"><option value="">System default</option></select></div>
       <div class="togrow"><div class="tl"><b>Radio chirp</b><span>Squelch click on key-up / key-down</span></div><button class="switch on" id="sfx"></button></div>
       <div class="togrow"><div class="tl"><b>Radio voice effect</b><span>How much "over the net" character voices get</span></div>
         <select class="orgsel" id="fxsel"><option value="clean">Clean</option><option value="standard">Standard</option><option value="heavy">Heavy</option></select></div>

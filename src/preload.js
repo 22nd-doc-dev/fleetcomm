@@ -3,13 +3,13 @@ const { contextBridge, ipcRenderer, webFrame } = require("electron");
 const OpusScript = require("opusscript");
 const config = require("../config/22nd-package.json");
 const { version } = require("../package.json");
-const { buildTree, validParents } = require("./net-tree");
+const { buildTree, validParents, canReorder, reorder, mergeOrder } = require("./net-tree");
 const { channelName } = require("./channel-name");
 
 const SEND = new Set(["detune", "disconnect", "net-mute", "open-external", "ov-edit", "ov-lock",
   "ov-set", "ov-state", "ov-toggle", "send-text", "theme", "tx-frame"]);
 const INVOKE = new Set(["accounts-endpoint", "relay-pin", "acct", "arm-broadcast", "atc-view", "check-updates", "connect", "create-net",
-  "discord-login", "do-update", "net-meta", "net-move", "net-remove", "net-rename", "sounds-add", "sounds-delete",
+  "discord-login", "do-update", "listen-all", "net-meta", "net-move", "net-remove", "net-rename", "sounds-add", "sounds-delete",
   "sounds-list", "sounds-read", "tune", "update-note"]);
 const RECEIVE = new Set(["chat", "gkey", "net-down", "net-error", "ov-edit-state", "ov-shown", "roster",
   "rx", "update-auto-offer", "update-available", "update-note", "update-progress"]);
@@ -52,7 +52,7 @@ contextBridge.exposeInMainWorld("fleetcomm", {
     }
   },
   zoom: { set(factor) { webFrame.setZoomFactor(factor); } },
-  netTree: { buildTree, validParents, channelName },
+  netTree: { buildTree, validParents, channelName, canReorder, reorder, mergeOrder },
   opus: {
     applications: OpusScript.Application,
     create(sampleRate, channels, application) {

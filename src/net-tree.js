@@ -20,7 +20,7 @@
 
 /* nets: [{ name, parent }]  ·  collapsed: { [name]: true }
    → { rows, kids, parentIdx, depth } where rows is display order. */
-function buildTree(nets, collapsed) {
+function buildTree(nets, collapsed, order) {
   const fold = collapsed || {};
   const n = nets.length;
 
@@ -48,6 +48,18 @@ function buildTree(nets, collapsed) {
   const kids = nets.map(() => []);
   const roots = [];
   parentIdx.forEach((p, i) => { if (p === -1) roots.push(i); else kids[p].push(i); });
+
+  /* apply the operator's saved order to each sibling group */
+  if (order && order.length) {
+    const rank = new Map(order.map((n, i) => [n, i]));
+    const sortSibs = (list) => list.sort((a, b) => {
+      const ra = rank.has(nets[a].name) ? rank.get(nets[a].name) : Infinity;
+      const rb = rank.has(nets[b].name) ? rank.get(nets[b].name) : Infinity;
+      return (ra - rb) || (a - b);
+    });
+    sortSibs(roots);
+    kids.forEach(sortSibs);
+  }
 
   const depth = nets.map(() => 0);
   const rows = [];
@@ -78,4 +90,55 @@ function validParents(nets, i) {
   return nets.map((x, j) => j).filter(j => !banned.has(j));
 }
 
-module.exports = { buildTree, descendants, validParents };
+/* ── client-side ordering ──
+ * Operators arrange their own board: someone who only ever flies the Minerva
+ * wants the Tiber pushed to the bottom. That is a local preference, never a
+ * change to the relay, so it lives as a per-install list of net names.
+ *
+ * The one structural rule: a net can be reordered WITHIN its nest but never
+ * dragged out of one. Parentage is the relay's business — the sort only decides
+ * the order of siblings, so a subnet can never be lifted to top level by a
+ * mis-drag, and dropping a net onto a different nest is simply refused.
+ */
+
+/* Order siblings by a saved list of names; anything unlisted keeps its natural
+   position after those that are listed. Stable and total. */
+function applyOrder(names, order) {
+  const rank = new Map((order || []).map((n, i) => [n, i]));
+  return names
+    .map((name, i) => ({ name, i, r: rank.has(name) ? rank.get(name) : Infinity }))
+    .sort((a, b) => (a.r - b.r) || (a.i - b.i))
+    .map(x => x.name);
+}
+
+/* Can `dragName` be dropped onto `dropName`? Only when they share a parent. */
+function canReorder(nets, dragName, dropName) {
+  if (!dragName || !dropName || dragName === dropName) return false;
+  const a = nets.find(n => n.name === dragName);
+  const b = nets.find(n => n.name === dropName);
+  if (!a || !b) return false;
+  return (a.parent || null) === (b.parent || null);
+}
+
+/* Move dragName to dropName's position among their shared siblings.
+   Returns the new order for that sibling group, or null if the move is illegal. */
+function reorder(nets, order, dragName, dropName) {
+  if (!canReorder(nets, dragName, dropName)) return null;
+  const parent = (nets.find(n => n.name === dragName).parent) || null;
+  const siblings = applyOrder(
+    nets.filter(n => (n.parent || null) === parent).map(n => n.name), order);
+  const from = siblings.indexOf(dragName);
+  const to = siblings.indexOf(dropName);
+  if (from < 0 || to < 0) return null;
+  siblings.splice(to, 0, siblings.splice(from, 1)[0]);
+  return siblings;
+}
+
+/* Fold a reordered sibling group back into the full saved order. */
+function mergeOrder(order, siblings) {
+  const set = new Set(siblings);
+  const kept = (order || []).filter(n => !set.has(n));
+  return kept.concat(siblings);
+}
+
+module.exports = { buildTree, descendants, validParents, applyOrder, canReorder, reorder, mergeOrder };

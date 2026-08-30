@@ -1,4 +1,4 @@
 {
-  "version": "0.10.4",
-  "notes": "Shipwide soundboard is now COMMAND-only and no longer hides itself: select a ship net (UEES TIBER, UEENS MINERVA) and the panel appears under the roster on COMMS, telling you to tune the net if you haven't. Non-COMMAND operators don't see it, and the restriction is enforced in the app process too, not just the UI. Also: the Windows minimise/maximise/close buttons now take their colours from the live theme instead of a hardcoded older palette, so they match the header in night, day and custom modes."
+  "version": "0.11.0",
+  "notes": "Ships are groups, not channels you sit in: a ship row carries LSN ALL and TX ALL, so you can hear or reach every net aboard without tuning any of them. Channel rows lead with the net's name now, with the frequency small beneath it, and you can drag nets into whatever order suits you \u2014 local to your install, never sent to the relay, and a net can move within its nest but never out of one. You also arrive tuned to NOTHING: no more being dropped onto live nets you didn't pick. Plus soundboard fixes (level-matched clips, no more stutter, and the log names who played what), no more keybinds you didn't set, staggered relay connections with back-off, microphone and output device pickers, and a header, slider row and channel name that all stay on screen at any window size."
 }

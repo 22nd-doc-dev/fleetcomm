@@ -37,7 +37,11 @@ class RadioStack extends EventEmitter {
 
     client.on("voice", (v) => {
       if (net.muted) return;
-      this.emit("rx", { idx, session: v.session, name: this._shortName(client, v.session), opus: v.opus, last: v.last });
+      /* A ship group listens to several channels on one connection, so "which
+         net was that?" can't come from the connection — it comes from where the
+         speaker is standing. Resolve it per packet and pass it up. */
+      this.emit("rx", { idx, session: v.session, name: this._shortName(client, v.session),
+                        chan: this._channelOf(client, v.session), opus: v.opus, last: v.last });
     });
     client.on("TextMessage", (m) => {
       const from = this._shortName(client, m.actor);
@@ -58,6 +62,77 @@ class RadioStack extends EventEmitter {
       net.channelId = chan;
       client.joinChannel(chan);
       this.emit("tuned", { idx, net: netCfg });
+      return idx;
+    } catch (error) {
+      net.dead = true;
+      try { client.disconnect(); } catch (ignore) {}
+      throw error;
+    }
+  }
+
+  /* ── ship groups ──
+     A ship is a group of nets, not a place you sit. LSN ALL hears every net
+     under it and TX ALL reaches every net under it, WITHOUT tuning any of them:
+     receive uses Mumble channel listeners, transmit uses a voice target with
+     children. Both ride the single connection this group already holds, which
+     is also why a ship costs one connection instead of one per subnet. */
+  _channelOf(client, session) {
+    const u = client.users.get(session);
+    if (!u || u.channelId == null) return null;
+    const ch = client.channels.get(u.channelId);
+    return ch && ch.name ? ch.name : null;
+  }
+  /* Listen to every named channel (subnets of a ship). Returns how many resolved. */
+  listenAll(idx, names) {
+    const net = this.nets[idx];
+    if (!net || net.dead) return 0;
+    const ids = [];
+    for (const n of names || []) {
+      const id = net.client.channelByName(channelName(n));
+      if (id != null && id !== net.channelId) ids.push(id);
+    }
+    if (!ids.length) return 0;
+    net.client.listen(ids);
+    net.listening = ids.slice();
+    return ids.length;
+  }
+  unlistenAll(idx) {
+    const net = this.nets[idx];
+    if (!net || net.dead || !net.listening || !net.listening.length) return false;
+    net.client.unlisten(net.listening);
+    net.listening = [];
+    return true;
+  }
+
+  /* ── control connection ──
+     Operators now arrive tuned to NOTHING, which is the right default — you
+     should not be dropped onto live nets you didn't choose. But every relay
+     feature that isn't voice (the ATC board, creating and editing nets,
+     resolving a ship's subnets for LSN ALL) needs *a* connection to ask
+     questions through. So one silent connection sits in the org root: it is
+     muted and deafened, carries no audio either way, and is never exposed as a
+     net. It replaces the several auto-tuned connections that used to open on
+     sign-in, so this is fewer connections than before, not more. */
+  async connectControl(rootChannelName) {
+    const client = new MumbleClient({
+      host: this.opts.host, port: this.opts.port,
+      username: sanitizeUser(this.opts.callsign) + "|ctl",
+      tokens: this.opts.tokens || [], password: this.opts.password || "",
+      cert: this.opts.cert, key: this.opts.key, release: "FleetComm",
+      pin: this.opts.pin || "", onPin: this.opts.onPin
+    });
+    const idx = this.nets.length;
+    const net = { cfg: { name: "\u0000control", freq: "" }, client, channelId: null, idx,
+                  control: true, muted: true };
+    this.nets.push(net);
+    try {
+      await client.connect();
+      await new Promise(r => setTimeout(r, 250));
+      client.setSelfMuteDeaf(true, true);       /* carries nothing, hears nothing */
+      if (rootChannelName) {
+        const id = client.channelByName(channelName(rootChannelName));
+        if (id != null) { net.channelId = id; client.joinChannel(id); }
+      }
       return idx;
     } catch (error) {
       net.dead = true;
@@ -89,6 +164,9 @@ class RadioStack extends EventEmitter {
   }
 
   setMuted(idx, muted) { if (this.nets[idx]) this.nets[idx].muted = muted; }
+
+  /* nets an operator actually tuned — the control connection is not one */
+  tunedCount() { return this.nets.filter(n => n && !n.dead && !n.control).length; }
 
   roster(idx) {
     const net = this.nets[idx];

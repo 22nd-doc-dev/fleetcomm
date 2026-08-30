@@ -72,10 +72,46 @@ function bumpScale(d) { uiScale = Math.round((uiScale + d) * 20) / 20; applyScal
 let myCallsigns = store.get("callsigns", []);
 let callsign = store.get("callsign", "");
 let cmdToken = store.get("cmdToken", "");
-let netPrefs = store.get("netPrefs", {}); // freq -> {txOn, vol, pan, mon, bind, bcast}
+/* Relay back-off. One tuned net is one connection, so a sign-in is several
+   connections at once; murmur's per-IP rate guard answers a burst by dropping
+   it, which surfaces as ECONNRESET. Backing off is the cure — hammering is what
+   keeps it angry. */
+let connectFails = 0, holdTimer = null;
+function holdConnect(seconds) {
+  const btn = $("connectBtn");
+  clearInterval(holdTimer);
+  let left = seconds;
+  btn.disabled = true;
+  const tick = () => {
+    $("connErr").textContent = "The relay is rate-limiting connections from your network. " +
+      "Retrying is what keeps it tripped — holding for " + left + "s.";
+    if (left-- <= 0) {
+      clearInterval(holdTimer);
+      btn.disabled = false;
+      btn.textContent = "CONNECT ▸";
+      $("connErr").textContent = "Ready to try again.";
+    }
+  };
+  tick();
+  holdTimer = setInterval(tick, 1000);
+}
+let netPrefs = store.get("netPrefs", {});
+/* one-time sweep: drop per-net keys older builds assigned on the operator's
+   behalf, so nobody has to hunt down an F-key they never set */
+if (!store.get("bindsCleared", false)) {
+  Object.keys(netPrefs).forEach(k => { if (netPrefs[k]) netPrefs[k].bind = null; });
+  store.set("netPrefs", netPrefs); store.set("bindsCleared", true);
+} // freq -> {txOn, vol, pan, mon, bind, bcast}
 let collapsed = store.get("collapsed", {}); // parent net name -> true
-let masterBinds = store.get("masterBinds5", {
-  active: { src: "label", label: "Space" },
+/* the operator's own arrangement of the board — names only, never sent anywhere */
+let netOrder = store.get("netOrder", []);
+/* No default talk key. Space was assigned out of the box, which meant an
+   operator who never opened Settings was transmitting on whatever the game also
+   uses for that key. Cycling stays on PgUp/PgDn — that's navigation, not a
+   transmit key, and it can't put you on air by accident.
+   The version suffix is bumped so existing installs drop the old Space bind. */
+let masterBinds = store.get("masterBinds6", {
+  active: null,
   cycUp: { src: "label", label: "PageUp" },
   cycDn: { src: "label", label: "PageDown" }
 });
@@ -94,6 +130,7 @@ function buildNets() {
       txOn: !!p.txOn, vol: Math.max(0, Math.min(100, Number(p.vol !== undefined ? p.vol : 75) || 0)),
       pan: Math.max(-100, Math.min(100, Number(p.pan) || 0)),
       bind: p.bind || null, bcast: p.bcast || false,
+      group: !!cfg.ship, lsnAll: p.lsnAll || false, txAll: p.txAll || false,
       roster: new Map(), speaking: new Map(), chat: [], tx: false
     });
     for (const child of cfg.subnets || []) add(child, depth + 1, cfg.name);
@@ -102,19 +139,21 @@ function buildNets() {
 }
 buildNets();
 function savePrefs() {
-  nets.forEach(n => { netPrefs[n.cfg.freq] = { txOn: n.txOn, vol: n.vol, pan: n.pan, mon: n.mon, bind: n.bind, bcast: n.bcast }; });
+  nets.forEach(n => { netPrefs[n.cfg.freq] = { txOn: n.txOn, vol: n.vol, pan: n.pan, mon: n.mon,
+    bind: n.bind, bcast: n.bcast, lsnAll: n.lsnAll, txAll: n.txAll }; });
   store.set("netPrefs", netPrefs);
   store.set("collapsed", collapsed);
 }
 const sel = () => nets[selectedI];
-const { buildTree, validParents, channelName } = bridge.netTree;
+const { buildTree, validParents, channelName, canReorder, reorder, mergeOrder } = bridge.netTree;
 /* The display order is derived from parentage every render — see src/net-tree.js.
    `tree` is rebuilt by renderNets and read by anything that needs to know the
    shape of the board (PgUp/PgDn order, the parent dropdown, nest counts). */
 let tree = { rows: [], kids: [], parentIdx: [], depth: [], roots: [] };
+function netShapes() { return nets.map(n => ({ name: n.cfg.name, parent: n.parent })); }
 function rebuildTree() {
   pruneCollapsed();
-  tree = buildTree(nets.map(n => ({ name: n.cfg.name, parent: n.parent })), collapsed);
+  tree = buildTree(netShapes(), collapsed, netOrder);
   nets.forEach((n, i) => {           /* keep the stored depth in step with the real one */
     n.depth = tree.depth[i];
     if (tree.parentIdx[i] === -1) n.parent = null;   /* an orphan really is top level now */
@@ -122,6 +161,13 @@ function rebuildTree() {
   return tree;
 }
 const kidsOf = (name) => nets.filter(x => x.parent === name);
+/* Every net aboard a ship: whatever the relay tree shows, plus anything the
+   package declared, so LSN ALL works before the subnets have ever been tuned. */
+function subnetNamesOf(n) {
+  const fromTree = kidsOf(n.cfg.name).map(x => x.cfg.name);
+  const fromCfg = (n.cfg.subnets || []).map(x => (typeof x === "string" ? x : x.name)).filter(Boolean);
+  return [...new Set(fromTree.concat(fromCfg))];
+}
 const isParent = (n) => {
   const i = nets.indexOf(n);
   return (i >= 0 && tree.kids[i] && tree.kids[i].length > 0) || (n.cfg.subnets || []).length > 0;
@@ -218,7 +264,7 @@ function matchUp(b, src, code, label) {
 function finishCapture(src, code, label, mods) {
   const bind = { src, code, label: bindLabel(mods, label), mods };
   if (capturing.kind === "net") { nets[capturing.i].bind = bind; savePrefs(); }
-  else { masterBinds[capturing.which] = bind; store.set("masterBinds5", masterBinds); }
+  else { masterBinds[capturing.which] = bind; store.set("masterBinds6", masterBinds); }
   capturing = null; renderNets(); renderMasterBinds();
 }
 function onKeyDown(src, code, label, mods) {
@@ -256,12 +302,67 @@ const FRAME = 960;
 let capNode = null, txSet = new Set(), txEndPending = new Set(), bcastIdx = new Set();
 const encoder = new OpusScript(48000, 1, OpusScript.Application.VOIP);
 try { encoder.encoderCTL(4002, 40000); } catch (e) {}
+/* ── audio devices ──
+   Operators run headsets, stream decks and virtual cables; "whatever the OS
+   picked" is not good enough when the wrong choice means transmitting desktop
+   audio or hearing the net through speakers the mic can pick up. Both
+   selections persist and the mic is re-opened in place when changed. */
+let micDevice = store.get("micDevice", "");
+let outDevice = store.get("outDevice", "");
+async function listAudioDevices() {
+  let devices = [];
+  try { devices = await navigator.mediaDevices.enumerateDevices(); } catch (e) { return; }
+  const fill = (el, kind, chosen) => {
+    const opts = ['<option value="">System default</option>'];
+    devices.filter(d => d.kind === kind).forEach((d, i) => {
+      /* labels are blank until mic permission is granted at least once */
+      const name = d.label || (kind === "audioinput" ? "Input " : "Output ") + (i + 1);
+      opts.push('<option value="' + escAttr(d.deviceId) + '">' + esc(name) + "</option>");
+    });
+    el.innerHTML = opts.join("");
+    el.value = devices.some(d => d.deviceId === chosen) ? chosen : "";
+  };
+  fill($("micSel"), "audioinput", micDevice);
+  fill($("outSel"), "audiooutput", outDevice);
+}
+async function applyOutputDevice() {
+  /* setSinkId is Chromium-only and not always present; fail quietly */
+  try {
+    if (typeof ctx.setSinkId === "function") await ctx.setSinkId(outDevice || "");
+  } catch (e) { toast("Couldn't switch output device: " + e.message); }
+}
+$("micSel").addEventListener("change", async function () {
+  micDevice = this.value; store.set("micDevice", micDevice);
+  if (capNode) {                       /* re-open the mic on the new device */
+    try { capNode.disconnect(); } catch (e) {}
+    capNode = null;
+    if (await ensureMic()) toast("Microphone switched.");
+    else toast("Couldn't open that microphone — falling back to the default.");
+  } else toast("Microphone set — it opens on your next transmission.");
+});
+$("outSel").addEventListener("change", async function () {
+  outDevice = this.value; store.set("outDevice", outDevice);
+  await applyOutputDevice();
+  toast("Output device set.");
+});
+try { navigator.mediaDevices.addEventListener("devicechange", listAudioDevices); } catch (e) {}
+
 async function ensureMic() {
   if (capNode) return true;
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
-    });
+    const audioReq = { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+    if (micDevice) audioReq.deviceId = { exact: micDevice };
+    let stream;
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: audioReq }); }
+    catch (e) {
+      if (!micDevice) throw e;
+      /* the saved device may be unplugged — don't leave the operator mute */
+      delete audioReq.deviceId;
+      stream = await navigator.mediaDevices.getUserMedia({ audio: audioReq });
+      toast("Saved microphone unavailable — using the system default.");
+    }
+    listAudioDevices();          /* labels are only readable once permission is granted */
+    applyOutputDevice();
     const src = ctx.createMediaStreamSource(stream);
     const workletCode = `class Cap extends AudioWorkletProcessor{
       constructor(){super();this.buf=new Float32Array(${FRAME});this.n=0;}
@@ -476,22 +577,44 @@ function renderNets() {
       (i === selectedI ? " sel" : "") + (n.tuned ? "" : " untuned") +
       (n.tx ? " tx-live" : (n.speaking.size ? " rx-live" : ""));
     d.dataset.i = i;
+    d.draggable = true;                    /* client-side ordering — see dragging below */
+    const ship = isShip(n);
+    if (ship) d.classList.add("shipgroup");
+    /* Name first. The callsign of the net is what an operator scans for mid-op;
+       the frequency is reference detail, so it drops to a small line underneath
+       instead of leading the row. */
     let h = '<div class="nt" data-sel>' +
       (par ? '<button class="chev" data-chev title="collapse / expand nest">' + (collapsed[n.cfg.name] ? "▸" : "▾") + '</button>' : "") +
-      '<span class="fq num">' + esc(n.cfg.freq) + '</span><b>' + esc(n.cfg.name) +
+      '<span class="grip" data-grip title="Drag to reorder">⠿</span>' +
+      '<span class="nmwrap" title="' + escAttr(n.cfg.name) + '"><b class="nm">' + esc(n.cfg.name) +
       (n.cfg.enc ? ' <span class="enc">⚿</span>' : "") + '</b>' +
-      (isShip(n) ? '<span class="shipbadge">SHIP</span>' : "") +
-      (par ? '<span class="nestcount">' + kids.filter(k => k.tuned).length + "/" + kids.length + " NEST</span>" : "") +
+      '<span class="fq num">' + esc(n.cfg.freq) + '</span></span>' +
+      (ship ? '<span class="shipbadge">SHIP</span>' : "") +
+      (par ? '<span class="nestcount">' + kids.filter(k => k.tuned).length + "/" + kids.length + (ship ? " NETS" : " NEST") + '</span>' : "") +
       '<span class="cnt num" data-cnt>' + (n.tuned ? n.roster.size : "·") + '</span></div>';
-    if (n.tuned) {
+
+    if (ship) {
+      /* A ship is a GROUP, not a channel you sit in. Two controls, and neither
+         needs its subnets tuned: LSN ALL hears the whole ship, TX ALL reaches
+         the whole ship. */
+      h += '<div class="nrow">' +
+        '<button class="ann wide' + (n.lsnAll ? " lit-g" : "") + '" data-lsnall' +
+          ' title="Hear every net aboard this ship — no need to tune them">LSN ALL</button>' +
+        '<button class="ann wide' + (n.txAll ? " lit-a" : "") + '" data-txall' +
+          ' title="Transmit to every net aboard this ship — no need to tune them">TX ALL</button>' +
+        '<button class="keyb mono" data-key title="Talk key for TX ALL">' + esc(n.bind ? n.bind.label : "KEY") + '</button>' +
+        (n.tuned ? '<button class="x" data-x title="Leave the ship group">✕</button>' : "") +
+        '</div>';
+      if (n.tuned) h += '<div class="srow"><label>VOL</label><input type="range" min="0" max="100" value="' + n.vol + '" data-vol>' +
+        '<label>L\u00b7R</label><input type="range" class="pan" min="-100" max="100" value="' + n.pan + '" data-pan></div>';
+    } else if (n.tuned) {
       h += '<div class="nrow">' +
         '<button class="ann' + (n.mon ? " lit-g" : "") + '" data-mon>LSN</button>' +
         '<button class="ann' + (n.txOn ? " lit-a" : "") + '" data-txon>TX</button>' +
-        (par ? '<button class="ann' + (n.bcast ? " lit-a" : "") + '" data-bcast title="Transmit to this net AND every subnet under it">NEST</button>' : "") +
         '<button class="keyb mono" data-key title="Per-net talk key — click, press a key or combo">' + esc(n.bind ? n.bind.label : "KEY") + '</button>' +
         '<button class="x" data-x title="Detune">✕</button></div>' +
         '<div class="srow"><label>VOL</label><input type="range" min="0" max="100" value="' + n.vol + '" data-vol>' +
-        '<label style="width:20px">L·R</label><input type="range" class="pan" min="-100" max="100" value="' + n.pan + '" data-pan></div>';
+        '<label>L\u00b7R</label><input type="range" class="pan" min="-100" max="100" value="' + n.pan + '" data-pan></div>';
     } else {
       h += '<button class="tunebtn" data-tune>TUNE ▸</button>';
     }
@@ -567,6 +690,12 @@ function renderMic() {
   $("micBtn").textContent = micState === "ok" ? "✓ MICROPHONE ENABLED" : "ENABLE MICROPHONE";
 }
 function renderMasterBinds() {
+  const unbound = !masterBinds.active;
+  $("pttRow").classList.toggle("unbound", unbound);
+  $("pttHint").textContent = unbound
+    ? "No talk key set — you cannot transmit until you choose one."
+    : "Transmits on every net with TX armed";
+  $("ptt").classList.toggle("needsbind", unbound);
   $("bindActive").textContent = masterBinds.active ? masterBinds.active.label : "set key";
   $("bindCycUp").textContent = masterBinds.cycUp ? masterBinds.cycUp.label : "set key";
   $("bindCycDn").textContent = masterBinds.cycDn ? masterBinds.cycDn.label : "set key";
@@ -626,11 +755,12 @@ async function syncTreeFromRelay() {
         depth: 0, parent: null, tuned: false, idx: null, mon: pref.mon !== false, txOn: !!pref.txOn,
         vol: Math.max(0, Math.min(100, Number(pref.vol == null ? 75 : pref.vol) || 0)),
         pan: Math.max(-100, Math.min(100, Number(pref.pan) || 0)), bind: pref.bind || null,
-        bcast: !!pref.bcast, roster: new Map(), speaking: new Map(), chat: [], tx: false };
+        bcast: !!pref.bcast, group: !!ch.ship, lsnAll: !!pref.lsnAll, txAll: !!pref.txAll,
+        roster: new Map(), speaking: new Map(), chat: [], tx: false };
       nets.push(n); changed = true;
     }
     if (ch.freq && n.cfg.freq !== ch.freq) { n.cfg.freq = ch.freq; changed = true; }
-    if (ch.ship != null && !!n.cfg.ship !== !!ch.ship) { n.cfg.ship = !!ch.ship; changed = true; }
+    if (ch.ship != null && !!n.cfg.ship !== !!ch.ship) { n.cfg.ship = !!ch.ship; n.group = !!ch.ship; changed = true; }
   }
   const beforeLength = nets.length;
   nets = nets.filter(n => n.tuned || relayNames.has(channelName(n.cfg.channel || n.cfg.name)));
@@ -710,12 +840,35 @@ netlist.addEventListener("click", async (e) => {
   if (e.target.closest("[data-chev]")) {
     collapsed[n.cfg.name] = !collapsed[n.cfg.name]; savePrefs(); renderNets(); return;
   }
-  if (e.target.closest("[data-bcast]")) {
-    n.bcast = !n.bcast;
-    if (n.bcast && n.tuned) ipcRenderer.invoke("arm-broadcast", n.idx).then(ok => {
-      if (!ok) { n.bcast = false; toast("Couldn't arm nest broadcast."); renderNets(); }
-      else addLog("sys", n.cfg.name, "NEST BROADCAST armed — TX reaches all subnets");
-    });
+  /* ── ship group controls ──
+     Both join the ship group first if it isn't up yet, so an operator never has
+     to know that a connection exists underneath. */
+  if (e.target.closest("[data-lsnall]")) {
+    if (!n.tuned && !(await tuneNet(i))) return;
+    n.lsnAll = !n.lsnAll;
+    n.mon = n.lsnAll || n.mon;
+    const r = await ipcRenderer.invoke("listen-all",
+      { idx: n.idx, on: n.lsnAll, names: subnetNamesOf(n) });
+    if (n.lsnAll && !(r && r.ok)) {
+      n.lsnAll = false;
+      toast("Couldn't listen to " + n.cfg.name + ((r && r.error) ? " — " + r.error : "."));
+    } else {
+      addLog("sys", n.cfg.name, n.lsnAll
+        ? "LSN ALL — hearing every net aboard (" + r.listening + ")"
+        : "LSN ALL off");
+    }
+    savePrefs(); renderNets(); return;
+  }
+  if (e.target.closest("[data-txall]")) {
+    if (!n.tuned && !(await tuneNet(i))) return;
+    n.txAll = !n.txAll;
+    n.bcast = n.txAll;                 /* the stack arms the same children target */
+    n.txOn = n.txAll;
+    if (n.txAll) {
+      const ok = await ipcRenderer.invoke("arm-broadcast", n.idx);
+      if (!ok) { n.txAll = false; n.bcast = false; n.txOn = false; toast("Couldn't arm TX ALL."); }
+      else addLog("sys", n.cfg.name, "TX ALL armed — transmits to every net aboard");
+    } else addLog("sys", n.cfg.name, "TX ALL off");
     savePrefs(); renderNets(); return;
   }
   if (e.target.closest("[data-sel]")) {
@@ -985,43 +1138,85 @@ async function playClipOnNet(name, net) {
     const d = audio.getChannelData(c);
     for (let i = 0; i < len; i++) mono[i] += d[i] / chans;
   }
+  /* ── level ──
+     Clips are mastered anywhere from quiet to brick-walled, while voice arrives
+     at whatever the mic's AGC settled on. Sending a clip at full scale is why
+     they came in far hotter than people, so peak-normalise each clip to a fixed
+     target with headroom. Everything lands at a predictable level regardless of
+     how the file was recorded. */
+  let peak = 0;
+  for (let i = 0; i < len; i++) { const a = mono[i] < 0 ? -mono[i] : mono[i]; if (a > peak) peak = a; }
+  const CLIP_TARGET = 0.45;                      /* sits alongside voice, not over it */
+  const norm = peak > 0.0001 ? Math.min(4, CLIP_TARGET / peak) : 1;
+
   sbPlaying = name; renderSoundboard();
-  addLog("tx", net.cfg.name, "SHIPWIDE CLIP — " + name + (net.bcast ? " (nest)" : ""));
+  const where = net.cfg.name + (net.bcast ? " (nest)" : "");
+  addLog("tx", where, "SHIPWIDE CLIP — " + name + " — played by " + callsign);
+  /* tell everyone else on the net who keyed it; the audio alone doesn't say */
+  try { ipcRenderer.send("send-text", { idx: net.idx, message: "♪ " + callsign + " played " + name }); } catch (e) {}
   if (net.bcast) await ipcRenderer.invoke("arm-broadcast", net.idx);
-  /* local monitor so the sender hears it too */
+
+  /* local monitor so the sender hears what went out, at the same relative level */
   const src = ctx.createBufferSource(); src.buffer = audio;
-  const g = ctx.createGain(); g.gain.value = 0.5;
+  const g = ctx.createGain(); g.gain.value = 0.5 * norm;
   src.connect(g); g.connect(ctx.destination); src.start();
 
   const enc = new OpusScript(48000, 1, OpusScript.Application.AUDIO);
   const i16 = new ArrayBuffer(FRAME * 2), i16view = new DataView(i16);
   let pos = 0;
+  /* ── pacing ──
+     setInterval(…, 20) drifts, and Electron throttles renderer timers hard when
+     the window isn't focused — which for this app is the normal case, because
+     you're in the game. That throttling is what made clips stutter and drop out
+     mid-playback. So we work from the clock: on every tick, send however many
+     20 ms frames are actually due. A late tick catches up instead of losing
+     audio. (backgroundThrottling is also disabled on the window now, which
+     stops the timer being starved in the first place — this is the belt to
+     that's braces.) */
+  const started = performance.now();
+  let sent = 0;
+  const finish = (ok) => {
+    clearInterval(pump);
+    if (ok) { try { ipcRenderer.send("tx-frame", { idx: net.idx, frame: enc.encode(new ArrayBuffer(FRAME * 2), FRAME), last: true, broadcast: !!net.bcast }); } catch (e) {} }
+    try { enc.delete(); } catch (e) {}
+    sbPlaying = null; renderSoundboard();
+  };
   const pump = setInterval(() => {
-    if (!connected || !net.tuned || net.idx == null) {
-      clearInterval(pump); enc.delete(); sbPlaying = null; renderSoundboard(); return;
+    if (!connected || !net.tuned || net.idx == null) return finish(false);
+    const due = Math.floor((performance.now() - started) / 20) + 1;
+    let guard = 0;
+    while (sent < due && pos < len && guard++ < 50) {     /* cap the catch-up burst */
+      for (let i = 0; i < FRAME; i++) {
+        const v = pos + i < len ? mono[pos + i] * norm : 0;
+        i16view.setInt16(i * 2, (Math.max(-1, Math.min(1, v)) * 32767) | 0, true);
+      }
+      pos += FRAME; sent++;
+      try { ipcRenderer.send("tx-frame", { idx: net.idx, frame: enc.encode(i16, FRAME), last: false, broadcast: !!net.bcast }); } catch (e) {}
     }
-    if (pos >= len) {
-      clearInterval(pump);
-      try { ipcRenderer.send("tx-frame", { idx: net.idx, frame: enc.encode(new ArrayBuffer(FRAME * 2), FRAME), last: true, broadcast: !!net.bcast }); } catch (e) {}
-      enc.delete();
-      sbPlaying = null; renderSoundboard();
-      return;
-    }
-    for (let i = 0; i < FRAME; i++) {
-      const s = pos + i < len ? Math.max(-1, Math.min(1, mono[pos + i])) : 0;
-      i16view.setInt16(i * 2, (s * 32767) | 0, true);
-    }
-    pos += FRAME;
-    try { ipcRenderer.send("tx-frame", { idx: net.idx, frame: enc.encode(i16, FRAME), last: false, broadcast: !!net.bcast }); } catch (e) {}
+    if (pos >= len) finish(true);
   }, 20);
 }
 
 /* ══ IPC: voice / roster / chat ══ */
 ipcRenderer.on("rx", (ev, r) => {
-  const i = nets.findIndex(x => x.idx === r.idx); if (i < 0) return;
+  const conn = nets.findIndex(x => x.idx === r.idx); if (conn < 0) return;
+  /* A ship group carries several subnets down one connection. The AUDIO stays on
+     the group's own chain — LSN ALL is one ship, one volume — but the display
+     follows the net the speaker is actually standing in, so the log and the
+     lit-up row name the subnet rather than the ship.
+     If that subnet is separately tuned and monitored, its own connection is
+     already delivering this audio; drop the group's copy instead of doubling it. */
+  let i = conn;
+  if (nets[conn].group && r.chan) {
+    const sub = nets.findIndex(x => x.cfg.name === r.chan);
+    if (sub >= 0) {
+      if (nets[sub].tuned && nets[sub].mon) return;
+      i = sub;
+    }
+  }
+  if (!nets[conn].mon) return;
   const n = nets[i];
-  if (!n.mon) return;
-  playFrame(n, r.session, r.opus);
+  playFrame(nets[conn], r.session, r.opus);   /* always a net with a live chain */
   const first = (n.speaking.get(r.session) || 0) <= Date.now();
   n.speaking.set(r.session, Date.now() + 350);
   if (first) {
@@ -1103,7 +1298,11 @@ async function doConnect(cs, btn) {
   if (host !== pkg.server.host) store.set("hostOverride", host);
   renderCsList();
   $("connErr").textContent = ""; btn.textContent = "CONNECTING…";
-  const wanted = nets.map((n, i) => i).filter(i => nets[i].cfg.monitor || nets[i].cfg.defaultKey);
+  /* Arrive tuned to NOTHING. FleetComm used to auto-tune whatever the package
+     flagged, so operators were dropped onto live nets they never chose — and it
+     opened a relay connection for each one. You now pick your own nets; the
+     relay link itself is a single silent control connection. */
+  const wanted = [];
   let res;
   try {
     res = await ipcRenderer.invoke("connect", {
@@ -1122,24 +1321,46 @@ async function doConnect(cs, btn) {
     return;
   }
   const okCount = res.filter(r => r.ok).length;
-  if (!okCount) {
-    const raw = (res[0] && res[0].error) || "unknown";
-    $("connErr").textContent = /ECONNRESET|ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH/.test(raw)
-      ? "The relay dropped the attempt — usually its rapid-reconnect guard. Wait a minute, then try again."
-      : "Could not tune any nets: " + raw;
+  /* an empty result set is success now: connected, tuned to nothing */
+  if (!res.length) {
+    connectFails = 0;
+    await afterConnect(cs);
+    addLog("sys", "", "relay online — tuned to nothing. Pick the nets you want.");
+    toast("Connected. You're not on any net yet — tune the ones you need.");
     return;
   }
+  if (!okCount) {
+    const raw = (res[0] && res[0].error) || "unknown";
+    /* Retrying immediately is what keeps the guard tripped, so count the
+       attempt down out loud and hold the button rather than letting an anxious
+       operator hammer it. Each failure waits a little longer than the last. */
+    if (/ECONNRESET|ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|reset by peer/i.test(raw)) {
+      connectFails++;
+      holdConnect(Math.min(45, 8 * connectFails));
+    } else $("connErr").textContent = "Could not tune any nets: " + raw;
+    return;
+  }
+  connectFails = 0;
   res.forEach((r, k) => {
     if (!r.ok) { addLog("sys", nets[wanted[k]].cfg.name, "tune failed: " + r.error); return; }
     const n = nets[wanted[k]];
     n.tuned = true; n.idx = r.idx; makeChain(n);
     if (!n.mon) ipcRenderer.send("net-mute", { idx: n.idx, muted: true });
-    if (!n.bind && n.cfg.defaultKey) n.bind = { src: "label", label: n.cfg.defaultKey, mods: [] };
+    /* Keys are the operator's to choose. FleetComm used to stamp the package's
+       defaultKey onto any unbound net, so people found F1 on COMMAND NET and F3
+       on ALPHA SQDN without ever setting them — keys that collide with the game.
+       defaultKey now only decides which nets auto-tune, never what they bind. */
   });
+  await afterConnect(cs);
+}
+/* Everything that follows a successful relay link, whether or not any net was
+   tuned. Arriving tuned to nothing is a normal, successful connection. */
+async function afterConnect(cs) {
   connected = true;
   if (acct && cs !== acct.account.callsign) ipcRenderer.invoke("acct", { method: "POST", path: "/api/callsign", body: { callsign: cs } });
   await syncTreeFromRelay();
-  selectedI = nets.findIndex(n => n.tuned);
+  const firstTuned = nets.findIndex(n => n.tuned);
+  selectedI = firstTuned >= 0 ? firstTuned : 0;
   $("connectOv").classList.add("hidden");
   $("relayLbl").className = "v ok"; $("relayLbl").textContent = "LIVE · " + pkg.shortname;
   const roleTxt = acct ? acct.account.role.toUpperCase() : (cmdToken ? "COMMAND" : "OPERATOR");
@@ -1412,7 +1633,7 @@ try {
 $("sfx").classList.toggle("on", fx);
 $("sautoupd").classList.toggle("on", autoUpdate);
 $("fxsel").value = fxPreset;
-applyFont(); applyScale(); applyTheme(); refreshAcctEp(); renderCsList(); renderMasterBinds(); renderMic(); renderNets(); refreshSounds();
+applyFont(); applyScale(); applyTheme(); refreshAcctEp(); listAudioDevices(); renderCsList(); renderMasterBinds(); renderMic(); renderNets(); refreshSounds();
 $("startupFail").style.display = "none";
 $("signDiscord").style.display = discordMode ? "block" : "none";
 $("signLegacy").style.display = discordMode ? "none" : "block";
@@ -1473,7 +1694,16 @@ if (bridge.autotestHost) {
     $("csIn").value = "AUTOTEST-RIG";
     $("connectBtn").click();
     setTimeout(async () => {
+      /* nobody is auto-tuned any more, so the rig tunes a few itself before the
+         checks that need live nets — and proves a bare connection works first */
+      console.log("[AUTOTEST] connected-tuned-to-nothing=" + connected + " nets-tuned=" + nets.filter(n => n.tuned).length);
+      const view0 = await ipcRenderer.invoke("atc-view");
+      console.log("[AUTOTEST] atc-works-untuned=" + (Array.isArray(view0) && view0.length > 0));
+      for (let k = 0; k < nets.length && nets.filter(n => n.tuned).length < 4; k++) {
+        if (!nets[k].cfg.ship && !nets[k].parent) await tuneNet(k, true);
+      }
       const tuned = nets.filter(n => n.tuned);
+      selectedI = nets.findIndex(n => n.tuned);
       console.log("[AUTOTEST] connected=" + connected + " tuned=" + tuned.length + " selected=" + (sel() ? sel().cfg.name : "-"));
       if (tuned.length) { $("chatIn").disabled = false; $("chatIn").value = "autotest checking in"; sendChat(); }
       const view = await ipcRenderer.invoke("atc-view");
@@ -1486,7 +1716,7 @@ if (bridge.autotestHost) {
   ipcRenderer.on("ov-shown", (ev, shown) => console.log("[AUTOTEST] overlay=" + shown));
 
   /* ── v0.9 feature checks ── */
-  setTimeout(() => {
+  setTimeout(async () => {
     const cs = getComputedStyle(document.documentElement);
     const L = (k, v) => console.log("[AUTOTEST] " + k + "=" + v);
 
@@ -1548,6 +1778,76 @@ if (bridge.autotestHost) {
     L("titlebar-custom", cssHex("--bez", "?") + " (set #402030)");
     themeMode = "dark"; customTheme = Object.assign({}, THEME_DEFAULTS); applyTheme();
 
+    /* the reported bug: a ship name crushed to "UEE…" by the badges beside it.
+       Squeeze the rail to the width in the screenshot and check what survives. */
+    const rail = document.getElementById("chanCol");
+    const prevW = rail.style.width;
+    rail.style.width = "300px";
+    /* tune the ship so its sliders exist to measure */
+    const shipIdx0 = nets.findIndex(n => n.cfg.ship);
+    if (shipIdx0 >= 0 && !nets[shipIdx0].tuned) await tuneNet(shipIdx0, true);
+    renderNets();
+    const shipCard = netlist.querySelector(".net.shipgroup");
+    if (shipCard) {
+      const nm = shipCard.querySelector("b.nm");
+      const full = nm.textContent;
+      /* scrollWidth > clientWidth means it is being ellipsised */
+      L("ship-name-at-300px", JSON.stringify(full) +
+        " clipped=" + (nm.scrollWidth > nm.clientWidth + 1) +
+        " shown≈" + Math.round(nm.clientWidth) + "px need=" + Math.round(nm.scrollWidth) + "px");
+      L("ship-row-wraps", getComputedStyle(shipCard.querySelector(".nt")).flexWrap);
+      /* the reported bug: the L·R (pan) slider pushed off the right edge */
+      const srow = shipCard.querySelector(".srow");
+      if (srow) {
+        const pan = srow.querySelector("input.pan");
+        const rowR = srow.getBoundingClientRect(), panR = pan.getBoundingClientRect();
+        L("pan-slider-visible", panR.width > 8 && panR.right <= rowR.right + 1);
+        L("pan-overflow-px", Math.round(Math.max(0, panR.right - rowR.right)));
+        L("srow-overflow-px", Math.max(0, srow.scrollWidth - srow.clientWidth));
+      } else L("srow", "ship not tuned in rig");
+    }
+    rail.style.width = prevW; renderNets();
+
+    /* ship groups, name-first rows, ordering */
+    const shipI = nets.findIndex(n => n.cfg.ship);
+    if (shipI >= 0) {
+      const card = netlist.querySelector('[data-i="' + shipI + '"]');
+      L("ship-is-group", !!(card && card.classList.contains("shipgroup")));
+      L("ship-has-lsnall", !!(card && card.querySelector("[data-lsnall]")));
+      L("ship-has-txall", !!(card && card.querySelector("[data-txall]")));
+      L("ship-has-no-tune", !(card && card.querySelector("[data-tune]")));
+      const nm = card && card.querySelector("b.nm");
+      const fq = card && card.querySelector(".fq");
+      L("name-bigger-than-freq", nm && fq
+        ? parseFloat(getComputedStyle(nm).fontSize) > parseFloat(getComputedStyle(fq).fontSize) : "?");
+      L("rows-draggable", !!(card && card.draggable));
+    }
+    const shapes = netShapes();
+    const sub = nets.find(n => n.parent);
+    const top = nets.find(n => !n.parent && !n.cfg.ship);
+    if (sub && top) {
+      L("nest-escape-refused", !canReorder(shapes, sub.cfg.name, top.cfg.name));
+      const sib = nets.find(n => n.parent === sub.parent && n.cfg.name !== sub.cfg.name);
+      if (sib) L("sibling-reorder-allowed", canReorder(shapes, sub.cfg.name, sib.cfg.name));
+    }
+
+    /* PTT prompt, settings cog, device pickers, header scaling */
+    const savedActive = masterBinds.active;
+    masterBinds.active = null; renderMasterBinds();
+    L("ptt-unbound-flagged", document.getElementById("pttRow").classList.contains("unbound"));
+    L("ptt-btn-flagged", document.getElementById("ptt").classList.contains("needsbind"));
+    masterBinds.active = { src: "label", label: "F14" }; renderMasterBinds();
+    L("ptt-bound-clears", !document.getElementById("pttRow").classList.contains("unbound"));
+    masterBinds.active = savedActive; renderMasterBinds();
+    L("sys-key-cog", (document.getElementById("sysKey").textContent || "").indexOf("\u2699") >= 0);
+    L("device-pickers", !!document.getElementById("micSel") && !!document.getElementById("outSel"));
+    L("bezel-wraps", getComputedStyle(document.getElementById("bezel")).flexWrap);
+    /* narrow the window and confirm nothing overflows the bezel horizontally */
+    document.body.style.width = "720px";
+    const bz = document.getElementById("bezel");
+    L("bezel-overflow-at-720", Math.max(0, bz.scrollWidth - bz.clientWidth));
+    document.body.style.width = "";
+
     /* soundboard: COMMAND-gated, and visible on a ship net */
     const shipIdx = nets.findIndex(n => n.cfg.ship);
     if (shipIdx >= 0) {
@@ -1591,3 +1891,51 @@ if (bridge.autotestHost) {
     catch (e) { L("edit-dialog-ERR", e.message); console.log("[AUTOTEST] v09-checks-done"); }
   }, 9000);
 }
+
+/* ══ drag to reorder ══
+   Purely local: it changes the order this operator sees and nothing else. A net
+   may be moved among its siblings, never in or out of a nest — src/net-tree.js
+   enforces that and refuses the drop rather than silently re-parenting. */
+(function () {
+  let dragName = null;
+  const nameAt = (el) => {
+    const card = el && el.closest ? el.closest(".net") : null;
+    const i = card ? +card.dataset.i : -1;
+    return nets[i] ? nets[i].cfg.name : null;
+  };
+  netlist.addEventListener("dragstart", (e) => {
+    dragName = nameAt(e.target);
+    if (!dragName) return;
+    try { e.dataTransfer.setData("text/plain", dragName); e.dataTransfer.effectAllowed = "move"; } catch (err) {}
+    const card = e.target.closest(".net"); if (card) card.classList.add("dragging");
+  });
+  netlist.addEventListener("dragend", () => {
+    dragName = null;
+    netlist.querySelectorAll(".net").forEach(c => c.classList.remove("dragging", "dropok", "dropno"));
+  });
+  netlist.addEventListener("dragover", (e) => {
+    const over = nameAt(e.target); if (!dragName || !over) return;
+    const card = e.target.closest(".net");
+    netlist.querySelectorAll(".net").forEach(c => c.classList.remove("dropok", "dropno"));
+    if (canReorder(netShapes(), dragName, over)) {
+      e.preventDefault();                       /* only a legal drop is allowed */
+      try { e.dataTransfer.dropEffect = "move"; } catch (err) {}
+      card.classList.add("dropok");
+    } else if (over !== dragName) card.classList.add("dropno");
+  });
+  netlist.addEventListener("drop", (e) => {
+    const over = nameAt(e.target); if (!dragName || !over) return;
+    e.preventDefault();
+    const sibs = reorder(netShapes(), netOrder, dragName, over);
+    if (!sibs) {
+      toast(nets.some(n => n.cfg.name === dragName && n.parent)
+        ? "Nets stay in their nest — you can reorder within it, not out of it."
+        : "That net can't go there.");
+      return;
+    }
+    netOrder = mergeOrder(netOrder, sibs);
+    store.set("netOrder", netOrder);
+    dragName = null;
+    renderNets();
+  });
+})();

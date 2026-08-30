@@ -52,6 +52,7 @@ function createOverlay() {
     focusable: false,
     webPreferences: {
       preload: path.join(__dirname, "src", "overlay-preload.js"),
+      backgroundThrottling: false,   /* the overlay is only ever seen unfocused */
       nodeIntegration: false, contextIsolation: true, sandbox: false, webSecurity: true
     }
   });
@@ -542,6 +543,13 @@ function createWindow() {
     ...frameOpts,
     webPreferences: {
       preload: path.join(__dirname, "src", "preload.js"),
+      /* This app's whole purpose is to run while the GAME has focus, so an
+         unfocused window is the normal case, not an idle one. Electron's default
+         throttling starves renderer timers when the window is backgrounded,
+         which is what made soundboard clips stutter and drop out mid-playback.
+         Voice itself was unaffected only because mic capture runs on the audio
+         thread in an AudioWorklet. */
+      backgroundThrottling: false,
       nodeIntegration: false, contextIsolation: true, sandbox: false, webSecurity: true
     }
   });
@@ -622,8 +630,30 @@ ipcMain.handle("connect", async (ev, request) => {
   radio.on("roster", (r) => { if (stack === radio) sendWin("roster", r); });
   radio.on("net-down", (r) => { if (stack === radio) sendWin("net-down", r); });
   radio.on("net-error", (r) => { if (stack === radio) sendWin("net-error", r); });
+  /* One silent control connection first: operators arrive tuned to nothing, but
+     the ATC board and net editing still need a way to talk to the relay. */
+  try {
+    await radio.connectControl(require("./config/22nd-package.json").rootChannel);
+  } catch (e) {
+    if (stack === radio) { try { radio.destroy(); } catch (ignore) {} stack = null; }
+    return [{ ok: false, error: e.message }];
+  }
+  if (generation !== connectGeneration || stack !== radio)
+    return [{ ok: false, error: "connection attempt superseded" }];
+
+  /* ── pacing ──
+     One tuned net is one TLS connection, so signing in with six nets is six
+     connections from the same IP inside a fraction of a second. murmur counts
+     connection ATTEMPTS per address (autobanAttempts/autobanTimeframe) and stops
+     answering when the rate looks like an attack — which is where the
+     "read ECONNRESET" and the rapid-reconnect message come from. A short stagger
+     between nets keeps an ordinary sign-in well clear of that guard. */
   const results = [];
+  let first = true;
   for (const n of nets) {
+    if (!first) await new Promise(r => setTimeout(r, 140));
+    first = false;
+    if (generation !== connectGeneration) break;   /* superseded — stop dialling */
     try { results.push({ ok: true, idx: await radio.tune(n) }); }
     catch (e) { results.push({ ok: false, error: e.message, net: n.name }); }
   }
@@ -645,6 +675,15 @@ ipcMain.on("tx-frame", (ev, frameInfo) => {
   const frame = Buffer.from(frameInfo.frame || []);
   const idx = boundedInt(frameInfo.idx, 0, 255, -1);
   if (idx >= 0 && frame.length > 0 && frame.length <= 0x1fff) stack.txFrame(idx, frame, !!frameInfo.last, !!frameInfo.broadcast);
+});
+ipcMain.handle("listen-all", (ev, req) => {
+  if (!stack) return { ok: false, error: "not connected" };
+  const idx = boundedInt(req && req.idx, 0, 255, -1);
+  const names = Array.isArray(req && req.names) ? req.names.slice(0, 64).map(n => boundedText(n, 120)).filter(Boolean) : [];
+  if (idx < 0) return { ok: false, error: "invalid net" };
+  if (!req.on) return { ok: true, listening: 0, dropped: stack.unlistenAll(idx) };
+  const count = stack.listenAll(idx, names);
+  return { ok: count > 0, listening: count, error: count ? "" : "no subnets found on the relay" };
 });
 ipcMain.handle("arm-broadcast", (ev, idx) => stack ? stack.armBroadcast(boundedInt(idx, 0, 255, -1)) : false);
 ipcMain.on("net-mute", (ev, data) => {
