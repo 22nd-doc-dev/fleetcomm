@@ -1,4 +1,4 @@
 {
-  "version": "0.12.1",
-  "notes": "Fixes the auto-updater for real this time. The swap was being run from the Electron binary inside the portable build's temporary unpack folder \u2014 the folder the portable launcher deletes the moment FleetComm exits. Our own shutdown was killing the updater mid-swap, every time, with no error and no window: you just reopened the old version. The swap now runs under Windows' own PowerShell, which we cannot delete, and it writes a log to your FleetComm app-data folder so a failure can actually be diagnosed. A blocked relaunch also no longer rolls back a successful install."
+  "version": "0.12.2",
+  "notes": "The shipwide soundboard is now the 1MC. Also fixes random disconnects during long operations: the keepalive was sent every 15 seconds against a relay that drops a connection after 30 seconds of silence from the client, so a single delayed timer \u2014 and a running game is more than enough to delay one \u2014 cost you the net. It now goes out every 5 seconds. And if a link does drop, FleetComm reconnects it on its own, backing off and staggering the attempts, restoring LSN ALL and TX ALL as it goes. To be clear, there is no idle or silence timeout: nobody talking for an hour has never been a problem and still isn't."
 }

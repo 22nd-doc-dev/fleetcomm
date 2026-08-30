@@ -202,6 +202,9 @@
   .srow input.pan{flex:0 1 60px;min-width:0;max-width:60px}
   /* a net the relay won't let you into says so, instead of offering a TUNE
      button that silently does nothing */
+  .relinking{width:100%;margin-top:4px;border:1px solid var(--amber);border-radius:3px;padding:4px;
+    font-size:11px;font-weight:900;letter-spacing:1.2px;color:var(--amber);text-align:center;
+    background:var(--amber-tint);animation:pttpulse 1.6s ease-in-out infinite}
   .denied{width:100%;margin-top:6px;border:1px solid var(--red);border-radius:3px;padding:4px;
     font-size:11px;font-weight:900;letter-spacing:1.2px;color:var(--red);text-align:center;
     background:var(--red-tint)}
@@ -443,7 +446,7 @@
       <div class="ph"><span id="rosterTitle">ON NET</span><span class="r" id="rosterCount"></span></div>
       <div id="rosterChips"></div>
       <div id="sbPanel" style="display:none">
-        <div id="sbHead">SHIPWIDE SOUNDBOARD — <span id="sbNet"></span>
+        <div id="sbHead">1MC — <span id="sbNet"></span>
           <button class="addsb" id="sbAdd">+ ADD CLIPS</button></div>
         <div id="sbList"></div>
       </div>
@@ -615,7 +618,7 @@
   <div class="kv"><label>NET NAME</label><input id="dlgName" class="mono" placeholder="e.g. STRIKE TWO"></div>
   <div class="kv"><label>FREQUENCY</label><input id="dlgFreq" class="mono" placeholder="e.g. 290.500"></div>
   <div class="kv"><label>NEST UNDER (optional)</label><select id="dlgParent" class="orgsel" style="width:100%"></select></div>
-  <div class="row"><input type="checkbox" id="dlgShip"><label for="dlgShip">This is a ship net (enables shipwide soundboard)</label></div>
+  <div class="row"><input type="checkbox" id="dlgShip"><label for="dlgShip">This is a ship net (enables the 1MC)</label></div>
   <p class="hint" id="dlgErr" style="color:var(--red);text-align:left;min-height:16px"></p>
   <div class="wnav"><button class="btn ghost" id="dlgCancel">CANCEL</button><button class="btn big" id="dlgOk">CREATE ▸</button></div>
 </div></div>

@@ -108,9 +108,17 @@ class MumbleClient extends EventEmitter {
         if (settled) return;
         settled = true; clearTimeout(timeout);
         this.session = m.session;
+        /* ── keepalive ──
+           murmur drops a connection it hasn't heard ANYTHING from for `timeout`
+           seconds (30 by default). Pinging every 15s left exactly two chances
+           inside that window, so one delayed timer — and Star Citizen is more
+           than enough to delay a timer — meant a dropped net and an ECONNRESET
+           on the way back in. There is no idle or silence timeout: a net with
+           nobody talking on it for an hour is fine. It is missed PACKETS that
+           kill you, so we send them far more often than we need to. */
         this._pinger = setInterval(() => {
           if (this.sock && !this.sock.destroyed) this.send("Ping", { timestamp: Date.now() });
-        }, 15000);
+        }, 5000);
         this.emit("ready", m);
         resolve(m);
       });

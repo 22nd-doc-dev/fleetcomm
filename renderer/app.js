@@ -667,6 +667,8 @@ function renderNets() {
     } else {
       h += n.denied
         ? '<div class="denied" title="' + escAttr(n.denied) + '">RESTRICTED — NO ACCESS</div>'
+        : n.relinking
+        ? '<div class="relinking">RECONNECTING…</div>'
         : '<button class="tunebtn" data-tune>TUNE ▸</button>';
     }
     d.innerHTML = h;
@@ -931,6 +933,7 @@ netlist.addEventListener("click", async (e) => {
   if (e.target.closest("[data-mon]")) { n.mon = !n.mon; ipcRenderer.send("net-mute", { idx: n.idx, muted: !n.mon }); savePrefs(); renderNets(); return; }
   if (e.target.closest("[data-txon]")) { n.txOn = !n.txOn; if (pttHeld || openMic) syncActiveTxTargets(); savePrefs(); renderNets(); return; }
   if (e.target.closest("[data-x]")) {
+    n.relinking = false; stopRelink(n.cfg.name);
     ipcRenderer.send("detune", n.idx);
     txSet.delete(n.idx); txEndPending.delete(n.idx); bcastIdx.delete(n.idx); txReasons(n).clear();
     n.tuned = false; n.idx = null; n.roster.clear(); n.speaking.clear(); n.tx = false;
@@ -1147,7 +1150,8 @@ async function refreshSounds() {
   sbSounds = await ipcRenderer.invoke("sounds-list");
   renderSoundboard();
 }
-/* ── shipwide soundboard ──
+/* ── the 1MC ──
+   The ship's general announcing circuit: one call heard on every net aboard.
    COMMAND only, and only on a ship net. It plays down the same TX path as the
    mic, so a clip goes out to everyone on the net (or the whole nest when
    broadcast is armed) — that is not something a rating should be able to key.
@@ -1165,13 +1169,13 @@ function renderSoundboard() {
   $("sbAdd").style.display = n.tuned ? "" : "none";
   if (!n.tuned) {
     $("sbList").innerHTML = '<span class="hint">tune ' + esc(n.cfg.name) +
-      ' to play clips across the ship</span>';
+      ' to pipe the 1MC';
     return;
   }
   $("sbList").innerHTML = sbSounds.length
     ? sbSounds.map(s => '<button class="sbBtn' + (sbPlaying === s.name ? " playing" : "") + '" data-snd="' + escAttr(s.name) + '">' +
         esc(s.name.replace(/\.[^.]+$/, "")) + '<span class="del" data-del="' + escAttr(s.name) + '">✕</span></button>').join("")
-    : '<span class="hint">no clips yet — ADD CLIPS to build the ship\'s soundboard</span>';
+    : '<span class="hint">no clips yet — ADD CLIPS to load the 1MC</span>';
 }
 $("sbAdd").addEventListener("click", async () => {
   const r = await ipcRenderer.invoke("sounds-add");
@@ -1226,10 +1230,10 @@ async function playClipOnNet(name, net) {
   }
 
   sbPlaying = name; renderSoundboard();
-  const where = net.cfg.name + (broadcast ? (shipwide ? " (shipwide)" : " (nest)") : "");
-  addLog("tx", where, "SHIPWIDE CLIP — " + name + " — played by " + callsign);
+  const where = net.cfg.name + (broadcast ? (shipwide ? " (1MC)" : " (nest)") : "");
+  addLog("tx", where, "1MC — " + name + " — piped by " + callsign);
   /* tell everyone else on the net who keyed it; the audio alone doesn't say */
-  try { ipcRenderer.send("send-text", { idx: net.idx, message: "♪ " + callsign + " played " + name }); } catch (e) {}
+  try { ipcRenderer.send("send-text", { idx: net.idx, message: "1MC — " + callsign + " piped " + name }); } catch (e) {}
 
   /* local monitor so the sender hears what went out, at the same relative level */
   const src = ctx.createBufferSource(); src.buffer = audio;
@@ -1338,11 +1342,53 @@ $("chatTabs").addEventListener("click", (e) => {
   selectedI = +b.dataset.ci; renderNets(); renderChatTabs(); renderChat();
 });
 $("chatIn").addEventListener("keydown", (e) => { if (e.key === "Enter") sendChat(); e.stopPropagation(); });
+/* ── automatic reconnect ──
+   Operations run for hours. A net that drops — a router blip, a Wi-Fi roam, a
+   missed keepalive under game load — should heal itself rather than leaving an
+   operator silently off comms until they happen to look at the board.
+   Attempts back off (4s, 8s, 16s, 30s, then every 60s) and are staggered per
+   net, because one connection per net means a network blip drops several at
+   once and reconnecting them all at the same instant is exactly what trips
+   murmur's per-IP rate guard. It gives up only when you disconnect or detune. */
+const relinking = new Map();
+function stopRelink(name) {
+  const t = relinking.get(name);
+  if (t) { clearTimeout(t.timer); relinking.delete(name); }
+}
+function scheduleRelink(i) {
+  const n = nets[i];
+  if (!n || !connected) return;
+  const prev = relinking.get(n.cfg.name) || { tries: 0 };
+  const tries = prev.tries + 1;
+  const wait = Math.min(60000, 4000 * Math.pow(2, Math.min(3, tries - 1))) + Math.random() * 1500 + i * 250;
+  n.relinking = true;
+  const timer = setTimeout(async () => {
+    if (!connected || !n.relinking) { stopRelink(n.cfg.name); renderNets(); return; }
+    const ok = await tuneNet(i, true);
+    if (ok) {
+      stopRelink(n.cfg.name); n.relinking = false;
+      addLog("sys", n.cfg.name, "link restored after " + tries + (tries === 1 ? " try" : " tries"));
+      toast(n.cfg.name + " reconnected.");
+      if (n.lsnAll) ipcRenderer.invoke("listen-all", { idx: n.idx, on: true, names: subnetNamesOf(n) });
+      if (n.txAll || n.bcast) ipcRenderer.invoke("arm-broadcast", n.idx);
+    } else if (n.denied) {          /* refused on purpose — stop trying */
+      stopRelink(n.cfg.name); n.relinking = false;
+      addLog("sys", n.cfg.name, "reconnect abandoned — access denied");
+    } else scheduleRelink(i);
+    renderNets();
+  }, wait);
+  relinking.set(n.cfg.name, { tries, timer });
+  renderNets();
+}
 ipcRenderer.on("net-down", (ev, r) => {
   const i = nets.findIndex(x => x.idx === r.idx); if (i < 0) return;
-  if (connected) { addLog("sys", nets[i].cfg.name, "LINK LOST — retune to reconnect"); toast(nets[i].cfg.name + " link lost."); }
-  txSet.delete(nets[i].idx); txEndPending.delete(nets[i].idx); bcastIdx.delete(nets[i].idx); txReasons(nets[i]).clear();
-  nets[i].tuned = false; nets[i].idx = null; nets[i].tx = false; renderNets();
+  const n = nets[i];
+  txSet.delete(n.idx); txEndPending.delete(n.idx); bcastIdx.delete(n.idx); txReasons(n).clear();
+  n.tuned = false; n.idx = null; n.tx = false;
+  if (connected) {
+    addLog("sys", n.cfg.name, "LINK LOST — reconnecting");
+    scheduleRelink(i);
+  } else renderNets();
 });
 ipcRenderer.on("net-error", (ev, r) => toast("Net error: " + r.error));
 
@@ -1453,7 +1499,7 @@ $("connectLegacyBtn").addEventListener("click", function () { doConnect($("csInL
 function applyLogin(r) {
   acct = { account: r.account, authorized: !!r.authorized };
   cmdToken = r.account.role === "command" ? "account-command" : "";
-  renderSoundboard();   /* COMMAND gates the shipwide soundboard */
+  renderSoundboard();   /* COMMAND gates the 1MC */
   if (connected) {
     $("oprole").textContent = r.account.role === "member" ? "" : r.account.role.toUpperCase();
     $("authRole").textContent = r.account.role.toUpperCase();
