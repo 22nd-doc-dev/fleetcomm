@@ -37,11 +37,42 @@ const add = (net, parent) => {
 };
 for (const net of config.nets) add(net, 1);
 
+/* ── optional autoban, mimicking murmur's per-IP guard ──
+ *   FAKEMURMUR_AUTOBAN="attempts,timeframeSec,banSec"   e.g. "10,120,300"
+ * murmur counts connection ATTEMPTS in a rolling window and, once tripped,
+ * drops the TCP connection at accept time — before TLS — which the client
+ * sees as ECONNRESET mid-handshake. Reproducing that here lets the client's
+ * back-off be TESTED against the guard instead of reasoned about. */
+const AB = (process.env.FAKEMURMUR_AUTOBAN || "").split(",").map(Number);
+const autoban = AB.length === 3 && AB.every(n => n > 0)
+  ? { attempts: AB[0], timeframeMs: AB[1] * 1000, banMs: AB[2] * 1000, log: [], bannedUntil: 0, trips: 0 }
+  : null;
+function banCheck() {                       /* true = drop this connection */
+  if (!autoban) return false;
+  const now = Date.now();
+  if (now < autoban.bannedUntil) return true;   /* fixed-duration ban, murmur-style */
+  autoban.log = autoban.log.filter(t => now - t < autoban.timeframeMs);
+  autoban.log.push(now);
+  /* strict >, like murmur: autobanAttempts=10 trips on the 11th connection */
+  if (autoban.log.length > autoban.attempts) {
+    autoban.bannedUntil = now + autoban.banMs;
+    autoban.trips++; autoban.log = [];
+    console.log("[fake-murmur] AUTOBAN TRIPPED #" + autoban.trips + " (" + autoban.attempts +
+      " attempts inside " + (autoban.timeframeMs / 1000) + "s) — banned for " + (autoban.banMs / 1000) + "s");
+    return true;
+  }
+  return false;
+}
+
 let session = 0;
 const clients = new Set();
 (async () => {
   const pems = await selfsigned.generate([{ name: "commonName", value: "fake-murmur" }], { days: 1, keySize: 2048 });
-  tls.createServer({ key: pems.private, cert: pems.cert }, (s) => {
+  /* FAKEMURMUR_MUTE_AFTER_MS: after ServerSync, go silent on that connection
+     (keep the socket open, answer nothing — a black-holed path, as seen from
+     the client). Exercises the client's dead-link detection. */
+  const muteAfter = Number(process.env.FAKEMURMUR_MUTE_AFTER_MS || 0);
+  const server = tls.createServer({ key: pems.private, cert: pems.cert }, (s) => {
     const me = { s, session: ++session, name: "?" };
     clients.add(me);
     s.on("close", () => clients.delete(me));
@@ -55,6 +86,7 @@ const clients = new Set();
         const body = buf.subarray(6, 6 + size);
         buf = buf.subarray(6 + size);
         try {
+          if (me.muted) continue;
           if (type === MSG.Authenticate) {
             me.name = T("Authenticate").toObject(T("Authenticate").decode(body)).username || "?";
             s.write(frame(MSG.Version, "Version", { versionV1: (1 << 16) | (4 << 8) | 230 }));
@@ -62,6 +94,7 @@ const clients = new Set();
               Object.assign({ channelId: c.id, name: c.name }, c.parent == null ? {} : { parent: c.parent })));
             for (const c of clients) s.write(frame(MSG.UserState, "UserState", { session: c.session, name: c.name, channelId: 0 }));
             s.write(frame(MSG.ServerSync, "ServerSync", { session: me.session, welcomeText: "fake" }));
+            if (muteAfter > 0) setTimeout(() => { me.muted = true; }, muteAfter);
           } else if (type === MSG.Ping) {
             s.write(frame(MSG.Ping, "Ping", {}));
           } else if (type === MSG.UserState) {
@@ -75,5 +108,12 @@ const clients = new Set();
         } catch (e) { /* malformed test traffic — ignore */ }
       }
     });
-  }).listen(64738, "127.0.0.1", () => console.log("fake murmur ready on 127.0.0.1:64738 — ctrl-c to stop"));
+  });
+  /* the ban drops raw TCP before the TLS handshake, exactly like murmur */
+  server.on("connection", (raw) => { if (banCheck()) raw.destroy(); });
+  /* FAKEMURMUR_PORT=0 asks the OS for a free port — the ready line always
+     names the real one, so parallel test runs never fight over a socket */
+  const port = Number(process.env.FAKEMURMUR_PORT || 64738);
+  server.listen(port, "127.0.0.1", () => console.log("fake murmur ready on 127.0.0.1:" + server.address().port +
+    (autoban ? " (autoban " + AB.join("/") + ")" : "") + " — ctrl-c to stop"));
 })();

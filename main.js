@@ -7,7 +7,16 @@ const http = require("http");
 const https = require("https");
 const crypto = require("crypto");
 const { RadioStack } = require("./src/radio-stack");
+const { createGovernor } = require("./src/dial-governor");
 const { loadOrCreate } = require("./src/identity");
+
+/* ONE dial budget for the whole app, across every stack ever constructed —
+   murmur's autoban counts attempts per IP, so a fresh RadioStack must not
+   mean a fresh allowance. Lives here, outlives "connect". The autotest rig
+   dials loopback hard on purpose; it gets room, not exemption. */
+const dialGovernor = process.env.FLEETCOMM_AUTOTEST
+  ? createGovernor({ maxAttempts: 64, paceMs: 0 })
+  : createGovernor();
 
 /* ── never background this app ──
    backgroundThrottling:false already un-throttles timers, but Chromium ALSO
@@ -17,6 +26,15 @@ const { loadOrCreate } = require("./src/identity");
    moment the game has focus — the one condition that matters. */
 app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 app.commandLine.appendSwitch("disable-renderer-backgrounding");
+
+/* The autotest rig gets a throwaway profile: it used to run against the
+   operator's real userData/localStorage, leaving autotest state behind (a
+   persisted "autotest-token" flipped a COMMAND gate on the NEXT run) and
+   sharing the single-instance lock with a genuinely running FleetComm.
+   Before the lock on purpose — the lock is scoped to userData. */
+if (process.env.FLEETCOMM_AUTOTEST) {
+  app.setPath("userData", fs.mkdtempSync(path.join(require("os").tmpdir(), "fleetcomm-autotest-")));
+}
 
 /* Only one FleetComm at a time — a second launch just focuses the first. */
 if (!app.requestSingleInstanceLock()) app.quit();
@@ -551,7 +569,16 @@ function scheduleSwapTask(powershell, swapScript, args, outLog) {
     const wrap = swapScript.replace(/\.ps1$/, "") + "-wrap.ps1";
     const pairs = [];
     for (let i = args.indexOf("-Exe"); i >= 0 && i + 1 < args.length; i += 2) pairs.push(args[i] + " " + q(args[i + 1]));
-    fs.writeFileSync(wrap, "& " + q(swapScript) + " " + pairs.join(" ") + " *>> " + q(outLog) + "\n");
+    /* the task's "once at 23:59" schedule is only a dummy (we /run it now),
+       but it is a REAL schedule too — left registered, it re-fired at 23:59
+       that night, re-ran the swap against a consumed download and relaunched
+       the app while the operator slept. The wrapper's last act is deleting
+       its own task; a running task may delete itself. */
+    /* BOM required: PowerShell 5.1 reads a BOM-less script as ANSI, which
+       garbles profile paths on any non-ASCII Windows username (same 5.1
+       dialect family as the Set-Content trap in update-swap.ps1) */
+    fs.writeFileSync(wrap, "\ufeff& " + q(swapScript) + " " + pairs.join(" ") + " *>> " + q(outLog) + "\n" +
+      "schtasks.exe /delete /tn FleetCommUpdate /f *>> " + q(outLog) + "\n");
     const tr = '"' + powershell + '" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + wrap + '"';
     const create = spawnSync("schtasks.exe", ["/create", "/f", "/tn", "FleetCommUpdate", "/sc", "once", "/st", "23:59", "/tr", tr], { encoding: "utf8", windowsHide: true });
     const run = spawnSync("schtasks.exe", ["/run", "/tn", "FleetCommUpdate"], { encoding: "utf8", windowsHide: true });
@@ -659,6 +686,11 @@ ipcMain.handle("do-update", async (ev, info) => {
     }
     if (!started) {
       appLog("no installer heartbeat by any route — giving up loudly");
+      /* the app is STAYING OPEN, so the launch-time sweep won't run — a task
+         we may have registered above still carries its (dummy but real) 23:59
+         trigger, and left armed it would fire tonight and swap the exe out
+         from under this running session. Disarm it before giving up. */
+      try { require("child_process").spawnSync("schtasks.exe", ["/delete", "/tn", "FleetCommUpdate", "/f"], { windowsHide: true }); } catch (e) {}
       writeUpdState({ target: version, status: "failed", failedAt: Date.now(),
         reason: "Windows terminated the update installer before it could run" });
       updateInProgress = false;
@@ -763,6 +795,13 @@ app.whenReady().then(async () => {
   } catch (e) {
     console.warn("[fleetcomm] global PTT unavailable (" + e.message + ") — in-window keys still work");
   }
+  /* belt to the wrapper's braces: sweep any FleetCommUpdate task an older
+     build (or an interrupted swap) left registered, before it can re-fire */
+  if (process.platform === "win32") {
+    try {
+      require("child_process").spawnSync("schtasks.exe", ["/delete", "/tn", "FleetCommUpdate", "/f"], { windowsHide: true });
+    } catch (e) {}
+  }
   setTimeout(async () => {
     if (updateNote) sendWin("update-note", updateNote);
     const r = await checkUpdates();
@@ -792,8 +831,10 @@ ipcMain.handle("connect", async (ev, request) => {
     tokens: allTokens, password: relay.password || "",
     rootChannel: require("./config/22nd-package.json").rootChannel,
     cert: identity && identity.cert, key: identity && identity.key,
-    pin: getPin(host), onPin: (fp) => setPin(host, fp) });
+    pin: getPin(host), onPin: (fp) => setPin(host, fp),
+    governor: dialGovernor });
   stack = radio;
+  radio.on("dial-hold", (h) => { if (stack === radio) sendWin("dial-hold", h); });
   radio.on("rx", (r) => { if (stack === radio) sendWin("rx", { idx: r.idx, session: r.session, name: r.name, opus: r.opus, last: r.last }); });
   radio.on("chat", (m) => { if (stack === radio) sendWin("chat", m); });
   radio.on("roster", (r) => { if (stack === radio) sendWin("roster", r); });

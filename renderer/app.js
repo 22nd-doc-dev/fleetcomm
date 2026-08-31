@@ -76,19 +76,30 @@ let cmdToken = store.get("cmdToken", "");
    connections at once; murmur's per-IP rate guard answers a burst by dropping
    it, which surfaces as ECONNRESET. Backing off is the cure — hammering is what
    keeps it angry. */
-let connectFails = 0, holdTimer = null;
-function holdConnect(seconds) {
-  const btn = $("connectBtn");
+let connectFails = 0, holdTimer = null, lastHoldLog = 0, holdUntilTs = 0;
+const fmtHold = (s) => s < 90 ? s + "s" : Math.floor(s / 60) + "m" + (s % 60 ? " " + (s % 60) + "s" : "");
+/* BOTH connect buttons — the hold used to grab only the Discord-mode one,
+   leaving legacy mode's visible button clickable straight through a hold */
+const connBtns = () => [$("connectBtn"), $("connectLegacyBtn")].filter(Boolean);
+function holdConnect(seconds, why) {
+  /* never SHORTEN an active hold — the governor's dial-hold and this dial's
+     own error can race, and the longer figure is the authoritative one */
+  if (Date.now() + seconds * 1000 < holdUntilTs) return;
   clearInterval(holdTimer);
   let left = seconds;
-  btn.disabled = true;
+  holdUntilTs = Date.now() + seconds * 1000;
+  connBtns().forEach(b => { b.disabled = true; });
+  /* say what is actually wrong — a relay that is DOWN got described as
+     "rate-limiting" for years, which sent operators hunting the wrong problem
+     (and once sent the maintainer chasing a ban during a planned restart) */
+  const reason = why || "The relay is rate-limiting connections from your network. " +
+    "Retrying is what keeps it tripped —";
   const tick = () => {
-    $("connErr").textContent = "The relay is rate-limiting connections from your network. " +
-      "Retrying is what keeps it tripped — holding for " + left + "s.";
+    $("connErr").textContent = reason + " holding for " + fmtHold(left) + ".";
     if (left-- <= 0) {
       clearInterval(holdTimer);
-      btn.disabled = false;
-      btn.textContent = "CONNECT ▸";
+      holdUntilTs = 0;
+      connBtns().forEach(b => { b.disabled = false; b.textContent = "CONNECT ▸"; });
       $("connErr").textContent = "Ready to try again.";
     }
   };
@@ -308,6 +319,7 @@ window.addEventListener("keyup", (e) => { if (!gActive) onKeyUp("dom", e.code, e
    sampling keeps running while the game has focus — the whole point. */
 const padStates = new Map();   /* padKey -> pressed-state array */
 const padAnnounced = new Set();
+let padBgSeen = false;
 function pollPads(padsOverride) {
   let pads;
   try { pads = padsOverride || (navigator.getGamepads ? navigator.getGamepads() : []); }
@@ -318,11 +330,21 @@ function pollPads(padsOverride) {
     if (!padAnnounced.has(key)) {
       padAnnounced.add(key);
       addLog("sys", "", "controller detected — " + key + " (" + (gp.buttons || []).length +
-        " buttons; bind them like keys: click any KEY control, then press the button)");
+        " buttons; bind them like keys: click any KEY control, then press the button)" +
+        (document.hasFocus() ? "" : " [window unfocused]"));
     }
     const curr = bridge.padBinds.pressedStates(gp.buttons);
     const events = bridge.padBinds.diffButtons(padStates.get(key), curr);
     padStates.set(key, curr);
+    /* diagnostic for the in-game failure: Chromium's per-backend focus rules
+       decide whether stick input still flows while the game has focus, and it
+       differs BY DEVICE. This line appearing in an operator's log proves
+       background delivery works on their rig; binds pressed in game with no
+       line means the focus gate ate them. */
+    if (!padBgSeen && events.length && !document.hasFocus()) {
+      padBgSeen = true;
+      addLog("sys", "", "stick input received while another window has focus — background delivery works for " + key);
+    }
     for (const ev of events) {
       const code = key + "#b" + ev.button;
       const label = bridge.padBinds.padLabel(gp.id, ev.button);
@@ -356,7 +378,7 @@ $("masterVolSl").addEventListener("input", function () { masterVol = +this.value
 $("sbVolSl").addEventListener("input", function () { sbVol = +this.value; applyMasterVols(); });
 applyMasterVols();
 const FRAME = 960;
-let capNode = null, txSet = new Set(), txEndPending = new Set(), bcastIdx = new Set();
+let capNode = null, capStream = null, txSet = new Set(), txEndPending = new Set(), bcastIdx = new Set();
 const encoder = new OpusScript(48000, 1, OpusScript.Application.VOIP);
 try { encoder.encoderCTL(4002, 40000); } catch (e) {}
 /* ── audio devices ──
@@ -431,6 +453,15 @@ try { navigator.mediaDevices.addEventListener("devicechange", listAudioDevices);
 
 async function ensureMic() {
   if (capNode) return true;
+  /* PTT down and the mic button can land on the same tick, both passing the
+     capNode check above — the loser of that race opened a second stream and
+     re-added the worklet module, which throws on the duplicate processor name
+     and reported the microphone as unavailable. Share one attempt instead. */
+  if (ensureMic.inflight) return ensureMic.inflight;
+  ensureMic.inflight = openMicOnce();
+  try { return await ensureMic.inflight; } finally { ensureMic.inflight = null; }
+}
+async function openMicOnce() {
   try {
     const audioReq = { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true };
     if (micDevice) audioReq.deviceId = { exact: micDevice };
@@ -443,6 +474,10 @@ async function ensureMic() {
       stream = await navigator.mediaDevices.getUserMedia({ audio: audioReq });
       toast("Saved microphone unavailable — using the system default.");
     }
+    /* a device switch replaces the stream — stop the old one or the previous
+       microphone stays held open for the rest of the session */
+    if (capStream) { try { capStream.getTracks().forEach(t => t.stop()); } catch (e) {} }
+    capStream = stream;
     listAudioDevices();          /* labels are only readable once permission is granted */
     if (outDevice) applyOutputDevice();
     /* Report whether the browser actually granted echo cancellation. When it
@@ -464,8 +499,14 @@ async function ensureMic() {
           if(this.n===${FRAME}){this.port.postMessage(this.buf.slice(0));this.n=0;}}
         return true;}}
       registerProcessor("cap",Cap);`;
-    const workletUrl = URL.createObjectURL(new Blob([workletCode], { type: "application/javascript" }));
-    try { await ctx.audioWorklet.addModule(workletUrl); } finally { URL.revokeObjectURL(workletUrl); }
+    /* registerProcessor throws on a duplicate name, so the module can only be
+       added to this ctx ONCE — re-adding it on a device switch made every mic
+       switch fail with "Couldn't open that microphone". */
+    if (!ensureMic.workletLoaded) {
+      const workletUrl = URL.createObjectURL(new Blob([workletCode], { type: "application/javascript" }));
+      try { await ctx.audioWorklet.addModule(workletUrl); } finally { URL.revokeObjectURL(workletUrl); }
+      ensureMic.workletLoaded = true;
+    }
     capNode = new AudioWorkletNode(ctx, "cap");
     src.connect(capNode);
     const silent = ctx.createGain(); silent.gain.value = 0;
@@ -1052,6 +1093,12 @@ async function tuneNet(i, silent) {
     r = await ipcRenderer.invoke("tune", cfg);
   }
   if (!r.ok) {
+    /* a governor-held dial cost the relay nothing — log it once a minute
+       total, not once per net per attempt, and keep the relink loop alive */
+    if (/^relay hold/i.test(r.error || "")) {
+      if (Date.now() - lastHoldLog > 60000) { lastHoldLog = Date.now(); addLog("sys", "", r.error); }
+      return false;
+    }
     /* An access refusal is not a technical failure — say so in those terms, and
        mark the net on the board so it's obvious you can't use it rather than
        leaving you pressing a control that does nothing. */
@@ -1575,6 +1622,14 @@ ipcRenderer.on("net-down", (ev, r) => {
   } else renderNets();
 });
 ipcRenderer.on("net-error", (ev, r) => toast("Net error: " + r.error));
+/* the governor opened its circuit: every reconnect is now held locally so the
+   relay's ban can lift. Tell the operator once, in their terms. */
+ipcRenderer.on("dial-hold", (ev, h) => {
+  const s = Math.ceil(((h && h.heldForMs) || 0) / 1000);
+  addLog("sys", "", "the relay is rate-limiting this network — holding ALL reconnects for " +
+    fmtHold(s) + " so the ban can lift. Nets relink on their own afterwards.");
+  if (!$("connectOv").classList.contains("hidden")) holdConnect(s);
+});
 
 /* ══ PTT button + rail buttons ══ */
 $("ptt").addEventListener("pointerdown", (e) => { e.preventDefault(); pttAll(true);
@@ -1602,7 +1657,10 @@ async function doConnect(cs, btn) {
   store.set("callsign", cs); store.set("callsigns", myCallsigns.slice(0, 12));
   if (host !== pkg.server.host) store.set("hostOverride", host);
   renderCsList();
+  /* disabled while the invoke is in flight — mashing CONNECT used to launch
+     one full control dial per click, each superseding the last mid-handshake */
   $("connErr").textContent = ""; btn.textContent = "CONNECTING…";
+  connBtns().forEach(b => { b.disabled = true; });
   /* Arrive tuned to NOTHING. FleetComm used to auto-tune whatever the package
      flagged, so operators were dropped onto live nets they never chose — and it
      opened a relay connection for each one. You now pick your own nets; the
@@ -1620,6 +1678,8 @@ async function doConnect(cs, btn) {
     return;
   } finally {
     btn.textContent = "CONNECT ▸";
+    /* a hold countdown owns the buttons; otherwise hand them back */
+    if (Date.now() >= holdUntilTs) connBtns().forEach(b => { b.disabled = false; });
   }
   if (!Array.isArray(res)) {
     $("connErr").textContent = "Connection failed: FleetComm received an invalid relay response.";
@@ -1638,10 +1698,23 @@ async function doConnect(cs, btn) {
     const raw = (res[0] && res[0].error) || "unknown";
     /* Retrying immediately is what keeps the guard tripped, so count the
        attempt down out loud and hold the button rather than letting an anxious
-       operator hammer it. Each failure waits a little longer than the last. */
-    if (/ECONNRESET|ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|reset by peer/i.test(raw)) {
+       operator hammer it. The dial governor in main already knows how long the
+       hold must be — when it speaks, use ITS number (a ban outlasts any
+       guesswork ladder); otherwise fall back to the short escalating hold. */
+    const holdSaid = /^relay hold\b[^]*?(\d+)s/i.exec(raw);
+    if (holdSaid) {
+      holdConnect(Math.min(900, Number(holdSaid[1])));
+    } else if (/ECONNRESET|EPIPE|socket hang up|reset by peer|closed during handshake|disconnected before secure/i.test(raw)) {
+      /* accepted-then-dropped: the rate-limit signature — keep this family in
+         step with banScented in src/radio-stack.js */
       connectFails++;
       holdConnect(Math.min(45, 8 * connectFails));
+    } else if (/ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|ENETDOWN|handshake timed out/i.test(raw)) {
+      /* nothing answered: the relay is down or restarting — a different
+         problem, and calling it rate-limiting sent people down the wrong road */
+      connectFails++;
+      holdConnect(Math.min(30, 5 * connectFails),
+        "The relay isn't answering — it may be down or restarting;");
     } else $("connErr").textContent = "Could not tune any nets: " + raw;
     return;
   }
@@ -2235,7 +2308,9 @@ if (bridge.autotestHost) {
       return !!(b && a && a.parentElement === b.parentElement && a.nextElementSibling === b);
     })());
     L("overlay-buttons", !!document.getElementById("ovShowBtn") && !!document.getElementById("ovEditBtn"));
-    L("overlay-edit-disabled-until-shown", document.getElementById("ovEditBtn").disabled);
+    /* the rig can run with the overlay already up, so assert the invariant
+       (edit enabled exactly when shown), not a fixed staging assumption */
+    L("overlay-edit-follows-shown", ovShown === !document.getElementById("ovEditBtn").disabled);
     {
       const rows = [...netlist.querySelectorAll(".net")];
       const top = rows.find(r => !r.classList.contains("sub"));
@@ -2406,6 +2481,20 @@ if (bridge.autotestHost) {
       L("pad-drives-ptt", txBefore === 0 && heldOk && reasonsOn > 0 && pttHeld === false && reasonsOff === 0);
       if (armI >= 0) nets[armI].txOn = armWas;
       masterBinds.active = savedBind; store.set("masterBinds6", masterBinds); renderMasterBinds();
+    }
+
+    /* mic lifecycle: concurrent opens share one attempt, and a re-open after a
+       device switch must succeed (the worklet module can only register once —
+       a second addModule used to throw and fail every microphone switch) */
+    {
+      const [a, b] = await Promise.all([ensureMic(), ensureMic()]);
+      if (!a) { L("mic-reopen", "skipped(no-mic-here)"); }
+      else {
+        L("mic-concurrent-open", a === true && b === true && !!capNode);
+        try { capNode.disconnect(); } catch (e) {}
+        capNode = null;                       /* what the device-switch path does */
+        L("mic-reopen", (await ensureMic()) === true && !!capNode);
+      }
     }
 
     /* master volume sliders: voice drives the master bus, 1MC is independent */

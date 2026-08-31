@@ -14,7 +14,7 @@ const SEND = new Set(["detune", "disconnect", "net-mute", "open-external", "ov-e
 const INVOKE = new Set(["accounts-endpoint", "relay-pin", "acct", "arm-broadcast", "atc-view", "check-updates", "connect", "create-net",
   "discord-login", "do-update", "listen-all", "net-meta", "net-move", "net-remove", "net-rename", "sounds-add", "sounds-delete",
   "sounds-list", "sounds-pick", "sounds-read", "tune", "update-note"]);
-const RECEIVE = new Set(["chat", "gkey", "net-down", "net-error", "ov-edit-state", "ov-shown", "roster",
+const RECEIVE = new Set(["chat", "dial-hold", "gkey", "net-down", "net-error", "ov-edit-state", "ov-shown", "roster",
   "rx", "update-auto-offer", "update-available", "update-note", "update-progress"]);
 
 const codecs = new Map();

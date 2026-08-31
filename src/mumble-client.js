@@ -116,8 +116,25 @@ class MumbleClient extends EventEmitter {
            on the way back in. There is no idle or silence timeout: a net with
            nobody talking on it for an hour is fine. It is missed PACKETS that
            kill you, so we send them far more often than we need to. */
+        this._lastRx = Date.now();
         this._pinger = setInterval(() => {
-          if (this.sock && !this.sock.destroyed) this.send("Ping", { timestamp: Date.now() });
+          if (!this.sock || this.sock.destroyed) return;
+          /* ── dead-link detection ──
+             The server echoes every one of these pings, so RECEIVE silence is
+             proof the path is black-holed (NAT expiry, network change mid-op).
+             Without this check TCP buffers writes for 10+ minutes while the
+             net still looks tuned and the relink loop cannot fire — an
+             operator sits on a dead net in silence. Four missed echoes in a
+             row is a dead link: surface the close NOW and let relink work. */
+          const quiet = Date.now() - this._lastRx;
+          const deadAfter = this.opts.deadAfterMs || 20000;
+          if (quiet > deadAfter) {
+            const error = new Error("relay link silent for " + Math.round(quiet / 1000) + "s — treating as dead");
+            if (this.listenerCount("error")) this.emit("error", error);
+            this.disconnect();
+            return;
+          }
+          this.send("Ping", { timestamp: Date.now() });
         }, 5000);
         this.emit("ready", m);
         resolve(m);
@@ -149,6 +166,7 @@ class MumbleClient extends EventEmitter {
     this.sock.write(Buffer.concat([head, body]));
   }
   _onData(d) {
+    this._lastRx = Date.now();
     this._buf = Buffer.concat([this._buf, d]);
     while (this._buf.length >= 6) {
       const type = this._buf.readUInt16BE(0);

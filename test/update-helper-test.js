@@ -46,13 +46,30 @@ function fakePe(file, marker) {
   assert.strictEqual(dirWritable(dir), true, "a normal folder probes writable");
   const lockedDir = path.join(dir, "locked");
   fs.mkdirSync(lockedDir);
-  fs.chmodSync(lockedDir, 0o500);
-  const lockedResult = dirWritable(lockedDir);
-  fs.chmodSync(lockedDir, 0o700);   /* so cleanup can remove it */
-  if (process.getuid && process.getuid() === 0) {
-    console.log("  · running as root — the read-only-dir probe cannot be exercised");
-  } else {
+  let lockedResult = null;
+  if (process.platform === "win32") {
+    /* chmod cannot revoke directory write access on Windows — Program Files
+       blocks writes with a deny ACL, so the test uses the same mechanism. */
+    const { execFileSync } = require("child_process");
+    const who = process.env.USERNAME || "";
+    let denied = false;
+    try {
+      execFileSync("icacls", [lockedDir, "/deny", who + ":(WD,AD)"], { stdio: "ignore" });
+      denied = true;
+      lockedResult = dirWritable(lockedDir);
+    } finally {
+      if (denied) execFileSync("icacls", [lockedDir, "/remove:d", who], { stdio: "ignore" });
+    }
     assert.strictEqual(lockedResult, false, "a folder this process cannot write into probes unwritable");
+  } else {
+    fs.chmodSync(lockedDir, 0o500);
+    lockedResult = dirWritable(lockedDir);
+    fs.chmodSync(lockedDir, 0o700);   /* so cleanup can remove it */
+    if (process.getuid && process.getuid() === 0) {
+      console.log("  · running as root — the read-only-dir probe cannot be exercised");
+    } else {
+      assert.strictEqual(lockedResult, false, "a folder this process cannot write into probes unwritable");
+    }
   }
   assert.strictEqual(fs.readdirSync(lockedDir).length, 0, "the probe leaves nothing behind");
   const mainSrc2 = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");

@@ -49,7 +49,9 @@ function stop() {
   assert(result.status === 200 && result.body.account.role === "command", "setup code claims COMMAND");
   const sessionToken = result.body.token;
   const sessionsFile = path.join(dataDir, "sessions.json");
-  assert((fs.statSync(sessionsFile).mode & 0o777) === 0o600, "session file mode is 600");
+  /* production for this service is the Linux droplet; Windows stat reports fictional modes */
+  if (process.platform !== "win32")
+    assert((fs.statSync(sessionsFile).mode & 0o777) === 0o600, "session file mode is 600");
   const sessions = JSON.parse(fs.readFileSync(sessionsFile, "utf8"));
   assert(sessions[sessionToken].expiresAt > Date.now(), "session has an explicit expiry");
   const accounts = JSON.parse(fs.readFileSync(path.join(dataDir, "accounts.json"), "utf8"));

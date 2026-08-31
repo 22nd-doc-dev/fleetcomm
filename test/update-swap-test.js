@@ -18,7 +18,13 @@ const os = require("os");
 const path = require("path");
 const { execFileSync } = require("child_process");
 
-const PWSH = ["/opt/pwsh/pwsh", "/usr/bin/pwsh", "/usr/local/bin/pwsh", "pwsh"]
+/* On Windows, prefer System32 powershell.exe 5.1 — it is the interpreter
+   production actually hands the swap to, and its dialect bugs (BOM'd
+   Set-Content, etc.) are invisible under pwsh 7. */
+const CANDIDATES = process.platform === "win32"
+  ? [path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), "pwsh.exe"]
+  : ["/opt/pwsh/pwsh", "/usr/bin/pwsh", "/usr/local/bin/pwsh", "pwsh"];
+const PWSH = CANDIDATES
   .find(p => { try { execFileSync(p, ["-NoProfile", "-Command", "1"], { stdio: "ignore" }); return true; } catch (e) { return false; } });
 if (!PWSH) {
   console.log("  · PowerShell not installed here — skipping the executed swap checks");

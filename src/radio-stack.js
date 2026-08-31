@@ -22,8 +22,56 @@ class RadioStack extends EventEmitter {
 
   get callsign() { return this.opts.callsign; }
 
+  /* Slots are REUSED once dead. Every reconnect attempt comes back through
+     tune(), and pushing a fresh entry per attempt grew this.nets without bound
+     during a long relay outage — past the 0-255 idx clamp in main's IPC
+     handlers, at which point healed nets keyed up and transmitted nothing.
+     Same failure the control slot already guards against; this is the
+     regular-net half. The control slot itself is never handed out. */
+  _allocSlot(net) {
+    const deadSlot = this.nets.findIndex(n => n && n.dead && !n.control);
+    if (deadSlot >= 0) { net.idx = deadSlot; this.nets[deadSlot] = net; }
+    else { net.idx = this.nets.length; this.nets.push(net); }
+    return net.idx;
+  }
+
+  /* ── dial governor ──
+     Every connection to the relay asks permission first. Sign-in, per-net
+     relinks and the control relink are independent loops; without a shared
+     budget their combined cadence can trip (and then permanently re-arm)
+     murmur's per-IP autoban. A refused acquire throws BEFORE any socket
+     exists, so held-back retries cost the relay nothing. */
+  async _gate() {
+    const gov = this.opts.governor;
+    if (!gov) return;
+    const gate = gov.acquire();
+    if (!gate.ok) {
+      const s = Math.ceil(gate.retryInMs / 1000);
+      throw new Error(gate.reason === "ban-hold"
+        ? "relay hold — the relay was rate-limiting this network; dialing is paused " + s + "s so the ban can lift"
+        : "relay hold — connection budget spent; next dial in " + s + "s");
+    }
+    if (gate.waitMs > 0) await new Promise(r => setTimeout(r, gate.waitMs));
+  }
+  /* murmur's autoban drops at accept, BEFORE auth — no Reject is ever sent, so
+     the ban signature is a pre-auth reset and nothing else distinguishes it */
+  _dialOutcome(error) {
+    const gov = this.opts.governor;
+    if (!gov) return;
+    if (!error) { gov.outcome("ok"); return; }
+    const banScented = /ECONNRESET|EPIPE|socket hang up|disconnected before secure|closed during handshake/i
+      .test(String(error.message || error));
+    const trip = gov.outcome(banScented ? "reset" : "other");
+    if (trip) this.emit("dial-hold", { heldForMs: trip.heldForMs });
+  }
+
   async tune(netCfg) {
-    const idx = this.nets.length;
+    await this._gate();
+    /* the paced wait in _gate can outlive this stack: a DISCONNECT (or a
+       superseding sign-in) mid-wait used to let the dial go through anyway,
+       leaving a ghost connection kept alive by the 5s pinger with no UI
+       able to reach it */
+    if (this.destroyed) throw new Error("stack destroyed — dial abandoned");
     const username = sanitizeUser(this.opts.callsign) + "|" + netCfg.freq;
     const client = new MumbleClient({
       host: this.opts.host, port: this.opts.port,
@@ -32,29 +80,48 @@ class RadioStack extends EventEmitter {
       /* every net shares one pinned relay certificate */
       pin: this.opts.pin || "", onPin: this.opts.onPin
     });
-    const net = { cfg: netCfg, client, channelId: null, idx };
-    this.nets.push(net);
+    const net = { cfg: netCfg, client, channelId: null, idx: -1 };
+    const idx = this._allocSlot(net);
 
-    client.on("voice", (v) => {
-      if (net.muted) return;
-      /* A ship group listens to several channels on one connection, so "which
-         net was that?" can't come from the connection — it comes from where the
-         speaker is standing. Resolve it per packet and pass it up. */
-      this.emit("rx", { idx, session: v.session, name: this._shortName(client, v.session),
-                        chan: this._channelOf(client, v.session), opus: v.opus, last: v.last });
-    });
-    client.on("TextMessage", (m) => {
-      const from = this._shortName(client, m.actor);
-      this.emit("chat", { idx, from, message: String(m.message || "").slice(0, 2000) });
-    });
-    const rosterEv = () => this.emit("roster", { idx, users: this.roster(idx) });
-    client.on("UserState", rosterEv);
-    client.on("UserRemove", rosterEv);
-    client.on("close", () => this.emit("net-down", { idx }));
-    client.on("error", (e) => this.emit("net-error", { idx, error: e.message }));
-
+    let accepted = false;
     try {
       await client.connect();
+      accepted = true; this._dialOutcome(null);   /* the relay accepted this address */
+      if (this.destroyed || net.dead) throw new Error("stack destroyed — dial abandoned");
+
+      /* Handlers attach only AFTER a successful dial — a refused dial reports
+         through the rejection below and nowhere else. Attached earlier, one
+         refusal surfaced three ways (net-error, net-down, AND the throw),
+         because the socket's close lands before the catch can mark the slot.
+         connectControl has always done it this way; tune now matches.
+         Every handler still checks net.dead — once a slot is reusable, a late
+         event from its previous occupant must not speak with the new idx. */
+      client.on("voice", (v) => {
+        if (net.muted || net.dead) return;
+        /* A ship group listens to several channels on one connection, so "which
+           net was that?" can't come from the connection — it comes from where the
+           speaker is standing. Resolve it per packet and pass it up. */
+        this.emit("rx", { idx, session: v.session, name: this._shortName(client, v.session),
+                          chan: this._channelOf(client, v.session), opus: v.opus, last: v.last });
+      });
+      client.on("TextMessage", (m) => {
+        if (net.dead) return;
+        const from = this._shortName(client, m.actor);
+        this.emit("chat", { idx, from, message: String(m.message || "").slice(0, 2000) });
+      });
+      const rosterEv = () => { if (!net.dead) this.emit("roster", { idx, users: this.roster(idx) }); };
+      client.on("UserState", rosterEv);
+      client.on("UserRemove", rosterEv);
+      client.on("close", () => {
+        if (net.dead) return;
+        /* the connection is gone, so the slot is too — marking it dead here is
+           what frees it for reuse and stops _anyClient() from routing relay
+           questions through a destroyed socket (the control link learned this
+           the hard way; regular nets had the same hole) */
+        net.dead = true;
+        this.emit("net-down", { idx });
+      });
+      client.on("error", (e) => { if (!net.dead) this.emit("net-error", { idx, error: e.message }); });
       await new Promise(r => setTimeout(r, 250)); // channel states settle
       const relayName = channelName(netCfg.channel || netCfg.name);
       const chan = client.channelByName(relayName);
@@ -65,11 +132,23 @@ class RadioStack extends EventEmitter {
       try {
         await client.joinChannelAcked(chan);
       } catch (denied) {
+        /* Only a genuine refusal may be worded as one — the renderer abandons
+           a net's relink permanently on "don't have access". A socket that
+           died mid-join or a lost/late ack is a link problem: rethrow it
+           unwrapped so the relink loop keeps working. */
+        if (!/PermissionDenied/i.test(denied.message)) throw denied;
         throw new Error("you don't have access to " + (netCfg.name || relayName) + " — " + denied.message);
       }
+      /* the link can drop in the window between the join ack and the renderer
+         learning idx — returning success here would paint a dead net tuned */
+      if (this.destroyed || net.dead) throw new Error("link dropped while tuning " + (netCfg.name || relayName));
       this.emit("tuned", { idx, net: netCfg });
       return idx;
     } catch (error) {
+      /* only DIAL failures feed the governor — and never a teardown this app
+         inflicted on itself (destroy/detune mid-dial), which rejects with the
+         same handshake-close signature a real ban has */
+      if (!accepted && !net.dead && !this.destroyed) this._dialOutcome(error);
       net.dead = true;
       try { client.disconnect(); } catch (ignore) {}
       throw error;
@@ -120,6 +199,8 @@ class RadioStack extends EventEmitter {
      net. It replaces the several auto-tuned connections that used to open on
      sign-in, so this is fewer connections than before, not more. */
   async connectControl(rootChannelName) {
+    await this._gate();
+    if (this.destroyed) throw new Error("stack destroyed — dial abandoned");
     const client = new MumbleClient({
       host: this.opts.host, port: this.opts.port,
       username: sanitizeUser(this.opts.callsign) + "|ctl",
@@ -138,8 +219,11 @@ class RadioStack extends EventEmitter {
                               control: true, muted: true };
     net.client = client; net.dead = false; net.channelId = null;
     if (!existing) this.nets.push(net);
+    let accepted = false;
     try {
       await client.connect();
+      accepted = true; this._dialOutcome(null);
+      if (this.destroyed || net.dead) throw new Error("stack destroyed — dial abandoned");
       await new Promise(r => setTimeout(r, 250));
       client.setSelfMuteDeaf(true, true);       /* carries nothing, hears nothing */
       if (rootChannelName) {
@@ -161,6 +245,7 @@ class RadioStack extends EventEmitter {
       client.on("error", () => {});             /* surfaced via close */
       return idx;
     } catch (error) {
+      if (!accepted && !net.dead && !this.destroyed) this._dialOutcome(error);
       net.dead = true;
       try { client.disconnect(); } catch (ignore) {}
       throw error;
@@ -333,7 +418,13 @@ class RadioStack extends EventEmitter {
   }
 
   /* dead is set BEFORE the sockets close, so teardown never masquerades as a
-     link drop and triggers a reconnect of a stack the operator just left */
-  destroy() { this.nets.forEach(n => { n.dead = true; try { n.client.disconnect(); } catch (e) {} }); }
+     link drop and triggers a reconnect of a stack the operator just left.
+     `destroyed` also stops any dial still waiting in _gate's pacing — without
+     it, that dial completed into the abandoned stack and lived on as a ghost
+     connection no UI control could reach. */
+  destroy() {
+    this.destroyed = true;
+    this.nets.forEach(n => { n.dead = true; try { n.client.disconnect(); } catch (e) {} });
+  }
 }
 module.exports = { RadioStack, sanitizeUser };
