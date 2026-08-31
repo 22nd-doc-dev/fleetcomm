@@ -1,4 +1,4 @@
 {
-  "version": "0.12.10",
-  "notes": "COMMAND can actually add clips to the 1MC sound library now. Adding clips failed with \"COMMAND authority required\" even for COMMAND accounts: the app checked your rank against a field the sign-in server has never sent, so the answer was always no — the server would have accepted the upload, but your own app refused to ask. The app now keys that check on the role the server actually reports. Update, sign in with Discord as usual, and ADD CLIPS under SYS → 1MC SOUND LIBRARY works."
+  "version": "0.12.11",
+  "notes": "Two master volume sliders join the header: VOICE VOL trims everything the nets play (your per-net VOL knobs still work underneath it), and 1MC VOL independently sets how loud clips are piped — the fleet hears that level, and so does your own monitor, which deliberately ignores VOICE VOL so turning voice down can't hide what you're broadcasting. Ship rows also stop lying about their own state: a ship with LSN ALL or the 1MC live used to say '0/6 NETS' — counting subnets you'd individually tuned, which ships don't need — so a fully-up ship read as dead; it now says 'ALL 6 NETS' in green. The stray lone number after that counter (the head-count of the ship's container channel, where nobody ever sits) is gone. And clip names keep their apostrophes — BOATSWAIN'S CALL, not BOATSWAIN_S CALL."
 }

@@ -658,8 +658,18 @@ function renderNets() {
       (n.cfg.enc ? ' <span class="enc">⚿</span>' : "") + '</b>' +
       '<span class="fq num">' + esc(n.cfg.freq) + '</span></span>' +
       (ship ? '<span class="shipbadge">SHIP</span>' : "") +
-      (par ? '<span class="nestcount">' + kids.filter(k => k.tuned).length + "/" + kids.length + (ship ? " NETS" : " NEST") + '</span>' : "") +
-      '<span class="cnt num" data-cnt>' + (n.tuned ? n.roster.size : "·") + '</span></div>';
+      /* A ship's count must reflect the GROUP, not per-subnet tuning: with LSN
+         ALL or the 1MC live you have the whole ship without tuning anything,
+         and "0/6 NETS" on a fully-up ship read as a fault. Non-ship nests keep
+         the tuned-x-of-y count — tuning is how those actually work. */
+      (par ? '<span class="nestcount' + (ship && n.tuned && (n.lsnAll || n.txAll) ? " live" : "") + '">' +
+        (ship && n.tuned && (n.lsnAll || n.txAll)
+          ? "ALL " + kids.length + " NETS"
+          : (ship ? kids.filter(k => k.tuned).length + "/" + kids.length + " NETS"
+                  : kids.filter(k => k.tuned).length + "/" + kids.length + " NEST")) + '</span>' : "") +
+      /* the container-channel roster is meaningless on a ship row — nobody
+         sits in the container, so the stray "0" just looked broken */
+      (ship ? "" : '<span class="cnt num" data-cnt>' + (n.tuned ? n.roster.size : "·") + '</span>') + '</div>';
 
     if (ship) {
       /* A ship is a GROUP, not a channel you sit in. Two controls, and neither
@@ -2085,6 +2095,24 @@ if (bridge.autotestHost) {
     }, 6000);
   }, 800);
   ipcRenderer.on("ov-shown", (ev, shown) => console.log("[AUTOTEST] overlay=" + shown));
+
+  /* stage the board for the visual smoke (FLEETCOMM_SHOT): a tuned ship,
+     selected, LSN ALL on — the state operators actually run ships in */
+  setTimeout(async () => {
+    const s = nets.findIndex(n => n.cfg.ship);
+    if (s < 0) return;
+    if (!nets[s].tuned) await tuneNet(s, true);
+    const r = await ipcRenderer.invoke("listen-all", { idx: nets[s].idx, on: true, names: subnetNamesOf(nets[s]) });
+    nets[s].lsnAll = !!(r && r.ok);
+    selectedI = s;
+    $("dlg").classList.remove("on");   /* clear any dialog a behavioral check left open */
+    renderNets();
+    const card = $("netlist").querySelector('.net[data-i="' + s + '"]');
+    if (card) card.scrollIntoView({ block: "center" });
+    console.log("[AUTOTEST] shot-stage=" + nets[s].cfg.name + " tuned=" + nets[s].tuned + " lsnall=" + nets[s].lsnAll);
+    console.log("[AUTOTEST] ship-count-live=" + /ALL \d+ NETS/.test(card ? card.innerHTML : ""));
+    console.log("[AUTOTEST] ship-no-stray-cnt=" + !(card && card.querySelector("[data-cnt]")));
+  }, 24000);
 
   /* ── v0.9 feature checks ── */
   setTimeout(async () => {

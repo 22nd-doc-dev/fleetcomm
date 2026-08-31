@@ -6,8 +6,15 @@ command -v mumble-server >/dev/null || { echo "mumble-server is required for rel
 RELAY_TEST_DIR="$(mktemp -d)"
 RELAY_TEST_PID=""
 cleanup() {
-  if test -n "$RELAY_TEST_PID"; then kill "$RELAY_TEST_PID" >/dev/null 2>&1 || true; fi
-  rm -rf "$RELAY_TEST_DIR"
+  # WAIT for the relay to actually die before deleting its directory: kill is
+  # asynchronous, and a mumble-server flushing its log mid-rm recreates files
+  # under the tree being removed — "rm: Directory not empty", exit 1, and a CI
+  # run where every suite passed gets reported as a failure.
+  if test -n "$RELAY_TEST_PID"; then
+    kill "$RELAY_TEST_PID" >/dev/null 2>&1 || true
+    wait "$RELAY_TEST_PID" 2>/dev/null || true
+  fi
+  rm -rf "$RELAY_TEST_DIR" 2>/dev/null || { sleep 1; rm -rf "$RELAY_TEST_DIR" || true; }
 }
 trap cleanup EXIT
 

@@ -74,15 +74,16 @@ function stop() {
   result = await api("GET", "/api/sounds", null, ratingToken);
   assert(result.status === 403, "non-COMMAND cannot even list the fleet clip library");
   const clipData = Buffer.from("RIFF-not-really-audio-but-bytes-are-bytes").toString("base64");
-  result = await api("POST", "/api/sounds", { name: "boatswain call.wav", data: clipData }, sessionToken);
+  result = await api("POST", "/api/sounds", { name: "boatswain's call.wav", data: clipData }, sessionToken);
   assert(result.status === 200 && /^[a-f0-9]{16}$/.test(result.body.id), "COMMAND uploads a clip: " + JSON.stringify(result.body));
   const clipId = result.body.id;
   result = await api("POST", "/api/sounds", { name: "orders.txt", data: clipData }, sessionToken);
   assert(result.status === 400, "a non-audio extension is refused");
-  result = await api("POST", "/api/sounds", { name: "boatswain call.wav", data: clipData }, sessionToken);
+  result = await api("POST", "/api/sounds", { name: "boatswain's call.wav", data: clipData }, sessionToken);
   assert(result.status === 400, "a duplicate clip name is refused");
   result = await api("GET", "/api/sounds", null, sessionToken);
-  assert(result.body.sounds.length === 1 && result.body.sounds[0].name === "boatswain call.wav", "the library lists it");
+  assert(result.body.sounds.length === 1 && result.body.sounds[0].name === "boatswain's call.wav",
+    "the library lists it — apostrophe intact, not BOATSWAIN_S");
   result = await api("GET", "/api/sounds/" + clipId, null, sessionToken);
   assert(result.body.ok && result.body.data === clipData, "clip bytes round-trip exactly");
   result = await api("POST", "/api/sounds/" + clipId + "/delete", null, ratingToken);

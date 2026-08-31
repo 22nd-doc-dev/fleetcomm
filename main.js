@@ -235,7 +235,7 @@ ipcMain.handle("sounds-add", async () => {
   const added = [];
   for (const f of r.filePaths) {
     try {
-      const base = path.basename(f).replace(/[^\w.\- ]+/g, "_");
+      const base = path.basename(f).replace(/[^\w.\-' ]+/g, "_");
       const dest = path.join(soundsDir(), base);
       const stat = fs.statSync(f);
       if (stat.size > 12 * 1024 * 1024) continue; /* keep clips sane */
@@ -272,7 +272,9 @@ ipcMain.handle("sounds-pick", async () => {
   const clips = [], skipped = [];
   for (const f of r.filePaths.slice(0, 12)) {
     try {
-      const name = path.basename(f).replace(/[^\w.\- ]+/g, "_");
+      /* apostrophes are part of real clip names — BOATSWAIN'S CALL must not
+         become BOATSWAIN_S CALL on every ship's 1MC */
+      const name = path.basename(f).replace(/[^\w.\-' ]+/g, "_");
       const stat = fs.statSync(f);
       if (stat.size > 4 * 1024 * 1024) { skipped.push(name + " (over 4MB)"); continue; }
       clips.push({ name, size: stat.size, data: fs.readFileSync(f).toString("base64") });
@@ -707,6 +709,19 @@ function createWindow() {
   });
   win.removeMenu && win.removeMenu();
   win.on("closed", () => { win = null; shutdown(); });
+  /* Visual smoke: with FLEETCOMM_SHOT=<file.png> (autotest runs only), capture
+     the window after the rig has connected and rendered. The [AUTOTEST] log
+     proves behavior; this proves the pixels — a layout bug shows up here
+     before an operator has to photograph their screen. */
+  if (process.env.FLEETCOMM_SHOT && process.env.FLEETCOMM_AUTOTEST) {
+    setTimeout(async () => {
+      try {
+        const img = await win.webContents.capturePage();
+        fs.writeFileSync(process.env.FLEETCOMM_SHOT, img.toPNG());
+        console.log("[AUTOTEST] screenshot=" + process.env.FLEETCOMM_SHOT);
+      } catch (e) { console.log("[AUTOTEST] screenshot-failed=" + e.message); }
+    }, 28000);   /* after the behavioral checks and their dialogs have cleared */
+  }
 }
 
 app.whenReady().then(async () => {

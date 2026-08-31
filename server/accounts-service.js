@@ -393,7 +393,9 @@ const server = http.createServer(async (req, res) => {
     if (p === "/api/sounds" && req.method === "POST") {
       /* base64 inflates 4/3, plus JSON overhead — 6MB of body carries a 4MB clip */
       const b = await body(req, 6 * 1024 * 1024);
-      const name = String(b.name || "").replace(/[^\w.\- ]+/g, "_").slice(0, 80);
+      /* clip files are stored by id, so the name is pure display metadata —
+         apostrophes are safe and BOATSWAIN'S CALL should read like one */
+      const name = String(b.name || "").replace(/[^\w.\-' ]+/g, "_").slice(0, 80);
       if (!SOUND_EXT.test(name)) return send(res, 400, { ok: false, error: "clip must be wav/mp3/ogg/m4a/flac/webm" });
       if (Object.keys(db.sounds).length >= SOUND_MAX_COUNT)
         return send(res, 400, { ok: false, error: "sound library is full (" + SOUND_MAX_COUNT + " clips) — delete some first" });
