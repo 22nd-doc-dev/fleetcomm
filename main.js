@@ -9,6 +9,15 @@ const crypto = require("crypto");
 const { RadioStack } = require("./src/radio-stack");
 const { loadOrCreate } = require("./src/identity");
 
+/* ── never background this app ──
+   backgroundThrottling:false already un-throttles timers, but Chromium ALSO
+   marks an occluded window (game fullscreen in front — the normal case)
+   as backgrounded/hidden, and Gamepad API sampling is gated on that state.
+   Without these switches a flight-stick PTT works on the desktop and dies the
+   moment the game has focus — the one condition that matters. */
+app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
+app.commandLine.appendSwitch("disable-renderer-backgrounding");
+
 /* Only one FleetComm at a time — a second launch just focuses the first. */
 if (!app.requestSingleInstanceLock()) app.quit();
 app.on("second-instance", () => {

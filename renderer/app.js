@@ -269,7 +269,10 @@ function finishCapture(src, code, label, mods) {
 }
 function onKeyDown(src, code, label, mods) {
   if (capturing) { finishCapture(src, code, label, mods); return; }
-  if (document.activeElement && /INPUT|TEXTAREA/.test(document.activeElement.tagName)) return;
+  /* typing must never transmit — but that guard is for KEYBOARDS. A flight
+     stick button can't put characters in a text field, and an operator typing
+     in chat mid-op still expects stick PTT to key the net. */
+  if (src !== "pad" && document.activeElement && /INPUT|TEXTAREA/.test(document.activeElement.tagName)) return;
   if (matchDown(masterBinds.cycUp, src, code, label, mods)) { cycleSel(-1); return; }
   if (matchDown(masterBinds.cycDn, src, code, label, mods)) { cycleSel(1); return; }
   if (matchDown(masterBinds.active, src, code, label, mods)) { pttAll(true); return; }
@@ -295,6 +298,41 @@ window.addEventListener("keydown", (e) => {
   onKeyDown("dom", e.code, e.code.replace(/^Key|^Digit/, ""), mods);
 });
 window.addEventListener("keyup", (e) => { if (!gActive) onKeyUp("dom", e.code, e.code.replace(/^Key|^Digit/, "")); });
+
+/* ── gamepad / flight stick binds ──
+   HOTAS and gamepad buttons never reach the keyboard hook — a stick PTT that
+   worked in QLink did nothing here. The Gamepad API sees them, so poll it at
+   ~60Hz and feed button transitions into the SAME bind engine as keys: press
+   a stick button while capturing and it binds; hold it and it keys the net.
+   Analog triggers count past 60%. Main disables occlusion backgrounding so
+   sampling keeps running while the game has focus — the whole point. */
+const padStates = new Map();   /* padKey -> pressed-state array */
+const padAnnounced = new Set();
+function pollPads(padsOverride) {
+  let pads;
+  try { pads = padsOverride || (navigator.getGamepads ? navigator.getGamepads() : []); }
+  catch (e) { return; }
+  for (const gp of pads) {
+    if (!gp) continue;
+    const key = bridge.padBinds.padKey(gp.id);
+    if (!padAnnounced.has(key)) {
+      padAnnounced.add(key);
+      addLog("sys", "", "controller detected — " + key + " (" + (gp.buttons || []).length +
+        " buttons; bind them like keys: click any KEY control, then press the button)");
+    }
+    const curr = bridge.padBinds.pressedStates(gp.buttons);
+    const events = bridge.padBinds.diffButtons(padStates.get(key), curr);
+    padStates.set(key, curr);
+    for (const ev of events) {
+      const code = key + "#b" + ev.button;
+      const label = bridge.padBinds.padLabel(gp.id, ev.button);
+      if (ev.down) onKeyDown("pad", code, label, []);
+      else onKeyUp("pad", code, label);
+    }
+  }
+}
+setInterval(pollPads, 16);
+window.addEventListener("gamepadconnected", () => pollPads());
 
 /* ══ AUDIO ══ */
 const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
@@ -2338,6 +2376,37 @@ if (bridge.autotestHost) {
     cmdToken = ""; renderSoundLib();
     L("sndlib-hidden-without-command", $("sndLib").style.display === "none");
     cmdToken = sbCmdWas; renderSoundLib();
+
+    /* flight stick end-to-end with a synthetic pad: capture binds it,
+       pressing keys the net (ON AIR lights), releasing un-keys it */
+    {
+      const fakePad = (pressed) => [{ id: "T.16000M (Vendor: 044f Product: b10a)", index: 0,
+        buttons: [{ pressed: false, value: 0 }, { pressed: false, value: 0 }, { pressed, value: pressed ? 1 : 0 }] }];
+      const savedBind = masterBinds.active;
+      /* arm exactly one tuned net so pttAll has a deterministic target,
+         independent of what earlier checks left selected */
+      const armI = nets.findIndex(n => n.tuned);
+      const armWas = armI >= 0 ? nets[armI].txOn : null;
+      if (armI >= 0) nets[armI].txOn = true;
+      pollPads(fakePad(false));                 /* seed the state, no events */
+      capturing = { kind: "master", which: "active" };
+      pollPads(fakePad(true));                  /* press while capturing -> binds */
+      L("pad-captures-bind", !!(masterBinds.active && masterBinds.active.src === "pad" &&
+        masterBinds.active.label === "T.16000M B2"));
+      pollPads(fakePad(false));                 /* release: engine sees the up */
+      const txBefore = nets.filter(n => n.tx).length;
+      pollPads(fakePad(true));                  /* press -> PTT down */
+      /* the rig has no microphone, so actual keying stops at the ensureMic
+         gate — by design. What the pad path owns ends at PTT intent: held
+         state plus a transmit reason on every armed net. */
+      const heldOk = pttHeld === true;
+      const reasonsOn = nets.filter(n => n._txReasons && n._txReasons.has("ptt")).length;
+      pollPads(fakePad(false));                 /* release -> PTT up */
+      const reasonsOff = nets.filter(n => n._txReasons && n._txReasons.has("ptt")).length;
+      L("pad-drives-ptt", txBefore === 0 && heldOk && reasonsOn > 0 && pttHeld === false && reasonsOff === 0);
+      if (armI >= 0) nets[armI].txOn = armWas;
+      masterBinds.active = savedBind; store.set("masterBinds6", masterBinds); renderMasterBinds();
+    }
 
     /* master volume sliders: voice drives the master bus, 1MC is independent */
     const volWas = masterVol, sbWas = sbVol;

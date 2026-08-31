@@ -7,6 +7,7 @@ const { buildTree, validParents, canReorder, reorder, mergeOrder } = require("./
 const { channelName } = require("./channel-name");
 const acctHeartbeat = require("./acct-heartbeat");
 const { versionNote } = require("./update-guard");
+const padBinds = require("./pad-binds");
 
 const SEND = new Set(["detune", "disconnect", "net-mute", "open-external", "ov-edit", "ov-lock",
   "ov-set", "ov-state", "ov-toggle", "send-text", "theme", "tx-frame"]);
@@ -57,6 +58,8 @@ contextBridge.exposeInMainWorld("fleetcomm", {
   netTree: { buildTree, validParents, channelName, canReorder, reorder, mergeOrder },
   acctHeartbeat: { assess: acctHeartbeat.assess },
   updateGuard: { versionNote },
+  padBinds: { padKey: padBinds.padKey, padLabel: padBinds.padLabel,
+    pressedStates: padBinds.pressedStates, diffButtons: padBinds.diffButtons },
   opus: {
     applications: OpusScript.Application,
     create(sampleRate, channels, application) {
