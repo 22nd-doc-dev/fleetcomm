@@ -163,6 +163,14 @@ server {
     proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto https;
   }
+  location = /api/sounds {
+    # 1MC clip uploads: 4MB of audio arrives as ~6MB of base64 JSON
+    client_max_body_size 8m;
+    proxy_pass http://127.0.0.1:8722;
+    proxy_set_header Host \$host;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+  }
   location /api/ {
     proxy_pass http://127.0.0.1:8722;
     proxy_set_header Host \$host;

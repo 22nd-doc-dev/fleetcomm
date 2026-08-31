@@ -644,14 +644,14 @@ function renderNets() {
 
     if (ship) {
       /* A ship is a GROUP, not a channel you sit in. Two controls, and neither
-         needs its subnets tuned: LSN ALL hears the whole ship, TX ALL reaches
-         the whole ship. */
+         needs its subnets tuned: LSN ALL hears the whole ship, the 1MC reaches
+         the whole ship (the general announcing circuit — voice and clips). */
       h += '<div class="nrow">' +
         '<button class="ann wide' + (n.lsnAll ? " lit-g" : "") + '" data-lsnall' +
           ' title="Hear every net aboard this ship — no need to tune them">LSN ALL</button>' +
         '<button class="ann wide' + (n.txAll ? " lit-a" : "") + '" data-txall' +
-          ' title="Transmit to every net aboard this ship — no need to tune them">TX ALL</button>' +
-        '<button class="keyb mono" data-key title="Talk key for TX ALL">' + esc(n.bind ? n.bind.label : "KEY") + '</button>' +
+          ' title="1MC — transmit to every net aboard this ship, no need to tune them">1MC</button>' +
+        '<button class="keyb mono" data-key title="Talk key for the 1MC">' + esc(n.bind ? n.bind.label : "KEY") + '</button>' +
         (n.tuned ? '<button class="x" data-x title="Leave the ship group">✕</button>' : "") +
         '</div>';
       if (n.tuned) h += '<div class="srow"><label>VOL</label><input type="range" min="0" max="100" value="' + n.vol + '" data-vol>' +
@@ -697,7 +697,7 @@ function renderCenter() {
   $("rosterTitle").textContent = "ON NET — " + (n ? n.cfg.name : "");
   $("chatTitle").textContent = "NET TEXT — " + (n ? n.cfg.name : "");
   renderChatTabs();
-  renderRoster(); renderChat(); renderSoundboard();
+  renderRoster(); renderChat(); renderChat2(); renderSoundboard();
   const can = n && n.tuned && n.mon;
   $("chatIn").disabled = !can;
   $("chatIn").placeholder = can ? "message " + n.cfg.name + "…" : (n && n.tuned ? "enable LISTEN on this net to chat" : "tune this net to chat");
@@ -722,6 +722,18 @@ function renderChat() {
     '<div class="cm' + (m.mine ? " mine" : "") + '"><span class="t">' + esc(m.t) + '</span><b>' + esc(m.from) + '</b>' + esc(m.msg) + '</div>'
   ).join("");
   feed.scrollTop = feed.scrollHeight;
+}
+/* the board's mini chat mirrors the SELECTED net — the CHAT page keeps the tabs */
+function renderChat2() {
+  const n = sel(), feed = $("chatFeed2");
+  $("chatNet2").textContent = n ? n.cfg.name : "";
+  feed.innerHTML = !n ? "" : n.chat.map(m =>
+    '<div class="cm' + (m.mine ? " mine" : "") + '"><span class="t">' + esc(m.t) + '</span><b>' + esc(m.from) + '</b>' + esc(m.msg) + '</div>'
+  ).join("");
+  feed.scrollTop = feed.scrollHeight;
+  const can = n && n.tuned && n.mon;
+  $("chatIn2").disabled = !can;
+  $("chatIn2").placeholder = can ? "message " + n.cfg.name + "…" : (n && n.tuned ? "enable LISTEN on this net to chat" : "tune this net to chat");
 }
 function esc(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
 function escAttr(s) {
@@ -919,9 +931,9 @@ netlist.addEventListener("click", async (e) => {
     n.txOn = n.txAll;
     if (n.txAll) {
       const ok = await ipcRenderer.invoke("arm-broadcast", n.idx);
-      if (!ok) { n.txAll = false; n.bcast = false; n.txOn = false; toast("Couldn't arm TX ALL."); }
-      else addLog("sys", n.cfg.name, "TX ALL armed — transmits to every net aboard");
-    } else addLog("sys", n.cfg.name, "TX ALL off");
+      if (!ok) { n.txAll = false; n.bcast = false; n.txOn = false; toast("Couldn't arm the 1MC."); }
+      else addLog("sys", n.cfg.name, "1MC armed — transmits to every net aboard");
+    } else addLog("sys", n.cfg.name, "1MC off");
     savePrefs(); renderNets(); return;
   }
   if (e.target.closest("[data-sel]")) {
@@ -1146,10 +1158,87 @@ function openConfirmDelete(i) {
    same TX path as the mic — so it honours nest broadcast and everyone on the
    net (or the whole nest) hears it exactly like a transmission. */
 let sbSounds = [], sbPlaying = null;
+const sbCache = new Map();   /* id/name -> decoded AudioBuffer, so a 4MB clip downloads once */
+/* The library is FLEET property when signed in with Discord: clips live on the
+   accounts service, shared by every COMMAND account, and appear on the 1MC of
+   every ship net. The local per-machine library remains only as the fallback
+   for legacy/token mode (and the offline test rig). */
+const sharedSoundLib = () => discordMode && !!acct;
 async function refreshSounds() {
+  if (discordMode) {
+    if (sharedSoundLib() && cmdToken) {
+      const r = await ipcRenderer.invoke("acct", { method: "GET", path: "/api/sounds" });
+      sbSounds = r && r.ok && Array.isArray(r.sounds) ? r.sounds : [];
+    } else sbSounds = [];
+    renderSoundboard(); renderSoundLib();
+    return;
+  }
   sbSounds = await ipcRenderer.invoke("sounds-list");
-  renderSoundboard();
+  renderSoundboard(); renderSoundLib();
 }
+/* fetch + decode a clip, from the fleet library (by id) or local disk (by name) */
+async function clipBuffer(s) {
+  const key = s.id || s.name;
+  if (sbCache.has(key)) return sbCache.get(key);
+  let bytes;
+  if (s.id) {
+    const r = await ipcRenderer.invoke("acct", { method: "GET", path: "/api/sounds/" + s.id });
+    if (!r || !r.ok) throw new Error((r && r.error) || "couldn't fetch the clip from the fleet library");
+    bytes = Uint8Array.from(atob(r.data), c => c.charCodeAt(0)).buffer;
+  } else {
+    const r = await ipcRenderer.invoke("sounds-read", s.name);
+    if (!r.ok) throw new Error(r.error);
+    bytes = r.data;
+  }
+  const audio = await ctx.decodeAudioData(bytes);
+  sbCache.set(key, audio);
+  return audio;
+}
+/* ── SYS-page sound library (COMMAND) ──
+   Uploads and deletions happen HERE, not on individual ship rows: the library
+   is one fleet-wide list, and every clip in it appears on the 1MC of every
+   ship net. Signed in with Discord it syncs through the accounts service; in
+   legacy token mode it manages this machine's local clips. */
+function renderSoundLib() {
+  const box = $("sndLib");
+  if (!box) return;
+  box.style.display = cmdToken ? "" : "none";
+  if (!cmdToken) return;
+  $("sndLibHint").textContent = sharedSoundLib()
+    ? "Clips here are shared with every COMMAND account and appear on the 1MC of every ship net."
+    : "Legacy mode — clips are stored on this machine only, and appear on the 1MC of every ship net.";
+  $("sndLibList").innerHTML = sbSounds.length
+    ? sbSounds.map(s => '<div class="sndrow"><b>' + esc(s.name.replace(/\.[^.]+$/, "")) + '</b>' +
+        '<span class="num">' + Math.max(1, Math.round((s.size || 0) / 1024)) + ' KB</span>' +
+        '<button class="icobtn" data-sdel="' + escAttr(s.id || s.name) + '">✕ REMOVE</button></div>').join("")
+    : '<p class="hint">No clips yet — ADD CLIPS loads the 1MC of every ship net.</p>';
+}
+$("sndLibAdd").addEventListener("click", async () => {
+  if (!sharedSoundLib()) {   /* legacy: old local copy flow */
+    const r = await ipcRenderer.invoke("sounds-add");
+    if (r.ok && r.added.length) { toast("Added " + r.added.length + " clip(s)."); refreshSounds(); }
+    return;
+  }
+  const picked = await ipcRenderer.invoke("sounds-pick");
+  if (!picked || !picked.ok) { if (picked && !picked.canceled) toast(picked.error || "Couldn't read those files."); return; }
+  let added = 0; const errors = (picked.skipped || []).slice();
+  for (const clip of picked.clips) {
+    const r = await ipcRenderer.invoke("acct", { method: "POST", path: "/api/sounds", body: { name: clip.name, data: clip.data } });
+    if (r && r.ok) added++; else errors.push(clip.name + (r && r.error ? " (" + r.error + ")" : ""));
+  }
+  if (added) toast("Added " + added + " clip(s) to the fleet library.");
+  if (errors.length) toast("Not added: " + errors.join(", "));
+  refreshSounds();
+});
+$("sndLibList").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-sdel]"); if (!b) return;
+  if (sharedSoundLib()) {
+    const r = await ipcRenderer.invoke("acct", { method: "POST", path: "/api/sounds/" + b.dataset.sdel + "/delete" });
+    if (!r || !r.ok) toast((r && r.error) || "Couldn't remove the clip.");
+  } else await ipcRenderer.invoke("sounds-delete", b.dataset.sdel);
+  sbCache.delete(b.dataset.sdel);
+  refreshSounds();
+});
 /* ── the 1MC ──
    The ship's general announcing circuit: one call heard on every net aboard.
    COMMAND only, and only on a ship net. It plays down the same TX path as the
@@ -1166,39 +1255,31 @@ function renderSoundboard() {
   $("sbPanel").style.display = show ? "block" : "none";
   if (!show) return;
   $("sbNet").textContent = n.cfg.name + (n.bcast ? " (NEST)" : "");
-  $("sbAdd").style.display = n.tuned ? "" : "none";
   if (!n.tuned) {
     $("sbList").innerHTML = '<span class="hint">tune ' + esc(n.cfg.name) +
       ' to pipe the 1MC';
     return;
   }
+  /* clip management lives in SYS — every ship net shows the same fleet library */
   $("sbList").innerHTML = sbSounds.length
-    ? sbSounds.map(s => '<button class="sbBtn' + (sbPlaying === s.name ? " playing" : "") + '" data-snd="' + escAttr(s.name) + '">' +
-        esc(s.name.replace(/\.[^.]+$/, "")) + '<span class="del" data-del="' + escAttr(s.name) + '">✕</span></button>').join("")
-    : '<span class="hint">no clips yet — ADD CLIPS to load the 1MC</span>';
+    ? sbSounds.map(s => { const key = s.id || s.name;
+        return '<button class="sbBtn' + (sbPlaying === key ? " playing" : "") + '" data-snd="' + escAttr(key) + '">' +
+        esc(s.name.replace(/\.[^.]+$/, "")) + '</button>'; }).join("")
+    : '<span class="hint">no clips in the library — add them under SYS ▸ 1MC SOUND LIBRARY</span>';
 }
-$("sbAdd").addEventListener("click", async () => {
-  const r = await ipcRenderer.invoke("sounds-add");
-  if (r.ok && r.added.length) { toast("Added " + r.added.length + " clip(s)."); refreshSounds(); }
-});
-$("sbList").addEventListener("click", async (e) => {
-  const del = e.target.closest("[data-del]");
-  if (del) {
-    e.stopPropagation();
-    await ipcRenderer.invoke("sounds-delete", del.dataset.del);
-    refreshSounds(); return;
-  }
+$("sbAdd").addEventListener("click", () => showPage("settings"));
+$("sbList").addEventListener("click", (e) => {
   const b = e.target.closest("[data-snd]"); if (!b) return;
-  playClipOnNet(b.dataset.snd, sel());
+  const s = sbSounds.find(x => (x.id || x.name) === b.dataset.snd); if (!s) return;
+  playClipOnNet(s, sel());
 });
-async function playClipOnNet(name, net) {
+async function playClipOnNet(s, net) {
+  const name = s.name, sbKey = s.id || s.name;
   if (!net || !net.tuned) { toast("Tune the net first."); return; }
   if (sbPlaying) { toast("A clip is already playing."); return; }
-  const r = await ipcRenderer.invoke("sounds-read", name);
-  if (!r.ok) { toast("Couldn't read clip: " + r.error); return; }
   let audio;
-  try { audio = await ctx.decodeAudioData(r.data); }
-  catch (e) { toast("Unsupported audio format: " + name); return; }
+  try { audio = await clipBuffer(s); }
+  catch (e) { toast("Couldn't play " + name + ": " + e.message); return; }
   /* mix to mono at the context's 48k rate */
   const len = audio.length, chans = audio.numberOfChannels;
   const mono = new Float32Array(len);
@@ -1229,7 +1310,7 @@ async function playClipOnNet(name, net) {
     if (!armed) { toast("Couldn't reach the ship's nets — clip not played."); sbPlaying = null; renderSoundboard(); return; }
   }
 
-  sbPlaying = name; renderSoundboard();
+  sbPlaying = sbKey; renderSoundboard();
   const where = net.cfg.name + (broadcast ? (shipwide ? " (1MC)" : " (nest)") : "");
   addLog("tx", where, "1MC — " + name + " — piped by " + callsign);
   /* tell everyone else on the net who keyed it; the audio alone doesn't say */
@@ -1326,22 +1407,47 @@ ipcRenderer.on("chat", (ev, m) => {
   n.chat.push({ t: utc(), from: m.from, msg: m.message, mine: false });
   if (n.chat.length > 300) n.chat.shift();
   addLog("chatline", n.cfg.name, m.from + ": " + m.message);
-  if (i === selectedI) renderChat();
+  if (i === selectedI) { renderChat(); renderChat2(); }
 });
-function sendChat() {
-  const n = sel(), v = $("chatIn").value.trim();
+/* one send path, two inputs: the CHAT page's and the board's mini-panel */
+function sendChatFrom(inputEl) {
+  const n = sel(), v = inputEl.value.trim();
   if (!n || !n.tuned || !n.mon || !v) return;
   ipcRenderer.send("send-text", { idx: n.idx, message: v });
   n.chat.push({ t: utc(), from: callsign, msg: v, mine: true });
   addLog("chatline", n.cfg.name, callsign + ": " + v);
-  $("chatIn").value = ""; renderChat();
+  inputEl.value = ""; renderChat(); renderChat2();
 }
+function sendChat() { sendChatFrom($("chatIn")); }
 $("chatSend").addEventListener("click", sendChat);
 $("chatTabs").addEventListener("click", (e) => {
   const b = e.target.closest("[data-ci]"); if (!b) return;
   selectedI = +b.dataset.ci; renderNets(); renderChatTabs(); renderChat();
 });
 $("chatIn").addEventListener("keydown", (e) => { if (e.key === "Enter") sendChat(); e.stopPropagation(); });
+$("chatSend2").addEventListener("click", () => sendChatFrom($("chatIn2")));
+$("chatIn2").addEventListener("keydown", (e) => { if (e.key === "Enter") sendChatFrom($("chatIn2")); e.stopPropagation(); });
+/* ── board chat height ──
+   The divider under the chat panel is the operator's call: drag down for more
+   chat, up for more COMM LOG. Persisted like the rail width. */
+(function () {
+  const feed = $("chatFeed2"), sp = $("vsplit");
+  feed.style.height = Math.max(56, Math.min(600, Number(store.get("commsChatH", 140)) || 140)) + "px";
+  let dragging = false, startY = 0, startH = 0;
+  sp.addEventListener("pointerdown", (e) => {
+    dragging = true; startY = e.clientY; startH = feed.getBoundingClientRect().height;
+    sp.classList.add("drag"); sp.setPointerCapture(e.pointerId); e.preventDefault();
+  });
+  sp.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    const h = Math.max(56, Math.min(window.innerHeight * 0.6, startH + (e.clientY - startY)));
+    feed.style.height = h + "px";
+  });
+  const stop = () => { if (!dragging) return; dragging = false; sp.classList.remove("drag");
+    store.set("commsChatH", parseInt(feed.style.height, 10) || 140); };
+  sp.addEventListener("pointerup", stop);
+  sp.addEventListener("pointercancel", stop);
+})();
 /* ── automatic reconnect ──
    Operations run for hours. A net that drops — a router blip, a Wi-Fi roam, a
    missed keepalive under game load — should heal itself rather than leaving an
@@ -1501,7 +1607,7 @@ $("connectLegacyBtn").addEventListener("click", function () { doConnect($("csInL
 function applyLogin(r) {
   acct = { account: r.account, authorized: !!r.authorized };
   cmdToken = r.account.role === "command" ? "account-command" : "";
-  renderSoundboard();   /* COMMAND gates the 1MC */
+  refreshSounds();   /* COMMAND gates the 1MC; the fleet library loads at sign-in */
   if (connected) {
     $("oprole").textContent = r.account.role === "member" ? "" : r.account.role.toUpperCase();
     $("authRole").textContent = r.account.role.toUpperCase();
@@ -1545,7 +1651,7 @@ if ($("recheckBtn")) $("recheckBtn").addEventListener("click", async () => {
 $("disconnBtn").addEventListener("click", () => {
   clearTxState(); ipcRenderer.send("disconnect"); connected = false;
   if (discordMode) {
-    acct = null; cmdToken = ""; renderSoundboard();
+    acct = null; cmdToken = ""; refreshSounds();
     $("discordBtn").disabled = false; $("discordBtn").textContent = "SIGN IN WITH DISCORD ▸";
     $("pendingBox").style.display = "none"; $("bootstrapRow").style.display = "none";
     $("csRow2").style.display = "none"; $("connectBtn").style.display = "none";
@@ -1584,13 +1690,16 @@ $("atcGrid").addEventListener("click", async (e) => {
 function showPage(id) {
   if (id === "pgAtc" && !connected) { toast("Connect first."); return; }
   const leavingSys = document.getElementById("settings").classList.contains("on") && id !== "settings";
-  if (leavingSys && !discordMode) { cmdToken = $("tokenIn").value.trim(); store.set("cmdToken", cmdToken); renderTxTargets(); renderSoundboard(); }
+  if (leavingSys && !discordMode) { cmdToken = $("tokenIn").value.trim(); store.set("cmdToken", cmdToken); renderTxTargets(); refreshSounds(); }
   document.querySelectorAll(".page").forEach(p => p.classList.toggle("on", p.id === id));
   document.querySelectorAll(".pkey").forEach(k => k.classList.toggle("on", k.dataset.page === id));
   if (id === "pgAtc") refreshAtc();
   if (id === "pgAcct") refreshAccts();
   if (id === "pgChat") { renderChatTabs(); renderChat(); }
   if (id === "settings" && !discordMode) $("tokenIn").value = cmdToken;
+  /* opening SYS re-pulls the fleet library, so clips another COMMAND account
+     just added appear without a re-sign-in */
+  if (id === "settings") refreshSounds();
 }
 document.querySelectorAll(".pkey").forEach(k => k.addEventListener("click", () => showPage(k.dataset.page)));
 let opsTimer = null;
@@ -2148,6 +2257,23 @@ if (bridge.autotestHost) {
     $("updOvOk").click();
     L("upd-ack-cleared", $("updOv").classList.contains("hidden") && store.get("ackVersion", null) === bridge.version);
     store.set("ackVersion", savedAck === null ? bridge.version : savedAck);
+
+    /* v0.12.8: ship rows say 1MC, board chat above the log, fleet clip library */
+    L("ship-row-says-1mc", /data-txall[^>]*>1MC</.test($("netlist").innerHTML));
+    L("comms-chat-present", !!$("commsChat") && !!$("vsplit") && !!$("chatIn2"));
+    $("chatFeed2").style.height = "200px"; store.set("commsChatH", 200);
+    L("comms-chat-resizable", getComputedStyle($("chatFeed2")).height === "200px");
+    if (sel() && sel().tuned && sel().mon) {
+      $("chatIn2").disabled = false; $("chatIn2").value = "board chat check"; sendChatFrom($("chatIn2"));
+      L("comms-chat-mirrors", $("chatFeed2").textContent.indexOf("board chat check") >= 0 &&
+        $("chatFeed").textContent.indexOf("board chat check") >= 0);
+    } else L("comms-chat-mirrors", "skip — no tuned net");
+    const sbCmdWas = cmdToken;
+    cmdToken = "autotest-token"; renderSoundLib();
+    L("sndlib-shown-for-command", $("sndLib").style.display !== "none");
+    cmdToken = ""; renderSoundLib();
+    L("sndlib-hidden-without-command", $("sndLib").style.display === "none");
+    cmdToken = sbCmdWas; renderSoundLib();
     L("bezel-wraps", getComputedStyle(document.getElementById("bezel")).flexWrap);
     /* narrow the window and confirm nothing overflows the bezel horizontally */
     document.body.style.width = "720px";

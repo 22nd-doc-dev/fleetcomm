@@ -258,6 +258,29 @@ ipcMain.handle("sounds-delete", (ev, name) => {
   try { fs.unlinkSync(soundFile(name).path); return { ok: true }; }
   catch (e) { return { ok: false, error: e.message }; }
 });
+/* Pick clips for the SHARED library: dialog + read, no local copy. The bytes go
+   back to the renderer as base64, which uploads them to the accounts service —
+   the library is fleet property there, not files on one machine. */
+ipcMain.handle("sounds-pick", async () => {
+  if (!isCommand()) return { ok: false, error: "COMMAND authority required" };
+  const { dialog } = require("electron");
+  const r = await dialog.showOpenDialog(win, {
+    title: "Add clips to the fleet 1MC library",
+    properties: ["openFile", "multiSelections"],
+    filters: [{ name: "Audio", extensions: ["wav", "mp3", "ogg", "m4a", "flac", "webm"] }]
+  });
+  if (r.canceled) return { ok: false, canceled: true };
+  const clips = [], skipped = [];
+  for (const f of r.filePaths.slice(0, 12)) {
+    try {
+      const name = path.basename(f).replace(/[^\w.\- ]+/g, "_");
+      const stat = fs.statSync(f);
+      if (stat.size > 4 * 1024 * 1024) { skipped.push(name + " (over 4MB)"); continue; }
+      clips.push({ name, size: stat.size, data: fs.readFileSync(f).toString("base64") });
+    } catch (e) { skipped.push(path.basename(f)); }
+  }
+  return { ok: true, clips, skipped };
+});
 
 /* ── Discord sign-in (PKCE, loopback — no client secret anywhere) ── */
 const OAUTH_PORT = 53682;
@@ -281,7 +304,7 @@ function postForm(url, form) {
 }
 const { accountBase, isInsecure, insecureNote } = require("./src/accounts-url");
 const { shortFingerprint } = require("./src/relay-trust");
-function jsonCall(base, method, pathName, bodyObj, bearer) {
+function jsonCall(base, method, pathName, bodyObj, bearer, maxResponse) {
   return new Promise((resolve, reject) => {
     let root, u;
     try {
@@ -297,7 +320,7 @@ function jsonCall(base, method, pathName, bodyObj, bearer) {
         bearer ? { Authorization: "Bearer " + bearer } : {}), timeout: 12000 },
       (res) => { let d = ""; res.on("data", c => {
         d += c;
-        if (d.length > 1024 * 1024) req.destroy(new Error("accounts response is too large"));
+        if (d.length > (maxResponse || 1024 * 1024)) req.destroy(new Error("accounts response is too large"));
       }); res.on("end", () => {
         /* httpStatus rides along so callers can tell a VERDICT (401/403 — the
            server judged us) from a server-side FAULT (5xx — it wraps its own
@@ -434,11 +457,14 @@ ipcMain.handle("acct", async (ev, request) => {
   if (!acctToken) return { ok: false, error: "not signed in" };
   const verb = method === "POST" ? "POST" : "GET";
   const allowed = verb === "GET"
-    ? ["/api/me", "/api/accounts", "/api/nets/access"].includes(p)
-    : p === "/api/callsign" || p === "/api/nets/access" || /^\/api\/accounts\/\d+\/role$/.test(p);
+    ? ["/api/me", "/api/accounts", "/api/nets/access", "/api/sounds"].includes(p) || /^\/api\/sounds\/[a-f0-9]{16}$/.test(p)
+    : p === "/api/callsign" || p === "/api/nets/access" || p === "/api/sounds"
+      || /^\/api\/sounds\/[a-f0-9]{16}\/delete$/.test(p) || /^\/api\/accounts\/\d+\/role$/.test(p);
   if (!allowed) return { ok: false, error: "unsupported account operation" };
+  /* clip payloads are base64 audio — megabytes, not the usual JSON kilobytes */
+  const soundBytes = p.startsWith("/api/sounds") ? 8 * 1024 * 1024 : undefined;
   try {
-    const response = await jsonCall(cfg.url, verb, p, b || null, acctToken);
+    const response = await jsonCall(cfg.url, verb, p, b || null, acctToken, soundBytes);
     /* a 5xx is the server failing, not the server judging us — same class as a
        reset: no verdict was rendered, so the heartbeat must hold, not eject */
     if (response && response.httpStatus >= 500)

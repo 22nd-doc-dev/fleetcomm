@@ -75,9 +75,24 @@ function save(name, obj) {
 const db = {
   accounts: record(load("accounts.json", {}), "accounts.json"),   // discordId -> {discordName, callsign, role, relayToken, ...}
   sessions: record(load("sessions.json", {}), "sessions.json"),   // token -> {discordId, expiresAt}
-  netAccess: record(load("netaccess.json", {}), "netaccess.json") // netName -> open|member|command
+  netAccess: record(load("netaccess.json", {}), "netaccess.json"),// netName -> open|member|command
+  sounds: record(load("sounds.json", {}), "sounds.json")          // id -> {name, size, ext, by, at}
 };
 const persist = () => { save("accounts.json", db.accounts); save("sessions.json", db.sessions); save("netaccess.json", db.netAccess); };
+
+/* ── shared 1MC sound library ──
+   Clips are fleet property, not per-machine files: a clip one COMMAND account
+   uploads must be on the 1MC of every ship net for every COMMAND account.
+   Audio bytes live as files under DATA/sounds; sounds.json is the index.
+   COMMAND-only in both directions — the 1MC itself is COMMAND-gated, so
+   nothing below COMMAND has any use for the bytes. */
+const SOUNDS_DIR = path.join(DATA, "sounds");
+const SOUND_EXT = /\.(wav|mp3|ogg|m4a|flac|webm)$/i;
+const SOUND_MAX_BYTES = 4 * 1024 * 1024;   /* a 1MC clip is seconds long */
+const SOUND_MAX_COUNT = 48;
+try { fs.mkdirSync(SOUNDS_DIR, { recursive: true }); fs.chmodSync(SOUNDS_DIR, 0o700); } catch (error) {}
+const soundPath = (id, ext) => path.join(SOUNDS_DIR, id + "." + ext);
+const saveSounds = () => save("sounds.json", db.sounds);
 let mutationTail = Promise.resolve();
 function serializeMutation(work) {
   const run = mutationTail.then(work, work);
@@ -267,13 +282,14 @@ function auth(req) {
   const id = session.discordId;
   return id && db.accounts[id] ? { id, acc: db.accounts[id] } : null;
 }
-function body(req) {
+function body(req, limit) {
+  const max = limit || 65536;   /* only the clip upload route asks for more */
   return new Promise((resolve, reject) => {
     let d = "", done = false;
     req.on("data", c => {
       if (done) return;
       d += c;
-      if (d.length > 65536) { done = true; reject(Object.assign(new Error("request body too large"), { statusCode: 413 })); }
+      if (d.length > max) { done = true; reject(Object.assign(new Error("request body too large"), { statusCode: 413 })); }
     });
     req.on("end", () => {
       if (done) return;
@@ -366,7 +382,48 @@ const server = http.createServer(async (req, res) => {
     if (p === "/api/accounts" && req.method === "GET") {
       return send(res, 200, { ok: true, accounts: Object.entries(db.accounts).map(([id, acc]) => pub(acc, id)) });
     }
+
     let m;
+    /* ── shared 1MC sound library (COMMAND only, like the 1MC itself) ── */
+    if (p === "/api/sounds" && req.method === "GET") {
+      return send(res, 200, { ok: true, sounds: Object.entries(db.sounds)
+        .map(([id, s]) => ({ id, name: s.name, size: s.size }))
+        .sort((x, y) => x.name.localeCompare(y.name)) });
+    }
+    if (p === "/api/sounds" && req.method === "POST") {
+      /* base64 inflates 4/3, plus JSON overhead — 6MB of body carries a 4MB clip */
+      const b = await body(req, 6 * 1024 * 1024);
+      const name = String(b.name || "").replace(/[^\w.\- ]+/g, "_").slice(0, 80);
+      if (!SOUND_EXT.test(name)) return send(res, 400, { ok: false, error: "clip must be wav/mp3/ogg/m4a/flac/webm" });
+      if (Object.keys(db.sounds).length >= SOUND_MAX_COUNT)
+        return send(res, 400, { ok: false, error: "sound library is full (" + SOUND_MAX_COUNT + " clips) — delete some first" });
+      let bytes;
+      try { bytes = Buffer.from(String(b.data || ""), "base64"); } catch (e) { bytes = Buffer.alloc(0); }
+      if (!bytes.length) return send(res, 400, { ok: false, error: "empty clip" });
+      if (bytes.length > SOUND_MAX_BYTES) return send(res, 400, { ok: false, error: "clip is over 4MB — 1MC clips are seconds long" });
+      if (Object.values(db.sounds).some(s => s.name === name))
+        return send(res, 400, { ok: false, error: "a clip named " + name + " already exists" });
+      const id = crypto.randomBytes(8).toString("hex");
+      const ext = name.match(SOUND_EXT)[1].toLowerCase();
+      fs.writeFileSync(soundPath(id, ext), bytes, { mode: 0o600 });
+      db.sounds[id] = { name, size: bytes.length, ext, by: a.id, at: Date.now() };
+      saveSounds();
+      return send(res, 200, { ok: true, id, name, size: bytes.length });
+    }
+    if ((m = /^\/api\/sounds\/([a-f0-9]{16})$/.exec(p)) && req.method === "GET") {
+      const s = db.sounds[m[1]];
+      if (!s) return send(res, 404, { ok: false, error: "no such clip" });
+      try { return send(res, 200, { ok: true, id: m[1], name: s.name, data: fs.readFileSync(soundPath(m[1], s.ext)).toString("base64") }); }
+      catch (e) { return send(res, 404, { ok: false, error: "clip bytes are missing on the server" }); }
+    }
+    if ((m = /^\/api\/sounds\/([a-f0-9]{16})\/delete$/.exec(p)) && req.method === "POST") {
+      const s = db.sounds[m[1]];
+      if (!s) return send(res, 404, { ok: false, error: "no such clip" });
+      try { fs.unlinkSync(soundPath(m[1], s.ext)); } catch (e) {}
+      delete db.sounds[m[1]];
+      saveSounds();
+      return send(res, 200, { ok: true });
+    }
     if ((m = /^\/api\/accounts\/(\d+)\/role$/.exec(p)) && req.method === "POST") {
       const b = await body(req);
       if (!["pending", "member", "command", "revoked"].includes(b.role)) return send(res, 400, { ok: false, error: "bad role" });

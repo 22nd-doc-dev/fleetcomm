@@ -55,6 +55,30 @@ function stop() {
   const accounts = JSON.parse(fs.readFileSync(path.join(dataDir, "accounts.json"), "utf8"));
   assert(/^u-[0-9a-f]{36}$/.test(accounts.doc.relayToken), "account receives a unique relay token");
 
+  /* ── shared 1MC sound library: COMMAND-only in both directions, round-trips ── */
+  result = await api("POST", "/api/login", { mockId: "rating", mockName: "Rating" });
+  const ratingToken = result.body.token;
+  result = await api("GET", "/api/sounds", null, ratingToken);
+  assert(result.status === 403, "non-COMMAND cannot even list the fleet clip library");
+  const clipData = Buffer.from("RIFF-not-really-audio-but-bytes-are-bytes").toString("base64");
+  result = await api("POST", "/api/sounds", { name: "boatswain call.wav", data: clipData }, sessionToken);
+  assert(result.status === 200 && /^[a-f0-9]{16}$/.test(result.body.id), "COMMAND uploads a clip: " + JSON.stringify(result.body));
+  const clipId = result.body.id;
+  result = await api("POST", "/api/sounds", { name: "orders.txt", data: clipData }, sessionToken);
+  assert(result.status === 400, "a non-audio extension is refused");
+  result = await api("POST", "/api/sounds", { name: "boatswain call.wav", data: clipData }, sessionToken);
+  assert(result.status === 400, "a duplicate clip name is refused");
+  result = await api("GET", "/api/sounds", null, sessionToken);
+  assert(result.body.sounds.length === 1 && result.body.sounds[0].name === "boatswain call.wav", "the library lists it");
+  result = await api("GET", "/api/sounds/" + clipId, null, sessionToken);
+  assert(result.body.ok && result.body.data === clipData, "clip bytes round-trip exactly");
+  result = await api("POST", "/api/sounds/" + clipId + "/delete", null, ratingToken);
+  assert(result.status === 403, "non-COMMAND cannot delete a clip");
+  result = await api("POST", "/api/sounds/" + clipId + "/delete", null, sessionToken);
+  assert(result.status === 200, "COMMAND deletes a clip");
+  result = await api("GET", "/api/sounds", null, sessionToken);
+  assert(result.body.sounds.length === 0, "and it is gone from the library");
+
   await stop();
   sessions[sessionToken].expiresAt = Date.now() - 1;
   fs.writeFileSync(sessionsFile, JSON.stringify(sessions), { mode: 0o600 });
