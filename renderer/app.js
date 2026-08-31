@@ -1779,7 +1779,11 @@ async function runUpdate(version, auto) {
     return res;
   }
   hideUpdOv();
-  $("updtext").textContent = "FleetComm v" + version + " is available";
+  /* the reason lives in the banner, which stays — a 4.6s toast is not enough
+     room for "your exe is in a write-protected folder, move it" */
+  $("updtext").textContent = res && res.error
+    ? "Update failed: " + res.error
+    : "FleetComm v" + version + " is available";
   return res || { ok: false };
 }
 /* what happened to the last automatic attempt, reported on the way back up */

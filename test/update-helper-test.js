@@ -38,6 +38,27 @@ function fakePe(file, marker) {
   assert(fs.readFileSync(exe).includes(Buffer.from("NEW")), "failed attempt leaves working executable untouched");
   assert(JSON.parse(fs.readFileSync(stateFile)).status === "failed", "failure is durable and blocks auto-retry");
 
+  /* ── an exe parked in a write-protected folder is caught BEFORE download ──
+     The update is a rename in place; C:\Program Files refuses that to anything
+     unelevated. One operator's updater failed silently there across four
+     releases — the probe is what turns that into a sentence instead. */
+  const { dirWritable } = require("../src/update-helper");
+  assert.strictEqual(dirWritable(dir), true, "a normal folder probes writable");
+  const lockedDir = path.join(dir, "locked");
+  fs.mkdirSync(lockedDir);
+  fs.chmodSync(lockedDir, 0o500);
+  const lockedResult = dirWritable(lockedDir);
+  fs.chmodSync(lockedDir, 0o700);   /* so cleanup can remove it */
+  if (process.getuid && process.getuid() === 0) {
+    console.log("  · running as root — the read-only-dir probe cannot be exercised");
+  } else {
+    assert.strictEqual(lockedResult, false, "a folder this process cannot write into probes unwritable");
+  }
+  assert.strictEqual(fs.readdirSync(lockedDir).length, 0, "the probe leaves nothing behind");
+  const mainSrc2 = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+  assert(/dirWritable\(path\.dirname\(origExe\)\)/.test(mainSrc2),
+    "do-update must probe the exe's folder before downloading");
+
   fs.rmSync(dir, { recursive: true, force: true });
   console.log("✔ UPDATE HELPER PASS — no shell, bounded swap, rollback preserved");
 })().catch(error => { console.error("✘ FAIL:", error); process.exit(1); });

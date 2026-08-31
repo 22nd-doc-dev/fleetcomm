@@ -52,6 +52,17 @@ function isPortableExecutable(file, minimumBytes) {
   finally { if (fd !== undefined) try { fs.closeSync(fd); } catch (error) {} }
 }
 
+/* Can this process create (and therefore rename) files in `dir`? The update
+   IS a rename, so this is the whole question. The case that matters: an
+   operator who put the portable exe in C:\Program Files, which Windows makes
+   admin-only — every swap there dies with EPERM, historically in silence.
+   Probe by actually writing, because ACLs make anything else a guess. */
+function dirWritable(dir) {
+  const probe = path.join(dir, ".fc-write-probe-" + process.pid + "-" + Date.now());
+  try { fs.writeFileSync(probe, "x"); fs.unlinkSync(probe); return true; }
+  catch (error) { try { fs.unlinkSync(probe); } catch (cleanup) {} return false; }
+}
+
 function writeJsonAtomic(file, value) {
   const tmp = file + ".tmp-" + process.pid;
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -166,4 +177,4 @@ if (require.main === module) {
   runCli(process.argv[2]).catch(error => { console.error(error.message); process.exitCode = 1; });
 }
 
-module.exports = { applyUpdate, isPortableExecutable, processAlive, validVersion, waitForExit, writeJsonAtomic };
+module.exports = { applyUpdate, dirWritable, isPortableExecutable, processAlive, validVersion, waitForExit, writeJsonAtomic };

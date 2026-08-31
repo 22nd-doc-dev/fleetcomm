@@ -104,7 +104,7 @@ ipcMain.on("ov-state", (ev, nets) => {
 
 /* ── update check ── */
 const { cmpVer, reconcile: reconcileState, blocked, attempt } = require("./src/update-guard");
-const { isPortableExecutable, validVersion, writeJsonAtomic } = require("./src/update-helper");
+const { dirWritable, isPortableExecutable, validVersion, writeJsonAtomic } = require("./src/update-helper");
 let availableUpdate = null, updateInProgress = false;
 function fetchJson(url, depth) {
   return new Promise((resolve, reject) => {
@@ -498,6 +498,14 @@ ipcMain.handle("do-update", async (ev, info) => {
     if (!checked || checked.status !== "update" || checked.version !== info.version || !validVersion(checked.version))
       throw new Error("the requested release is no longer the available update");
     const version = checked.version;
+    /* The update IS a rename of the exe in place. An exe parked in
+       C:\Program Files (admin-only) fails that rename with EPERM every time —
+       for one operator, silently, across four releases. Say so up front,
+       before downloading ~100MB that can't be installed. */
+    if (!dirWritable(path.dirname(origExe)))
+      throw new Error("FleetComm can't update itself from where it's running — the folder \"" +
+        path.dirname(origExe) + "\" is write-protected (C:\\Program Files works this way). " +
+        "Move " + path.basename(origExe) + " to your Desktop or another normal folder and update from there.");
     const url = tpl.split("{v}").join(version);
     const nonce = process.pid + "-" + Date.now();
     const fresh = path.join(app.getPath("temp"), "FleetComm-" + version + "-" + nonce + ".exe");
@@ -529,10 +537,17 @@ ipcMain.handle("do-update", async (ev, info) => {
       "-ParentPid", String(process.pid), "-StateFile", updStatePath(),
       "-Target", version, "-LogFile", logFile];
     try { fs.appendFileSync(logFile, new Date().toISOString() + " app: handing off to " + powershell + "\n"); } catch (e) {}
+    /* The swap's stdout/stderr go to a file, not to "ignore": a swap that dies
+       before its first Log line (param binding, policy, AV) used to vanish
+       without a trace — five silent handoffs on one machine before anyone
+       could say why. The child keeps its own handle after we close ours. */
+    let swapOut = "ignore";
+    try { swapOut = fs.openSync(path.join(app.getPath("userData"), "swap-output.log"), "a"); } catch (e) {}
     const child = require("child_process").spawn(powershell, args, {
-      detached: true, stdio: "ignore", windowsHide: true,
+      detached: true, stdio: ["ignore", swapOut, swapOut], windowsHide: true,
       cwd: app.getPath("temp")     /* never our own unpack dir, which is about to vanish */
     });
+    if (swapOut !== "ignore") try { fs.closeSync(swapOut); } catch (e) {}
     await new Promise((resolve, reject) => {
       child.once("spawn", resolve);
       child.once("error", reject);
