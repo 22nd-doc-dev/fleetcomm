@@ -1,4 +1,4 @@
 {
-  "version": "0.12.9",
-  "notes": "FleetComm no longer closes for an update on faith. On one machine, Windows was killing the update installer the instant it started — the app had already closed, so the update simply never happened, with nothing to show for it. Now the installer proves it is actually running before FleetComm exits. If it is killed, FleetComm relaunches it through the Windows Task Scheduler, which runs it out of reach of what killed it the first time. And if that is blocked too, FleetComm stays open and tells you exactly that, instead of closing into nothing."
+  "version": "0.12.10",
+  "notes": "COMMAND can actually add clips to the 1MC sound library now. Adding clips failed with \"COMMAND authority required\" even for COMMAND accounts: the app checked your rank against a field the sign-in server has never sent, so the answer was always no — the server would have accepted the upload, but your own app refused to ask. The app now keys that check on the role the server actually reports. Update, sign in with Discord as usual, and ADD CLIPS under SYS → 1MC SOUND LIBRARY works."
 }

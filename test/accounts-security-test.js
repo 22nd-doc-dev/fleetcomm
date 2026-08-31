@@ -55,6 +55,19 @@ function stop() {
   const accounts = JSON.parse(fs.readFileSync(path.join(dataDir, "accounts.json"), "utf8"));
   assert(/^u-[0-9a-f]{36}$/.test(accounts.doc.relayToken), "account receives a unique relay token");
 
+  /* ── the client's COMMAND check must key on what the server actually sends ──
+     The relay payload carries credentials, not rank: main.js once tested
+     relay.adminToken — a field this service has never emitted — so every
+     COMMAND account was refused clip management by its own client while the
+     server would have allowed it. Pin both sides of that contract. */
+  assert(result.body.account.role === "command" && result.body.relay
+    && !("adminToken" in result.body.relay),
+    "role travels in account.role; the relay payload has no role marker");
+  const mainSrc = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+  assert(/function isCommand\(\)\s*\{\s*return acctRole === "command";/.test(mainSrc),
+    "main.js isCommand() must key on the server-reported role");
+  assert(!/adminToken/.test(mainSrc), "main.js must not reference the phantom adminToken field");
+
   /* ── shared 1MC sound library: COMMAND-only in both directions, round-trips ── */
   result = await api("POST", "/api/login", { mockId: "rating", mockName: "Rating" });
   const ratingToken = result.body.token;

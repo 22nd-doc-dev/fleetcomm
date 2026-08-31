@@ -221,8 +221,7 @@ ipcMain.handle("sounds-list", () => {
 /* The soundboard keys the net for everyone, so COMMAND-only is enforced here as
    well as in the UI — a renderer-side check alone is a suggestion, not a rule. */
 function isCommand() {
-  const r = acctRelay || {};
-  return !!r.adminToken;
+  return acctRole === "command";
 }
 ipcMain.handle("sounds-add", async () => {
   if (!isCommand()) return { ok: false, error: "COMMAND authority required" };
@@ -284,7 +283,7 @@ ipcMain.handle("sounds-pick", async () => {
 
 /* ── Discord sign-in (PKCE, loopback — no client secret anywhere) ── */
 const OAUTH_PORT = 53682;
-let acctToken = null, acctRelay = null;
+let acctToken = null, acctRelay = null, acctRole = null;
 function b64url(buf) { return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
 function postForm(url, form) {
   return new Promise((resolve, reject) => {
@@ -338,6 +337,11 @@ function keepAccountSecrets(response) {
   if (!response || typeof response !== "object") return response;
   if (response.token) acctToken = response.token;
   if (Object.prototype.hasOwnProperty.call(response, "relay")) acctRelay = response.relay || null;
+  /* main keeps its own record of the role: COMMAND checks here must key on
+     what the SERVER said, and the relay payload carries credentials, not rank —
+     isCommand() once tested a relay field the service never sends, so every
+     COMMAND account was refused clip management by its own client */
+  if (response.account && typeof response.account.role === "string") acctRole = response.account.role;
   const out = Object.assign({}, response);
   delete out.token;
   out.authorized = !!response.relay;
@@ -870,7 +874,7 @@ ipcMain.on("disconnect", () => {
   if (stack) { stack.destroy(); stack = null; }
   /* An explicit disconnect is also a sign-out boundary.  Do not leave a
      bearer session or relay token available to a later renderer invocation. */
-  acctToken = null; acctRelay = null;
+  acctToken = null; acctRelay = null; acctRole = null;
 });
 
 /* ── unconditional shutdown ──
