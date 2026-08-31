@@ -35,7 +35,12 @@ function WriteState($status, $extra) {
     $o = @{ target = $Target; status = $status }
     if ($extra) { foreach ($k in $extra.Keys) { $o[$k] = $extra[$k] } }
     $tmp = $StateFile + '.tmp'
-    ($o | ConvertTo-Json -Compress) | Set-Content -Path $tmp -Encoding UTF8
+    # NOT Set-Content -Encoding UTF8: on Windows PowerShell 5.1 (the System32
+    # one that actually runs in production) that writes a BOM, Node's
+    # JSON.parse rejects BOM'd JSON, and the app reads the state as {} — which
+    # breaks the one-automatic-attempt-per-version guard. WriteAllText emits
+    # BOM-less UTF-8 on every PowerShell/.NET version.
+    [System.IO.File]::WriteAllText($tmp, ($o | ConvertTo-Json -Compress))
     Move-Item -Force -Path $tmp -Destination $StateFile
   } catch { Log ("state write failed: " + $_.Exception.Message) }
 }
@@ -56,7 +61,10 @@ function MoveRetry($from, $to, $tries) {
   return $false
 }
 
-Log ("swap starting: target=" + $Target + " parent=" + $ParentPid)
+# PSVersion identifies WHICH PowerShell ran (5.1 in production via System32,
+# 7.x in the test suites) — the two behave differently and a log that doesn't
+# say which one it is has already cost a debugging round
+Log ("swap starting: target=" + $Target + " parent=" + $ParentPid + " ps=" + $PSVersionTable.PSVersion)
 $moved = $false
 try {
   if (-not (IsExe $Fresh)) { throw "downloaded file is not a complete Windows executable" }

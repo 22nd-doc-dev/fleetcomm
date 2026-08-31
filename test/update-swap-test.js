@@ -78,6 +78,14 @@ const mk = () => fs.mkdtempSync(path.join(os.tmpdir(), "fcswap-"));
   assert(!fs.existsSync(path.join(d, "new.exe")), "the download was consumed");
   assert(r.state && r.state.status === "launched", "state records the install: " + JSON.stringify(r.state));
   assert.strictEqual(r.state.target, "9.9.9", "and records which version");
+  /* Windows PowerShell 5.1 — the System32 one production actually uses — used
+     to write this file with a BOM via Set-Content -Encoding UTF8; Node's
+     JSON.parse rejects BOM'd JSON and the loop guard read {}. The script must
+     emit BOM-less bytes on EVERY PowerShell (here we can only execute 7.x, so
+     also assert the byte, not just the successful parse). */
+  const rawState = fs.readFileSync(path.join(d, "state.json"));
+  assert.notStrictEqual(rawState[0], 0xEF, "state.json must not start with a BOM");
+  assert.strictEqual(rawState[0], 0x7B, "state.json starts with '{' so Node's JSON.parse accepts it");
   ok("the running executable is genuinely replaced by the downloaded one");
 }
 
