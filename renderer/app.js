@@ -657,6 +657,11 @@ function renderNets() {
       '<span class="nmwrap" title="' + escAttr(n.cfg.name) + '"><b class="nm">' + esc(n.cfg.name) +
       (n.cfg.enc ? ' <span class="enc">⚿</span>' : "") + '</b>' +
       '<span class="fq num">' + esc(n.cfg.freq) + '</span></span>' +
+      /* present on every row, shown by CSS only while the row is tx-live —
+         the strobing ON AIR badge, so the net carrying your voice is
+         unmistakable at a glance (the in-place class toggle relies on the
+         badge already being in the DOM) */
+      '<span class="onair">ON AIR</span>' +
       (ship ? '<span class="shipbadge">SHIP</span>' : "") +
       /* A ship's count must reflect the GROUP, not per-subnet tuning: with LSN
          ALL or the 1MC live you have the whole ship without tuning anything,
@@ -2112,6 +2117,14 @@ if (bridge.autotestHost) {
     console.log("[AUTOTEST] shot-stage=" + nets[s].cfg.name + " tuned=" + nets[s].tuned + " lsnall=" + nets[s].lsnAll);
     console.log("[AUTOTEST] ship-count-live=" + /ALL \d+ NETS/.test(card ? card.innerHTML : ""));
     console.log("[AUTOTEST] ship-no-stray-cnt=" + !(card && card.querySelector("[data-cnt]")));
+    /* light the ON AIR state so the visual smoke captures it strobing */
+    nets[s].tx = true; renderNets();
+    const txCard = $("netlist").querySelector('.net[data-i="' + s + '"]');
+    if (txCard) txCard.scrollIntoView({ block: "center" });
+    const badge = txCard && txCard.querySelector(".onair");
+    console.log("[AUTOTEST] onair-shown-while-tx=" + !!(badge && getComputedStyle(badge).display !== "none"));
+    const quiet = $("netlist").querySelector('.net:not(.tx-live) .onair');
+    console.log("[AUTOTEST] onair-hidden-when-quiet=" + !!(quiet && getComputedStyle(quiet).display === "none"));
   }, 24000);
 
   /* ── v0.9 feature checks ── */

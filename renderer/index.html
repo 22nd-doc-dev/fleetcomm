@@ -177,6 +177,22 @@
   .net.tx-live .nt b.nm{color:var(--amber)}
   .net.rx-live .fq{color:var(--grn)}
   .net.tx-live .fq{color:var(--amber)}
+  /* ── ON AIR ──
+     An amber name tint alone was easy to miss mid-op. While a row carries
+     YOUR transmission it gets a strobing ON AIR badge and a pulsing card
+     glow — one glance says exactly which nets your voice is going out on,
+     including several at once (multi-TX, the 1MC). */
+  .onair{display:none;flex:0 0 auto;align-items:center;gap:5px;font-size:10px;font-weight:900;
+    letter-spacing:1.2px;color:var(--amber);border:1px solid var(--amber);border-radius:3px;
+    padding:1px 6px;background:var(--amber-tint)}
+  .onair::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--amber);
+    animation:onairblink .9s ease-in-out infinite}
+  .net.tx-live .onair{display:inline-flex}
+  .net.tx-live{border-color:var(--amber);animation:txglow 1.2s ease-in-out infinite}
+  @keyframes onairblink{0%,100%{opacity:1}50%{opacity:.2}}
+  @keyframes txglow{0%,100%{box-shadow:0 0 0 1px var(--amber)}50%{box-shadow:0 0 9px 1px var(--amber)}}
+  @media (prefers-reduced-motion:reduce){.onair::before,.net.tx-live{animation:none}
+    .net.tx-live{box-shadow:0 0 0 1px var(--amber)}}
 
   /* drag handle + drop feedback */
   .grip{color:var(--muted);opacity:.45;cursor:grab;font-size:13px;letter-spacing:-1px;flex:0 0 auto}
