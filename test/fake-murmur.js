@@ -1,0 +1,79 @@
+"use strict";
+/* A disposable fake Mumble relay for the UI smoke test — no mumble-server
+ * needed, so the smoke test runs on ANY dev machine.
+ *
+ *   node test/fake-murmur.js          # listens on 127.0.0.1:64738
+ *   FLEETCOMM_AUTOTEST=127.0.0.1 npx electron . --enable-logging
+ *
+ * Speaks just enough of the control protocol for the autotest rig: answers
+ * Authenticate with the shipped org tree + ServerSync, echoes Ping, UserState
+ * (joins/listens) and TextMessage. Voice, ACLs and channel edits are ignored —
+ * the rig's edit checks report the refusal honestly, which is itself a path
+ * worth exercising. Loopback is exempt from certificate pinning, same as the
+ * relay suites.
+ */
+const path = require("path");
+const tls = require("tls");
+const protobuf = require("protobufjs");
+const selfsigned = require("selfsigned");
+const config = require(path.join(__dirname, "..", "config", "22nd-package.json"));
+
+const MSG = { Version: 0, Authenticate: 2, Ping: 3, ServerSync: 5, ChannelState: 7, UserState: 9, TextMessage: 11 };
+const root = protobuf.loadSync(path.join(__dirname, "..", "proto", "Mumble.proto"));
+const T = (n) => root.lookupType("MumbleProto." + n);
+function frame(type, name, payload) {
+  const body = T(name).encode(T(name).fromObject(payload)).finish();
+  const head = Buffer.alloc(6);
+  head.writeUInt16BE(type, 0); head.writeUInt32BE(body.length, 2);
+  return Buffer.concat([head, body]);
+}
+/* the real org tree from the shipped package, so the rig finds its nets */
+const channels = [{ id: 0, parent: null, name: "Root" }, { id: 1, parent: 0, name: config.rootChannel }];
+let nextId = 2;
+const add = (net, parent) => {
+  const id = nextId++;
+  channels.push({ id, parent, name: String(net.name || "").trim().replace(/[^ \-=\w#\[\]{}()@|]/g, "-").slice(0, 120) });
+  for (const sub of net.subnets || []) add(sub, id);
+};
+for (const net of config.nets) add(net, 1);
+
+let session = 0;
+const clients = new Set();
+(async () => {
+  const pems = await selfsigned.generate([{ name: "commonName", value: "fake-murmur" }], { days: 1, keySize: 2048 });
+  tls.createServer({ key: pems.private, cert: pems.cert }, (s) => {
+    const me = { s, session: ++session, name: "?" };
+    clients.add(me);
+    s.on("close", () => clients.delete(me));
+    s.on("error", () => {});
+    let buf = Buffer.alloc(0);
+    s.on("data", (d) => {
+      buf = Buffer.concat([buf, d]);
+      while (buf.length >= 6) {
+        const type = buf.readUInt16BE(0), size = buf.readUInt32BE(2);
+        if (buf.length < 6 + size) break;
+        const body = buf.subarray(6, 6 + size);
+        buf = buf.subarray(6 + size);
+        try {
+          if (type === MSG.Authenticate) {
+            me.name = T("Authenticate").toObject(T("Authenticate").decode(body)).username || "?";
+            s.write(frame(MSG.Version, "Version", { versionV1: (1 << 16) | (4 << 8) | 230 }));
+            for (const c of channels) s.write(frame(MSG.ChannelState, "ChannelState",
+              Object.assign({ channelId: c.id, name: c.name }, c.parent == null ? {} : { parent: c.parent })));
+            for (const c of clients) s.write(frame(MSG.UserState, "UserState", { session: c.session, name: c.name, channelId: 0 }));
+            s.write(frame(MSG.ServerSync, "ServerSync", { session: me.session, welcomeText: "fake" }));
+          } else if (type === MSG.Ping) {
+            s.write(frame(MSG.Ping, "Ping", {}));
+          } else if (type === MSG.UserState) {
+            const m = T("UserState").toObject(T("UserState").decode(body));
+            const echo = Object.assign({}, m, { session: me.session, name: me.name });
+            for (const c of clients) c.s.write(frame(MSG.UserState, "UserState", echo));
+          } else if (type === MSG.TextMessage) {
+            const m = T("TextMessage").toObject(T("TextMessage").decode(body));
+            for (const c of clients) if (c !== me) c.s.write(frame(MSG.TextMessage, "TextMessage", Object.assign({}, m, { actor: me.session })));
+          }
+        } catch (e) { /* malformed test traffic — ignore */ }
+      }
+    });
+  }).listen(64738, "127.0.0.1", () => console.log("fake murmur ready on 127.0.0.1:64738 — ctrl-c to stop"));
+})();
