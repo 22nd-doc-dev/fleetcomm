@@ -94,6 +94,9 @@
     border:1px solid var(--bezline);border-radius:5px;background:var(--bg)}
   .rd label{font-size:10px;font-weight:800;letter-spacing:1.4px;color:var(--muted);
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .volrd{min-width:120px}
+  .volrd input[type=range]{width:104px;margin:3px 0 1px;accent-color:var(--accent)}
+  .volrd label .num{color:var(--ink);margin-left:4px}
   /* a long callsign truncates inside its instrument instead of pushing the row */
   .rd .v{font-size:13px;font-weight:800;letter-spacing:.5px;white-space:nowrap;
     overflow:hidden;text-overflow:ellipsis;display:block;min-width:0}
@@ -436,6 +439,10 @@
   <div class="rd" id="opchip" style="display:none"><label>OPERATOR</label><span class="v"><span id="opname"></span><span class="role" id="oprole"></span></span></div>
   <div class="rd"><label>RELAY</label><span class="v dim" id="relayLbl">OFFLINE</span></div>
   <div class="rd"><label>MIC</label><span class="v dim" id="micLbl">NOT REQ</span></div>
+  <div class="rd volrd"><label>VOICE VOL <span class="num" id="masterVolVal"></span></label>
+    <input type="range" id="masterVolSl" min="0" max="150" step="5" title="Master volume for everything the nets play — per-net VOL still applies underneath"></div>
+  <div class="rd volrd"><label>1MC VOL <span class="num" id="sbVolVal"></span></label>
+    <input type="range" id="sbVolSl" min="0" max="150" step="5" title="How loud 1MC clips are piped — the fleet hears this level, independent of VOICE VOL"></div>
   <div class="rd"><label>OPS</label><span class="v" id="opsCount">0</span></div>
   <div class="rd"><label>UTC</label><span class="v num" id="clock">--:--:--</span></div>
   <button class="icobtn" id="ovbtn" title="Game overlay">▣</button>

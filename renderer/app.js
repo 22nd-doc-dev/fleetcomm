@@ -298,6 +298,25 @@ window.addEventListener("keyup", (e) => { if (!gActive) onKeyUp("dom", e.code, e
 
 /* ══ AUDIO ══ */
 const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+/* ── master busses ──
+   Two independent levels in the header: VOICE scales everything the nets play
+   locally (every RX chain, chirps, squelch tails — one gain node they all
+   route through), 1MC scales how loud clips are piped — both what the fleet
+   hears and the sender's own monitor. Per-net volume knobs still do their job
+   underneath; these are the room-level trims. */
+const masterGain = ctx.createGain();
+masterGain.connect(ctx.destination);
+let masterVol = Math.max(0, Math.min(150, Number(store.get("masterVol", 100)) || 100));
+let sbVol = Math.max(0, Math.min(150, Number(store.get("sbVol", 100)) || 100));
+function applyMasterVols() {
+  masterGain.gain.value = masterVol / 100;
+  $("masterVolSl").value = masterVol; $("masterVolVal").textContent = masterVol + "%";
+  $("sbVolSl").value = sbVol; $("sbVolVal").textContent = sbVol + "%";
+  store.set("masterVol", masterVol); store.set("sbVol", sbVol);
+}
+$("masterVolSl").addEventListener("input", function () { masterVol = +this.value; applyMasterVols(); });
+$("sbVolSl").addEventListener("input", function () { sbVol = +this.value; applyMasterVols(); });
+applyMasterVols();
 const FRAME = 960;
 let capNode = null, txSet = new Set(), txEndPending = new Set(), bcastIdx = new Set();
 const encoder = new OpusScript(48000, 1, OpusScript.Application.VOIP);
@@ -470,7 +489,7 @@ function wireChain(n) {
   for (let i = 0; i < p.stages; i++) { const lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = p.lp; lp.Q.value = 0.7; head.connect(lp); nodes.push(lp); head = lp; }
   if (p.drive > 0) { const ws = ctx.createWaveShaper(); ws.curve = shaperCurve(p.drive); ws.oversample = "2x"; head.connect(ws); nodes.push(ws); head = ws; }
   if (p.comp) { const cp = ctx.createDynamicsCompressor(); cp.threshold.value = p.comp.th; cp.ratio.value = p.comp.ratio; cp.attack.value = p.comp.atk; cp.release.value = p.comp.rel; cp.knee.value = 4; head.connect(cp); nodes.push(cp); head = cp; }
-  head.connect(n.panNode); n.panNode.connect(ctx.destination);
+  head.connect(n.panNode); n.panNode.connect(masterGain);
   n.noiseGain = ctx.createGain(); n.noiseGain.gain.value = 0;
   if (p.noise > 0) { const src = ctx.createBufferSource(); src.buffer = getNoiseBuf(); src.loop = true; src.connect(n.noiseGain); n.noiseGain.connect(n.panNode); src.start(); n.noiseSrc = src; nodes.push(n.noiseGain); }
   n.fxNodes = nodes;
@@ -514,7 +533,7 @@ function beep(f1, f2, dur, g0) {
     o.type = "square"; o.frequency.setValueAtTime(f1, t); o.frequency.linearRampToValueAtTime(f2, t + dur);
     g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(g0, t + 0.008);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    o.connect(g); g.connect(ctx.destination); o.start(t); o.stop(t + dur + 0.02);
+    o.connect(g); g.connect(masterGain); o.start(t); o.stop(t + dur + 0.02);
   } catch (e) {}
 }
 const chirpDown = () => beep(1650, 1250, 0.07, 0.06);
@@ -1296,7 +1315,9 @@ async function playClipOnNet(s, net) {
   let peak = 0;
   for (let i = 0; i < len; i++) { const a = mono[i] < 0 ? -mono[i] : mono[i]; if (a > peak) peak = a; }
   const CLIP_TARGET = 0.18;                      /* well under voice — a clip should sit behind people, not over them */
-  const norm = peak > 0.0001 ? Math.min(4, CLIP_TARGET / peak) : 1;
+  /* the 1MC master trim rides on top of normalisation: it scales what the
+     fleet hears AND the sender's monitor, and is independent of VOICE VOL */
+  const norm = (peak > 0.0001 ? Math.min(4, CLIP_TARGET / peak) : 1) * (sbVol / 100);
 
   /* ── where a clip goes ──
      It is the SHIPWIDE soundboard, so on a ship group it always reaches the
@@ -1319,6 +1340,8 @@ async function playClipOnNet(s, net) {
   /* local monitor so the sender hears what went out, at the same relative level */
   const src = ctx.createBufferSource(); src.buffer = audio;
   const g = ctx.createGain(); g.gain.value = 0.5 * norm;
+  /* deliberately NOT through masterGain: the monitor follows the 1MC slider
+     only, so turning voice down doesn't hide what you're piping to the fleet */
   src.connect(g); g.connect(ctx.destination); src.start();
 
   const enc = new OpusScript(48000, 1, OpusScript.Application.AUDIO);
@@ -2274,6 +2297,14 @@ if (bridge.autotestHost) {
     cmdToken = ""; renderSoundLib();
     L("sndlib-hidden-without-command", $("sndLib").style.display === "none");
     cmdToken = sbCmdWas; renderSoundLib();
+
+    /* master volume sliders: voice drives the master bus, 1MC is independent */
+    const volWas = masterVol, sbWas = sbVol;
+    $("masterVolSl").value = 60; $("masterVolSl").dispatchEvent(new Event("input"));
+    L("mastervol-drives-bus", Math.abs(masterGain.gain.value - 0.6) < 0.001 && store.get("masterVol") === 60);
+    $("sbVolSl").value = 130; $("sbVolSl").dispatchEvent(new Event("input"));
+    L("sbvol-independent", Math.abs(masterGain.gain.value - 0.6) < 0.001 && sbVol === 130 && store.get("sbVol") === 130);
+    masterVol = volWas; sbVol = sbWas; applyMasterVols();
     L("bezel-wraps", getComputedStyle(document.getElementById("bezel")).flexWrap);
     /* narrow the window and confirm nothing overflows the bezel horizontally */
     document.body.style.width = "720px";
