@@ -1,4 +1,4 @@
 {
-  "version": "0.12.8",
-  "notes": "Ship rows now say 1MC where they used to say TX ALL — same control, the fleet's own name for it: transmit to every net aboard, no tuning needed. The 1MC clip library is now fleet property instead of files on one machine: COMMAND manages it under SYS → 1MC SOUND LIBRARY, every clip added there is shared with every COMMAND account and appears on the 1MC of every ship net, and removing a clip removes it fleet-wide. Clips are capped at 4MB each. And chat has come to the COMMS board: a NET TEXT panel for the selected net now sits above the COMM LOG with its own send box, and the divider between them drags — give the space to chat or to the log, your choice, remembered. The full CHAT page with its per-net tabs is unchanged."
+  "version": "0.12.9",
+  "notes": "FleetComm no longer closes for an update on faith. On one machine, Windows was killing the update installer the instant it started — the app had already closed, so the update simply never happened, with nothing to show for it. Now the installer proves it is actually running before FleetComm exits. If it is killed, FleetComm relaunches it through the Windows Task Scheduler, which runs it out of reach of what killed it the first time. And if that is blocked too, FleetComm stays open and tells you exactly that, instead of closing into nothing."
 }

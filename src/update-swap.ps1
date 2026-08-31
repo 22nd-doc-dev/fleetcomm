@@ -65,6 +65,12 @@ function MoveRetry($from, $to, $tries) {
 # 7.x in the test suites) — the two behave differently and a log that doesn't
 # say which one it is has already cost a debugging round
 Log ("swap starting: target=" + $Target + " parent=" + $ParentPid + " ps=" + $PSVersionTable.PSVersion)
+# Heartbeat: the app WAITS for this file before it exits. On one machine the
+# directly-spawned PowerShell was killed at birth — spawn succeeded, then zero
+# output, no state change, nothing — so the app now exits only once the swap
+# has proven it is actually executing, and falls back to launching us through
+# the Task Scheduler (outside the app's process tree) when this never appears.
+try { New-Item -ItemType File -Force -Path ($StateFile + '.alive') | Out-Null } catch {}
 $moved = $false
 try {
   if (-not (IsExe $Fresh)) { throw "downloaded file is not a complete Windows executable" }

@@ -512,6 +512,45 @@ function autoUpdateBlocked(version) { return blocked(readUpdState(), version); }
 
 ipcMain.handle("update-note", () => updateNote);
 
+function waitForFile(file, timeoutMs) {
+  return new Promise((resolve) => {
+    const deadline = Date.now() + timeoutMs;
+    const poll = () => {
+      if (fs.existsSync(file)) return resolve(true);
+      if (Date.now() >= deadline) return resolve(false);
+      setTimeout(poll, 250);
+    };
+    poll();
+  });
+}
+/* Run the swap via the Task Scheduler: the task is started by the schedule
+   service, not by us, so it is outside our process tree and survives whatever
+   killed our directly-spawned children (portable-launcher cleanup, AV rules
+   about unsigned apps starting PowerShell). schtasks /tr is capped at ~261
+   chars, far too short for the full argument list — so the arguments are baked
+   into a tiny wrapper script and the task just runs the wrapper. */
+function scheduleSwapTask(powershell, swapScript, args, outLog) {
+  const { spawnSync } = require("child_process");
+  const q = (s) => "'" + String(s).replace(/'/g, "''") + "'";
+  try {
+    const wrap = swapScript.replace(/\.ps1$/, "") + "-wrap.ps1";
+    const pairs = [];
+    for (let i = args.indexOf("-Exe"); i >= 0 && i + 1 < args.length; i += 2) pairs.push(args[i] + " " + q(args[i + 1]));
+    fs.writeFileSync(wrap, "& " + q(swapScript) + " " + pairs.join(" ") + " *>> " + q(outLog) + "\n");
+    const tr = '"' + powershell + '" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + wrap + '"';
+    const create = spawnSync("schtasks.exe", ["/create", "/f", "/tn", "FleetCommUpdate", "/sc", "once", "/st", "23:59", "/tr", tr], { encoding: "utf8", windowsHide: true });
+    const run = spawnSync("schtasks.exe", ["/run", "/tn", "FleetCommUpdate"], { encoding: "utf8", windowsHide: true });
+    try {
+      fs.appendFileSync(outLog, new Date().toISOString() + " schtasks create rc=" + create.status + " " +
+        String(create.stdout || "").trim() + String(create.stderr || "").trim() +
+        " | run rc=" + run.status + " " + String(run.stdout || "").trim() + String(run.stderr || "").trim() + "\n");
+    } catch (e) {}
+    return run.status === 0;
+  } catch (error) {
+    try { fs.appendFileSync(outLog, new Date().toISOString() + " schtasks fallback threw: " + error.message + "\n"); } catch (e) {}
+    return false;
+  }
+}
 ipcMain.handle("do-update", async (ev, info) => {
   const pkgCfg = require("./config/22nd-package.json");
   const origExe = process.env.PORTABLE_EXECUTABLE_FILE;
@@ -567,8 +606,13 @@ ipcMain.handle("do-update", async (ev, info) => {
        before its first Log line (param binding, policy, AV) used to vanish
        without a trace — five silent handoffs on one machine before anyone
        could say why. The child keeps its own handle after we close ours. */
+    const swapOutPath = path.join(app.getPath("userData"), "swap-output.log");
+    /* stale heartbeat from an earlier attempt must go BEFORE the spawn — the
+       new installer may write its own within milliseconds */
+    const alive = updStatePath() + ".alive";
+    try { fs.unlinkSync(alive); } catch (e) {}
     let swapOut = "ignore";
-    try { swapOut = fs.openSync(path.join(app.getPath("userData"), "swap-output.log"), "a"); } catch (e) {}
+    try { swapOut = fs.openSync(swapOutPath, "a"); } catch (e) {}
     const child = require("child_process").spawn(powershell, args, {
       detached: true, stdio: ["ignore", swapOut, swapOut], windowsHide: true,
       cwd: app.getPath("temp")     /* never our own unpack dir, which is about to vanish */
@@ -578,7 +622,34 @@ ipcMain.handle("do-update", async (ev, info) => {
       child.once("spawn", resolve);
       child.once("error", reject);
     });
+    let childExited = false;
+    child.once("exit", () => { childExited = true; });
     child.unref();
+    /* ── do not exit on faith ──
+       On one machine every directly-spawned installer was killed at birth:
+       spawn succeeded, then zero output, no swap, and the app had already
+       exited — "it just closed and nothing happened". The swap script writes a
+       heartbeat file the moment it executes; we leave only after seeing it.
+       No heartbeat AND the child provably dead → relaunch the installer
+       through the Task Scheduler, which runs it OUTSIDE our process tree,
+       beyond whatever kills our children. (Only when provably dead: a swap
+       that is merely slow to start must never gain a racing twin.)
+       Still nothing → stay open and say so, instead of dying silently. */
+    const appLog = (m) => { try { fs.appendFileSync(logFile, new Date().toISOString() + " app: " + m + "\n"); } catch (e) {} };
+    let started = await waitForFile(alive, 8000);
+    if (!started && !childExited) started = await waitForFile(alive, 12000);  /* just a slow cold start? */
+    if (!started && childExited) {
+      appLog("direct installer died without a heartbeat — falling back to the Task Scheduler");
+      started = scheduleSwapTask(powershell, swap, args, swapOutPath) && (await waitForFile(alive, 12000));
+    }
+    if (!started) {
+      appLog("no installer heartbeat by any route — giving up loudly");
+      writeUpdState({ target: version, status: "failed", failedAt: Date.now(),
+        reason: "Windows terminated the update installer before it could run" });
+      updateInProgress = false;
+      return { ok: false, error: "Windows blocked the update installer — likely antivirus. " +
+        "Install the new version by hand; details are in swap-output.log." };
+    }
     setTimeout(shutdown, 300);
     return { ok: true };
   } catch (e) {

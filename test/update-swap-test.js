@@ -86,6 +86,10 @@ const mk = () => fs.mkdtempSync(path.join(os.tmpdir(), "fcswap-"));
   const rawState = fs.readFileSync(path.join(d, "state.json"));
   assert.notStrictEqual(rawState[0], 0xEF, "state.json must not start with a BOM");
   assert.strictEqual(rawState[0], 0x7B, "state.json starts with '{' so Node's JSON.parse accepts it");
+  /* the app refuses to exit until this heartbeat proves the installer is
+     actually executing — a killed-at-birth installer must not take the app
+     down with it in silence */
+  assert(fs.existsSync(path.join(d, "state.json.alive")), "the swap writes its heartbeat file");
   ok("the running executable is genuinely replaced by the downloaded one");
 }
 
