@@ -44,8 +44,11 @@ const $ = (id) => document.getElementById(id);
 /* ── persisted prefs ── */
 let fx = store.get("fx", true), fxPreset = store.get("fxPreset", "standard");
 let themeMode = store.get("themeMode", "dark");
-const THEME_DEFAULTS = { bg: "#0b0f13", panel: "#11161b", bez: "#1c2126", ink: "#e8edf1",
-  muted: "#8b979f", line: "#242b32", accent: "#4fd4e8", grn: "#49d17c", amber: "#ffb648", red: "#ff5a5a" };
+/* night-watch defaults — ink paper, bone text, gold accent, vermilion TX.
+   These must track the [data-theme="dark"] stylesheet tokens or "RESET TO
+   NIGHT DEFAULTS" hands back a palette that doesn't match night watch. */
+const THEME_DEFAULTS = { bg: "#0C141C", panel: "#111E29", bez: "#090F16", ink: "#E7E0CD",
+  muted: "#77828F", line: "#263039", accent: "#C9A96A", grn: "#5CA877", amber: "#CE7250", red: "#C0604A" };
 let customTheme = Object.assign({}, THEME_DEFAULTS, store.get("customTheme", {}));
 let autoUpdate = store.get("autoUpdate", true);
 
@@ -238,8 +241,8 @@ function applyTheme() {
     r.setAttribute("data-theme", dark ? "dark" : "light");
     /* take the bezel and text colours from the stylesheet that just applied, so
        the window controls always match the header they sit in */
-    msg = { dark, bg: cssHex("--bez", dark ? "#1c2126" : "#c8cdd2"),
-            ink: cssHex("--ink", dark ? "#e8edf1" : "#12242e"), palette: null };
+    msg = { dark, bg: cssHex("--bez", dark ? "#090F16" : "#EAE3D1"),
+            ink: cssHex("--ink", dark ? "#E7E0CD" : "#16222C"), palette: null };
   }
   store.set("themeMode", themeMode); store.set("customTheme", customTheme);
   $("sthemesel").value = themeMode;
@@ -1862,7 +1865,10 @@ function showPage(id) {
      just added appear without a re-sign-in */
   if (id === "settings") refreshSounds();
 }
-document.querySelectorAll(".pkey").forEach(k => k.addEventListener("click", () => showPage(k.dataset.page)));
+document.querySelectorAll(".pkey").forEach(k => k.addEventListener("click", () => {
+  showPage(k.dataset.page);
+  document.body.classList.remove("rail-open");
+}));
 let opsTimer = null;
 function pollOps() {
   clearInterval(opsTimer);
@@ -1937,6 +1943,9 @@ window.addEventListener("keydown", (e) => {
   else if (e.key === "0") { uiScale = 1; applyScale(); e.preventDefault(); }
 });
 $("themebtn").addEventListener("click", () => { themeMode = dark ? "light" : "dark"; applyTheme(); });
+/* narrow windows: the command rail slides off-canvas; the burger brings it back */
+$("railBurger").addEventListener("click", (e) => { e.stopPropagation(); document.body.classList.toggle("rail-open"); });
+$("railScrim").addEventListener("click", () => document.body.classList.remove("rail-open"));
 $("sthemesel").addEventListener("change", function () { themeMode = this.value; applyTheme(); });
 Object.keys(THEME_DEFAULTS).forEach(k => {
   const el = $("c_" + k); if (!el) return;
@@ -2131,7 +2140,17 @@ function toast(msg) {
 })();
 
 /* clock */
-setInterval(() => { $("clock").textContent = utc(); }, 1000);
+/* the fleet clock: lore year (real + 930), day-of-year, UTC, "SET" suffix —
+   the same ambient ritual as the org site. Still UTC underneath, so it stays
+   a real ops clock; the log keeps plain utc() timestamps. */
+function fleetTime() {
+  const n = new Date();
+  const doy = String(Math.ceil((Date.now() - Date.UTC(n.getUTCFullYear(), 0, 0)) / 864e5)).padStart(3, "0");
+  return (n.getUTCFullYear() + 930) + "." + doy + " // " + utc() + " SET";
+}
+const clockTick = () => { $("clock").textContent = fleetTime(); };
+clockTick();
+setInterval(clockTick, 1000);
 
 /* init */
 try {
@@ -2250,6 +2269,27 @@ if (bridge.autotestHost) {
     console.log("[AUTOTEST] onair-hidden-when-quiet=" + !!(quiet && getComputedStyle(quiet).display === "none"));
   }, 24000);
 
+  /* visual smoke SERIES — after main's 28s COMMS capture, walk every station
+     and both watches. Each shot lands as <FLEETCOMM_SHOT stem>-<name>.png;
+     the invoke no-ops (ok:false) in runs without FLEETCOMM_SHOT. */
+  setTimeout(async () => {
+    const wait = (ms) => new Promise((res) => setTimeout(res, ms));
+    const shot = (name) => ipcRenderer.invoke("autotest-shot", name).catch(() => ({ ok: false }));
+    const first = await shot("probe");
+    if (first && first.ok) {
+      for (const [pg, name] of [["pgChat", "chat"], ["pgAtc", "atc"], ["settings", "sys"]]) {
+        showPage(pg); await wait(1000); await shot(name);
+      }
+      themeMode = "light"; applyTheme(); showPage("pgComms"); await wait(1000); await shot("day");
+      themeMode = "dark"; applyTheme(); await wait(400);
+      /* the quarterdeck: un-hide the sign-in overlay long enough for its
+         entrance to settle, capture, put it back */
+      $("connectOv").classList.remove("hidden"); await wait(1400); await shot("signin");
+      $("connectOv").classList.add("hidden");
+      console.log("[AUTOTEST] shot-series-done");
+    }
+  }, 30000);
+
   /* ── v0.9 feature checks ── */
   setTimeout(async () => {
     const cs = getComputedStyle(document.documentElement);
@@ -2288,7 +2328,14 @@ if (bridge.autotestHost) {
     cmdToken = "autotest-token";
     /* typography actually applied? */
     document.fonts.ready.then(() => {
-      L("font-loaded", document.fonts.check('16px "Atkinson Hyperlegible"'));
+      /* Atkinson now serves the instrument values (bold face) — check the
+         weight that's actually on duty */
+      L("font-loaded", document.fonts.check('700 16px "Atkinson Hyperlegible"'));
+      /* the trio IS the brand — a missing woff2 silently falls back to
+         Arial/Georgia/Consolas and the whole watch reads wrong */
+      L("font-display-loaded", document.fonts.check('600 16px "Barlow Condensed"'));
+      L("font-prose-loaded", document.fonts.check('16px "Newsreader"'));
+      L("font-mono-loaded", document.fonts.check('16px "IBM Plex Mono"'));
       L("body-font", getComputedStyle(document.body).fontFamily.split(",")[0]);
       L("body-size", getComputedStyle(document.body).fontSize);
       const tiny = [...document.querySelectorAll("*")]
@@ -2430,7 +2477,7 @@ if (bridge.autotestHost) {
     masterBinds.active = { src: "label", label: "F14" }; renderMasterBinds();
     L("ptt-bound-clears", !document.getElementById("pttRow").classList.contains("unbound"));
     masterBinds.active = savedActive; renderMasterBinds();
-    L("sys-key-cog", (document.getElementById("sysKey").textContent || "").indexOf("\u2699") >= 0);
+    L("sys-key-label", (document.getElementById("sysKey").textContent || "").indexOf("SYS") >= 0);
     L("device-pickers", !!document.getElementById("micSel") && !!document.getElementById("outSel"));
 
     /* update visibility: busy overlay shows and clears; a version change
@@ -2516,11 +2563,14 @@ if (bridge.autotestHost) {
     $("sbVolSl").value = 130; $("sbVolSl").dispatchEvent(new Event("input"));
     L("sbvol-independent", Math.abs(masterGain.gain.value - 0.6) < 0.001 && sbVol === 130 && store.get("sbVol") === 130);
     masterVol = volWas; sbVol = sbWas; applyMasterVols();
-    L("bezel-wraps", getComputedStyle(document.getElementById("bezel")).flexWrap);
-    /* narrow the window and confirm nothing overflows the bezel horizontally */
+    /* the command rail replaced the bezel: it must never overflow sideways,
+       and the docstrip must truncate rather than push the clock off-window */
+    const railEl = document.getElementById("rail");
+    L("rail-overflow-x", Math.max(0, railEl.scrollWidth - railEl.clientWidth));
+    L("rail-nav-keys", document.querySelectorAll("#rail .pkey").length);
     document.body.style.width = "720px";
-    const bz = document.getElementById("bezel");
-    L("bezel-overflow-at-720", Math.max(0, bz.scrollWidth - bz.clientWidth));
+    const ds = document.getElementById("docstrip");
+    L("docstrip-overflow-at-720", Math.max(0, ds.scrollWidth - ds.clientWidth));
     document.body.style.width = "";
 
     /* soundboard: COMMAND-gated, and visible on a ship net */
