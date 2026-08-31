@@ -33,7 +33,14 @@ app.commandLine.appendSwitch("disable-renderer-backgrounding");
    sharing the single-instance lock with a genuinely running FleetComm.
    Before the lock on purpose — the lock is scoped to userData. */
 if (process.env.FLEETCOMM_AUTOTEST) {
-  app.setPath("userData", fs.mkdtempSync(path.join(require("os").tmpdir(), "fleetcomm-autotest-")));
+  const tmp = require("os").tmpdir();
+  /* sweep earlier rigs' throwaway profiles — they accumulate otherwise */
+  try {
+    for (const d of fs.readdirSync(tmp)) {
+      if (d.startsWith("fleetcomm-autotest-")) { try { fs.rmSync(path.join(tmp, d), { recursive: true, force: true }); } catch (e) {} }
+    }
+  } catch (e) {}
+  app.setPath("userData", fs.mkdtempSync(path.join(tmp, "fleetcomm-autotest-")));
 }
 
 /* Only one FleetComm at a time — a second launch just focuses the first. */

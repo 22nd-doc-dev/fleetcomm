@@ -31,4 +31,22 @@ assert(!/22nd\.space/.test(deployment), "deployment instructions must not depend
 assert(/--ip-address/.test(deployment) && /shortlived/.test(deployment),
   "deployment provisions a trusted short-lived certificate for the relay IP");
 
+/* A 2026-08-30 autotest run against a real profile persisted 127.0.0.1 into
+   hostOverride, and the app dialed the operator's own machine for two days —
+   reported as a relay ban that never existed. Two guards must both hold:
+   the startup heal that drops a loopback override outside the rig, and the
+   persist path that clears (never just skips) an override equal to the
+   shipped host, gated so the rig can never write host prefs at all. */
+assert(/bridge\.autotestHost && \/\^\(127\\\./.test(app.replace(/!\s*/g, "!")) || /!bridge\.autotestHost[^\n]*127\\\./.test(app),
+  "startup must heal a loopback hostOverride outside the autotest rig");
+assert(/!bridge\.autotestHost[^\n]*store\.set\("hostOverride", host !== pkg\.server\.host \? host : ""\)/.test(app),
+  "connecting on the shipped host must CLEAR a stale override, and the rig must never persist one");
+{
+  const healRe = /^(127\.|localhost$|::1$|\[::1\]$)/i;
+  assert(healRe.test("127.0.0.1") && healRe.test("localhost") && healRe.test("::1"),
+    "the heal recognizes every loopback spelling");
+  assert(!healRe.test("68.183.103.215") && !healRe.test("relay.example.org"),
+    "and never touches a real relay host");
+}
+
 console.log("✔ RENDERER BOOTSTRAP PASS — Opus policy and fail-visible authentication startup are guarded");

@@ -1644,6 +1644,14 @@ $("overrideBtn").addEventListener("click", () => setOverride(!override));
 let acct = null; // public account state only; relay credentials stay in Electron main
 const discordMode = !!(pkg.accounts && pkg.accounts.url && pkg.accounts.discordClientId) && !bridge.autotestHost;
 if (discordMode && cmdToken) { cmdToken = ""; store.set("cmdToken", ""); }
+/* HEAL: a 2026-08-30 autotest run against a REAL profile persisted its
+   loopback host into hostOverride, leaving that app dialing the operator's
+   own machine forever after — surfaced as "rate-limiting" (v0.12.13) and
+   "relay isn't answering" (v0.12.14) with the relay perfectly healthy.
+   Outside the rig, a loopback override can only be that pollution: drop it.
+   (Deliberate local-relay testing re-enters it per session.) */
+if (!bridge.autotestHost && /^(127\.|localhost$|::1$|\[::1\]$)/i.test(store.get("hostOverride", "")))
+  store.set("hostOverride", "");
 function currentHost() { return store.get("hostOverride", "") || pkg.server.host; }
 $("relayname").textContent = pkg.org.toUpperCase();
 $("relayedit").addEventListener("click", () => { $("hostrow").style.display = "flex"; $("hostIn").value = currentHost(); $("hostIn").focus(); });
@@ -1655,7 +1663,11 @@ async function doConnect(cs, btn) {
   callsign = cs;
   if (myCallsigns.indexOf(cs) < 0) myCallsigns.unshift(cs);
   store.set("callsign", cs); store.set("callsigns", myCallsigns.slice(0, 12));
-  if (host !== pkg.server.host) store.set("hostOverride", host);
+  /* An override equal to the shipped host is CLEARED, not merely left unset —
+     a stale override used to be immortal (typing the correct host dialed
+     right once, then next launch went back to the stale value). Never persist
+     the autotest rig's host into any profile. */
+  if (!bridge.autotestHost) store.set("hostOverride", host !== pkg.server.host ? host : "");
   renderCsList();
   /* disabled while the invoke is in flight — mashing CONNECT used to launch
      one full control dial per click, each superseding the last mid-handshake */

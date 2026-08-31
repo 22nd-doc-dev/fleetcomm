@@ -56,7 +56,15 @@ function run(dir, opts) {
   const log = (() => { try { return fs.readFileSync(path.join(dir, "swap.log"), "utf8"); } catch (e) { return ""; } })();
   return { code, state, log };
 }
-const mk = () => fs.mkdtempSync(path.join(os.tmpdir(), "fcswap-"));
+/* Each dir holds ~82MB of fake executables. Left behind, twenty runs on a
+   dev machine is 4GB of invisible temp garbage — it genuinely filled a disk.
+   Sweep strays from earlier runs first, remove our own on the way out. */
+for (const d of fs.readdirSync(os.tmpdir())) {
+  if (d.startsWith("fcswap-")) { try { fs.rmSync(path.join(os.tmpdir(), d), { recursive: true, force: true }); } catch (e) {} }
+}
+const made = [];
+const mk = () => { const d = fs.mkdtempSync(path.join(os.tmpdir(), "fcswap-")); made.push(d); return d; };
+process.on("exit", () => { for (const d of made) { try { fs.rmSync(d, { recursive: true, force: true }); } catch (e) {} } });
 
 /* ── a failed relaunch must NOT undo a good install ── */
 {
