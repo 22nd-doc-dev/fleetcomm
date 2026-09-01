@@ -12,7 +12,8 @@
  *      SUPW (mumble SuperUser pw) · BOOTSTRAP_TOKEN (one-time COMMAND claim code)
  *      MUMBLE_HOST (127.0.0.1) · RELAY_PASSWORD (serverpassword handed to approved users)
  *      ROOT_CHANNEL (org root whose COMMAND permissions this service manages)
- *      SESSION_TTL_HOURS (12)
+ *      SESSION_TTL_HOURS (12) — idle timeout; active sessions renew themselves
+ *      SESSION_ABS_HOURS (72) — hard ceiling: no session outlives this from creation
  *      MOCK_DISCORD=1 (tests only: accept {mockId, mockName} instead of a real token)
  */
 const http = require("http");
@@ -39,8 +40,19 @@ const BOOTSTRAP_TOKEN = process.env.BOOTSTRAP_TOKEN || "";
 const SESSION_TTL_HOURS = Number(process.env.SESSION_TTL_HOURS || 12);
 if (!Number.isFinite(SESSION_TTL_HOURS) || SESSION_TTL_HOURS < 1 || SESSION_TTL_HOURS > 168)
   throw new Error("SESSION_TTL_HOURS must be between 1 and 168");
-const SESSION_TTL_MS = SESSION_TTL_HOURS * 60 * 60 * 1000;
+/* Sessions RENEW while in use (an op longer than the TTL used to sign every
+   operator out mid-flight) but never past an absolute ceiling from creation —
+   so a stolen token still dies, and revocation semantics stay intact. */
+const SESSION_ABS_HOURS = Number(process.env.SESSION_ABS_HOURS || 72);
+if (!Number.isFinite(SESSION_ABS_HOURS) || SESSION_ABS_HOURS < SESSION_TTL_HOURS || SESSION_ABS_HOURS > 720)
+  throw new Error("SESSION_ABS_HOURS must be between SESSION_TTL_HOURS and 720");
 const MOCK = process.env.MOCK_DISCORD === "1";
+/* millisecond overrides exist for the test rig only — production always
+   speaks hours */
+const SESSION_TTL_MS = MOCK && process.env.SESSION_TTL_MS
+  ? Number(process.env.SESSION_TTL_MS) : SESSION_TTL_HOURS * 60 * 60 * 1000;
+const SESSION_ABS_MS = MOCK && process.env.SESSION_ABS_MS
+  ? Number(process.env.SESSION_ABS_MS) : SESSION_ABS_HOURS * 60 * 60 * 1000;
 /* ── Discord guild gate ──
    Only members of the fleet's Discord may sign in. This is checked HERE, on the
    server, against Discord's own API — never in the client, which an operator
@@ -275,9 +287,18 @@ function auth(req) {
   const m = /^Bearer (.+)$/.exec(req.headers.authorization || "");
   if (!m) return null;
   const session = db.sessions[m[1]];
-  if (!session || typeof session !== "object" || !Number.isFinite(Number(session.expiresAt)) || session.expiresAt <= Date.now()) {
+  const now = Date.now();
+  if (!session || typeof session !== "object" || !Number.isFinite(Number(session.expiresAt)) || session.expiresAt <= now) {
     if (session) { delete db.sessions[m[1]]; persist(); }
     return null;
+  }
+  /* sliding renewal: any authenticated activity in the back half of the TTL
+     extends the session, capped at the absolute ceiling. Renewing at most
+     once per half-TTL keeps the persist() cadence negligible. */
+  const absEnd = (Number(session.createdAt) || now) + SESSION_ABS_MS;
+  if (session.expiresAt - now < SESSION_TTL_MS / 2 && session.expiresAt < absEnd) {
+    session.expiresAt = Math.min(now + SESSION_TTL_MS, absEnd);
+    persist();
   }
   const id = session.discordId;
   return id && db.accounts[id] ? { id, acc: db.accounts[id] } : null;
