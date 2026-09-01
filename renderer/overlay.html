@@ -62,6 +62,14 @@
     font-family:"IBM Plex Mono",Consolas,ui-monospace,monospace;letter-spacing:.1em;
     padding:6px 12px;font-weight:600;font-size:11px;cursor:pointer;color:#16222C;width:100%;margin-top:4px}
   #empty{color:var(--muted);font-size:12px;padding:6px;background:var(--panel);display:none}
+  /* UTC readout — a chip, deliberately NOT a full-width bar (command's spec).
+     Lives outside #rows so state pushes never rebuild it. */
+  #clock{display:inline-flex;align-items:center;gap:6px;width:max-content;
+    background:var(--panel);border:1px solid rgba(var(--holoRGB),.16);
+    padding:3px 9px;margin-bottom:4px;backdrop-filter:blur(2px);
+    font-family:"IBM Plex Mono",Consolas,ui-monospace,monospace;font-weight:500;
+    font-size:11px;letter-spacing:.08em;color:var(--ink)}
+  #clock b{color:var(--gold);font-weight:500}
 </style>
 </head>
 <body>
@@ -72,6 +80,7 @@
     <div class="ctl"><label>SCALE</label><input type="range" id="sc" min="70" max="180" value="100"></div>
     <button id="lock">LOCK ▸ back to click-through</button>
   </div>
+  <div id="clock"><span id="clockT">--:--:--</span><b>UTC</b></div>
   <div id="empty">FleetComm overlay — connect to see nets</div>
   <div id="rows"></div>
 </div>

@@ -412,6 +412,66 @@
   .atcbox .tunelink.here,.atcbox .tunelink:disabled{color:var(--holo);cursor:default}
   .atcbox .tunelink.here:hover{color:var(--holo);background:transparent}
 
+  /* ═ CAM — helmet cam ═
+     Color law holds here too: vermilion = YOUR carrier (cam) is live,
+     green = a feed you are receiving, gold = selection/emphasis. */
+  #pgCam{min-height:0}
+  .camside{flex:0 0 300px;min-width:0;display:flex;flex-direction:column;border-right:1px solid var(--line)}
+  .camscroll{flex:1;overflow-y:auto;padding:12px 14px;min-height:0}
+  .camctl{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+  #camStart,#camStop{font-family:var(--font-mono);font-size:.7rem;font-weight:600;letter-spacing:.14em;
+    padding:9px 14px;border:1px solid var(--line2);color:var(--ink);
+    transition:color .2s,border-color .2s,background .2s}
+  #camStart:hover{color:var(--grn);border-color:var(--grn)}
+  #camStop{color:var(--tx);border-color:var(--tx)}
+  #camStop:hover{background:var(--tx);color:#0C141C}
+  #camHint{text-align:left;font-size:.78rem;margin-bottom:10px}
+  #camPick{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0}
+  #camPick .src{border:1px solid var(--line);background:var(--panel);cursor:pointer;padding:0 0 4px;
+    transition:border-color .2s,transform .2s var(--ease-out)}
+  #camPick .src:hover{border-color:var(--gold);transform:translateY(-2px)}
+  #camPick .src img{width:100%;display:block;background:#000}
+  #camPick .src span{display:block;font-family:var(--font-mono);font-size:.64rem;letter-spacing:.08em;
+    color:var(--ink2);padding:4px 6px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #camList .camrow{display:flex;align-items:center;gap:8px;border:1px solid var(--line);
+    background:var(--panel);padding:7px 10px;margin-bottom:6px}
+  #camList .camrow b{font-family:var(--font-display);font-weight:600;font-size:.95rem;
+    letter-spacing:.04em;text-transform:uppercase;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+  /* gold, not vermilion: vermilion is reserved for YOUR OWN live carrier —
+     another operator's available cam is emphasis, per the color law */
+  #camList .camrow .lv{font-family:var(--font-mono);font-size:.64rem;letter-spacing:.16em;color:var(--gold)}
+  #camList .camrow button{font-family:var(--font-mono);font-size:.64rem;letter-spacing:.14em;
+    padding:5px 10px;border:1px solid var(--line2);color:var(--ink2);transition:color .2s,border-color .2s}
+  #camList .camrow button:hover{color:var(--grn);border-color:var(--grn)}
+  #camList .camrow button.watching{color:var(--grn);border-color:var(--grn)}
+  .camview{flex:1;min-width:0;display:flex;position:relative}
+  #camGrid{flex:1;display:grid;gap:10px;padding:12px;align-content:start;overflow-y:auto;
+    grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
+  /* an empty grid still absorbed all flex space and shoved the hint to the edge */
+  #camGrid:empty{display:none}
+  #camGrid.solo{grid-template-columns:1fr}
+  #camGrid.solo .tile:not(.focus){display:none}
+  .tile{position:relative;border:1px solid var(--grn);background:#000;min-height:0;
+    box-shadow:var(--shadow-sm)}
+  .tile video{width:100%;height:100%;max-height:74vh;display:block;object-fit:contain;background:#000;cursor:pointer}
+  .tile .tl{position:absolute;left:0;right:0;top:0;display:flex;align-items:center;gap:8px;
+    padding:5px 9px;background:linear-gradient(rgba(9,15,22,.85),transparent);
+    font-family:var(--font-mono);font-size:.64rem;letter-spacing:.14em;color:var(--ink)}
+  .tile .tl b{color:var(--grn);font-weight:600}
+  .tile .tl .st8{margin-left:auto;color:var(--muted)}
+  .tile .tl button{font-family:var(--font-mono);font-size:.64rem;letter-spacing:.1em;color:var(--ink2);
+    border:1px solid var(--line2);padding:2px 7px;background:rgba(9,15,22,.6);transition:color .2s,border-color .2s}
+  .tile .tl button:hover{color:var(--gold);border-color:var(--gold)}
+  .tile.lost{border-color:var(--red)}
+  .tile.lost .tl b{color:var(--red)}
+  .tile.self{border-color:var(--tx)}
+  .tile.self .tl b{color:var(--tx)}
+  #camEmpty{margin:auto;text-align:center;font-family:var(--font-mono);font-size:.72rem;
+    letter-spacing:.2em;color:var(--muted);line-height:2}
+  #camEmpty small{font-size:.64rem;letter-spacing:.14em;text-transform:none}
+  #camStatus.live{color:var(--tx)}
+  @media (max-width:900px){.camside{flex-basis:230px}}
+
   /* ═ SYS — ship's systems ═ */
   #settings{flex-direction:column}
   #sysScroll{flex:1;overflow-y:auto;padding:22px 26px 30px;width:100%;
@@ -473,6 +533,9 @@
   #scaleval{min-width:46px;text-align:center;color:var(--muted)}
   #gaterow{display:flex;align-items:center;gap:8px;min-width:150px}
   #gaterow input[type=range]{flex:1 1 90px;min-width:0;accent-color:var(--holo)}
+  /* radio-effect intensity dial rides the same rail as the transmit gate */
+  #fxrow{display:flex;align-items:center;gap:8px;min-width:150px}
+  #fxrow input[type=range]{flex:1 1 90px;min-width:0;accent-color:var(--holo)}
   #micGateVal{min-width:52px;text-align:right;color:var(--muted)}
   #outHint.warn,#gateHint.warn{color:var(--amber)}
   #themeGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;padding:10px 2px}
@@ -747,14 +810,18 @@
       <button class="pkey on" data-page="pgComms"><span class="r-no">01</span>COMMS</button>
       <button class="pkey" data-page="pgChat"><span class="r-no">02</span>CHAT</button>
       <button class="pkey" data-page="pgAtc"><span class="r-no">03</span>ATC</button>
-      <button class="pkey" data-page="pgAcct" id="acctKey" style="display:none"><span class="r-no">04</span>ACCOUNTS</button>
+      <button class="pkey" data-page="pgCam" title="Helmet cam — stream and watch operator POV"><span class="r-no">04</span>CAM</button>
       <button class="pkey" data-page="settings" id="sysKey" title="Ship's systems — configuration"><span class="r-no">05</span>SYS</button>
+      <button class="pkey" data-page="pgAcct" id="acctKey" style="display:none"><span class="r-no">06</span>ACCOUNTS</button>
     </nav>
     <div class="r-sec">Ship's State</div>
     <div class="rd" id="opchip" style="display:none"><label>Operator</label><span class="v"><span id="opname"></span><span class="role" id="oprole"></span></span></div>
     <div class="rd"><label>Relay</label><span class="v dim" id="relayLbl">OFFLINE</span></div>
     <div class="rd"><label>Mic</label><span class="v dim" id="micLbl">NOT REQ</span></div>
     <div class="rd"><label>Ops on relay</label><span class="v num" id="opsCount">0</span></div>
+    <!-- one row per ship of the line: crewed headcount across the ship and its
+         nets, fed by the same atc-view poll as the ops count -->
+    <div id="shipStateRows"></div>
     <div class="r-sec">Levels</div>
     <div class="rd volrd"><label>VOICE VOL <span class="num" id="masterVolVal"></span></label>
       <input type="range" id="masterVolSl" min="0" max="150" step="5" title="Master volume for everything the nets play — per-net VOL still applies underneath"></div>
@@ -762,7 +829,7 @@
       <input type="range" id="sbVolSl" min="0" max="150" step="5" title="How loud 1MC clips are piped — the fleet hears this level, independent of VOICE VOL"></div>
     <div class="r-exit">
       <button class="icobtn" id="ovbtn" title="Game overlay">▣ OVL</button>
-      <button class="icobtn" id="themebtn" title="Day / night watch">◐ WATCH</button>
+      <button class="icobtn" id="themebtn" title="Light / dark">◐ THEME</button>
     </div>
   </aside>
   <div id="railScrim"></div>
@@ -817,6 +884,37 @@
     <div id="atcGrid"></div>
   </div>
 
+  <!-- CAM — helmet cam: stream your POV, watch the fleet's -->
+  <div class="page" id="pgCam">
+    <div class="camside">
+      <div class="ph">HELMET CAM<span class="r" id="camStatus">OFF AIR</span></div>
+      <div class="camscroll">
+        <div class="miniheading" style="margin-top:0">MY CAM</div>
+        <div class="camrows" id="camMyBox">
+          <div class="camctl">
+            <button id="camStart">▶ START MY CAM</button>
+            <button id="camStop" hidden>■ STOP</button>
+            <select class="orgsel" id="camQual" title="Capture quality — lower is kinder to your frames and your upload">
+              <option value="720">720p · 30fps</option>
+              <option value="1080">1080p · 30fps</option>
+              <option value="480">480p · 15fps</option>
+            </select>
+          </div>
+          <div class="hint" id="camHint">Streams your Star Citizen window to shipmates over peer-to-peer video.
+            Borderless-window mode captures best; up to 4 watchers per cam.</div>
+          <div id="camPick" hidden></div>
+        </div>
+        <div class="miniheading">FLEET CAMS <button class="icobtn" id="camRefresh" title="Re-scan for live cams">↻ SCAN</button></div>
+        <div id="camList"><div class="hint">No cams on the air.</div></div>
+      </div>
+    </div>
+    <div class="camview">
+      <div id="camGrid"></div>
+      <div id="camEmpty">HELMET CAM — no feed on watch<br><small>Start your cam or pick one from FLEET CAMS.
+        Click a tile to view it solo · PIP floats it over the game.</small></div>
+    </div>
+  </div>
+
   <!-- ACCOUNTS (command only) -->
   <div class="page" id="pgAcct" style="flex-direction:column">
     <div class="ph">ACCOUNTS &amp; ACCESS<span class="r" id="acctPending" style="color:var(--amber)"></span></div>
@@ -836,9 +934,9 @@
         <span class="kicker">SHIP'S SYSTEMS // STATION 05</span>
         <h1>Configuration</h1>
       </div>
-      <div class="miniheading" style="margin-top:0">MASTER KEYS</div>
+      <div class="miniheading" style="margin-top:0">MASTER KEYS <span class="hint" style="font-weight:400;letter-spacing:.06em">— while listening: BACKSPACE unbinds · ESC keeps the old key</span></div>
       <div class="togrow" id="pttRow"><div class="tl"><b>Push to talk</b><span id="pttHint">Transmits on every net with TX armed</span></div><button class="keybadge" id="bindActive">set key</button></div>
-      <div class="togrow"><div class="tl"><b>Cycle selected net</b><span>Defaults: Page Up / Page Down</span></div>
+      <div class="togrow"><div class="tl"><b>Cycle selected net</b><span>Defaults: Page Up / Page Down — clearable if they fight your game binds</span></div>
         <span><button class="keybadge" id="bindCycUp">PageUp</button> <button class="keybadge" id="bindCycDn">PageDown</button></span></div>
       <div class="miniheading">AUDIO</div>
       <div class="togrow"><div class="tl"><b>Microphone</b><span>Which input FleetComm transmits from</span></div>
@@ -850,7 +948,10 @@
           <span class="num" id="micGateVal">—</span></div></div>
       <div class="togrow"><div class="tl"><b>Radio chirp</b><span>Squelch click on key-up / key-down</span></div><button class="switch on" id="sfx"></button></div>
       <div class="togrow"><div class="tl"><b>Radio voice effect</b><span>How much "over the net" character voices get</span></div>
-        <select class="orgsel" id="fxsel"><option value="clean">Clean</option><option value="standard">Standard</option><option value="heavy">Heavy</option></select></div>
+        <select class="orgsel" id="fxsel"><option value="clean">Clean</option><option value="standard">Standard</option><option value="heavy">Heavy</option><option value="custom" id="fxCustomOpt" hidden>Custom</option></select></div>
+      <div class="togrow"><div class="tl"><b>Effect intensity</b><span>The same dial, continuous — 0 clean · 50 standard · 100 heavy; presets snap it</span></div>
+        <div id="fxrow"><input type="range" id="fxSl" min="0" max="100" step="1">
+          <span class="num" id="fxVal">50</span></div></div>
       <div class="miniheading">DISPLAY</div>
       <div class="togrow"><div class="tl"><b>Prose typeface</b><span>The manual's serif, or a plain system face if serif reads slower for you — data and labels stay mono either way</span></div>
         <select class="orgsel" id="sfontsel"><option value="legible">Manual serif</option><option value="system">System sans</option></select></div>
@@ -859,8 +960,8 @@
           <span class="num" id="scaleval">100%</span>
           <button class="btn" id="scaleup" title="Larger">A+</button>
           <button class="btn" id="scalereset" title="Back to 100%">RESET</button></div></div>
-      <div class="togrow"><div class="tl"><b>Watch</b><span>Night watch, daylight watch, or a custom palette</span></div>
-        <select class="orgsel" id="sthemesel"><option value="dark">Night watch</option><option value="light">Daylight</option><option value="custom">Custom</option></select></div>
+      <div class="togrow"><div class="tl"><b>Theme</b><span>Light, dark, or a custom palette</span></div>
+        <select class="orgsel" id="sthemesel"><option value="dark">Dark</option><option value="light">Light</option><option value="custom">Custom</option></select></div>
       <div id="customcolors" style="display:none">
         <div id="themeGrid">
           <label>SCREEN<input type="color" id="c_bg"></label>
@@ -874,7 +975,7 @@
           <label>TRANSMITTING<input type="color" id="c_amber"></label>
           <label>WARNING<input type="color" id="c_red"></label>
         </div>
-        <button class="icobtn" id="themeReset" style="margin-bottom:6px">RESET TO NIGHT DEFAULTS</button>
+        <button class="icobtn" id="themeReset" style="margin-bottom:6px">RESET TO DARK DEFAULTS</button>
       </div>
       <div class="togrow"><div class="tl"><b>Overlay edit mode</b><span>Unlock the game overlay to move / resize, then LOCK</span></div><button class="switch" id="sovedit"></button></div>
       <div id="legacyCommandAuth"><div class="miniheading">COMMAND AUTHORITY</div>

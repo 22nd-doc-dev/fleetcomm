@@ -9,8 +9,32 @@ const EventEmitter = require("events");
 const { MumbleClient } = require("./mumble-client");
 const { decodeMeta, encodeMeta } = require("./net-meta");
 const { channelName } = require("./channel-name");
+const { isSignal } = require("./cam-signal");
 
 function sanitizeUser(name) { return name.replace(/[^\-=\w\[\]{}()@|.]+/g, "-").slice(0, 40) || "OPERATOR"; }
+
+/* The Mumble username a tuned net dials with: CALLSIGN|NNN.NNN. Only a real
+   frequency may ride as the suffix — a placeholder (the board's "———.———"
+   em dashes, or anything murmur's default username regex refuses) used to
+   kill the whole dial with Reject: Invalid Username. That reject is exactly
+   how "tune from the ATC board" broke for every net whose real freq never
+   reached the renderer.
+   A freq-less net still needs a UNIQUE suffix: murmur treats a second
+   connection with the same username + the same client cert as a reconnect
+   and kicks the first, so two placeholder nets dialing as the bare callsign
+   would kick each other in a loop. The fallback is a deterministic
+   pseudo-freq hashed from the net's name — 000.NNN — which is murmur-legal,
+   stable across relinks, and stripped by _stripFreq like any real freq so
+   rosters and headcounts stay clean. Static so the contract is unit-testable
+   without a socket. */
+function wireUsername(callsign, freq, name) {
+  const freqOk = /^\d{1,3}\.\d{3}$/.test(String(freq || ""));
+  if (freqOk) return sanitizeUser(callsign) + "|" + freq;
+  let h = 5381;
+  const s = String(name || "");
+  for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+  return sanitizeUser(callsign) + "|000." + String(h % 1000).padStart(3, "0");
+}
 
 class RadioStack extends EventEmitter {
   /* opts: {host, port, callsign} */
@@ -72,7 +96,7 @@ class RadioStack extends EventEmitter {
        leaving a ghost connection kept alive by the 5s pinger with no UI
        able to reach it */
     if (this.destroyed) throw new Error("stack destroyed — dial abandoned");
-    const username = sanitizeUser(this.opts.callsign) + "|" + netCfg.freq;
+    const username = RadioStack.wireUsername(this.opts.callsign, netCfg.freq, netCfg.channel || netCfg.name);
     const client = new MumbleClient({
       host: this.opts.host, port: this.opts.port,
       username, tokens: this.opts.tokens || [], password: this.opts.password || "",
@@ -243,6 +267,17 @@ class RadioStack extends EventEmitter {
         this.emit("control-down", { idx });
       });
       client.on("error", () => {});             /* surfaced via close */
+      /* Helmet-cam signaling arrives here as session-targeted text aimed at
+         our |ctl session. Anything without the ~FCAM1 prefix is dropped, so
+         ordinary private messages can never leak into the cam machinery and
+         signals never reach the NET TEXT board (that path listens on tuned-net
+         connections, not this one). */
+      client.on("TextMessage", (m) => {
+        if (net.dead || net.client !== client) return;
+        if (!isSignal(m.message)) return;
+        const from = String(client.userName(m.actor) || "").replace(/\|ctl$/, "");
+        this.emit("signal", { actor: m.actor, from, message: m.message });
+      });
       return idx;
     } catch (error) {
       if (!accepted && !net.dead && !this.destroyed) this._dialOutcome(error);
@@ -298,6 +333,54 @@ class RadioStack extends EventEmitter {
     return true;
   }
 
+  /* ── helmet-cam signaling over the control connection ── */
+  _ctlNet() { return this.nets.find(n => n && n.control && !n.dead && n.client) || null; }
+  /* every signed-in operator, exactly once: their silent |ctl session */
+  camPeers() {
+    const ctl = this._ctlNet();
+    if (!ctl) return [];
+    const out = [];
+    for (const [session, u] of ctl.client.users) {
+      const m = /^(.*)\|ctl$/.exec(String(u.name || ""));
+      if (m) out.push({ session, callsign: m[1], self: session === ctl.client.session });
+    }
+    return out;
+  }
+  /* the relay's actual text ceiling, for the chunker */
+  signalLimit() {
+    const ctl = this._ctlNet();
+    const cfg = ctl && ctl.client.serverConfig;
+    return (cfg && cfg.messageLength) || 5000;
+  }
+  /* Paced chunk delivery: murmur rate-limits text per SENDER (1.4+ defaults
+     ≈1 msg/s, burst 5). The pacing is GLOBAL per stack — every signal send,
+     from every concurrent handshake, queues through one FIFO with ≥350ms
+     between consecutive messages; per-call pacing alone let two simultaneous
+     offers interleave into an over-budget burst and murmur silently dropped
+     chunks, stranding viewers at CALLING…. The control slot is re-resolved
+     per chunk so a relink mid-queue keeps delivering on the new socket. */
+  async sendSignal(sessions, chunks) {
+    const list = (Array.isArray(sessions) ? sessions : [sessions]).filter(s => Number.isInteger(s));
+    if (!list.length || !Array.isArray(chunks) || !chunks.length) return false;
+    if (!this._ctlNet()) return false;
+    const run = async () => {
+      let sent = 0;
+      for (let i = 0; i < chunks.length; i++) {
+        const gap = this._sigLastAt ? 350 - (Date.now() - this._sigLastAt) : 0;
+        if (gap > 0) await new Promise(r => setTimeout(r, gap));
+        const ctl = this._ctlNet();
+        if (!ctl || this.destroyed) break;
+        ctl.client.sessionText(String(chunks[i]).slice(0, 4900), list);
+        this._sigLastAt = Date.now();
+        sent++;
+      }
+      return sent === chunks.length;
+    };
+    const link = (this._sigChain || Promise.resolve()).then(run, run);
+    this._sigChain = link.catch(() => {});
+    return link;
+  }
+
   /* org-wide view for the ATC board: every channel with its occupants */
   atcView() {
     const c = this._anyClient(); if (!c) return [];
@@ -325,7 +408,10 @@ class RadioStack extends EventEmitter {
     return chans;
   }
   _shortName(client, session) { return this._stripFreq(client.userName(session)); }
-  _stripFreq(name) { return String(name).replace(/\|\d{3}\.\d{3}$/, ""); }
+  /* 1-3 integer digits, matching everything wireUsername can emit — the old
+     3-digit-only strip left "VIPER|88.500" unstripped and double-counted its
+     operator in every headcount */
+  _stripFreq(name) { return String(name).replace(/\|\d{1,3}\.\d{3}$/, ""); }
 
   /* any live connection can answer channel questions / create channels */
   _anyClient() { const n = this.nets.find(x => !x.dead); return n ? n.client : null; }
@@ -427,4 +513,5 @@ class RadioStack extends EventEmitter {
     this.nets.forEach(n => { n.dead = true; try { n.client.disconnect(); } catch (e) {} });
   }
 }
-module.exports = { RadioStack, sanitizeUser };
+RadioStack.wireUsername = wireUsername;
+module.exports = { RadioStack, sanitizeUser, wireUsername };

@@ -8,13 +8,15 @@ const { channelName } = require("./channel-name");
 const acctHeartbeat = require("./acct-heartbeat");
 const { versionNote } = require("./update-guard");
 const padBinds = require("./pad-binds");
+const fxCurve = require("./fx-curve");
+const camSignal = require("./cam-signal");
 
-const SEND = new Set(["detune", "disconnect", "net-mute", "open-external", "ov-edit", "ov-lock",
+const SEND = new Set(["cam-signal", "detune", "disconnect", "net-mute", "open-external", "ov-edit", "ov-lock",
   "ov-set", "ov-state", "ov-toggle", "send-text", "theme", "tx-frame"]);
-const INVOKE = new Set(["accounts-endpoint", "relay-pin", "acct", "arm-broadcast", "atc-view", "autotest-shot", "check-updates", "connect", "create-net",
+const INVOKE = new Set(["accounts-endpoint", "relay-pin", "acct", "arm-broadcast", "atc-view", "autotest-shot", "cam-peers", "cam-sources", "check-updates", "connect", "create-net",
   "discord-login", "do-update", "listen-all", "net-meta", "net-move", "net-remove", "net-rename", "sounds-add", "sounds-delete",
   "sounds-list", "sounds-pick", "sounds-read", "tune", "update-note"]);
-const RECEIVE = new Set(["chat", "dial-hold", "gkey", "net-down", "net-error", "ov-edit-state", "ov-shown", "roster",
+const RECEIVE = new Set(["cam-signal", "chat", "dial-hold", "gkey", "net-down", "net-error", "ov-edit-state", "ov-shown", "roster",
   "rx", "update-auto-offer", "update-available", "update-note", "update-progress"]);
 
 const codecs = new Map();
@@ -63,6 +65,16 @@ contextBridge.exposeInMainWorld("fleetcomm", {
   updateGuard: { versionNote },
   padBinds: { padKey: padBinds.padKey, padLabel: padBinds.padLabel,
     pressedStates: padBinds.pressedStates, diffButtons: padBinds.diffButtons },
+  fxCurve: { paramsAt: fxCurve.paramsAt, anchorValue: fxCurve.anchorValue,
+    presetAt: fxCurve.presetAt, clamp01: fxCurve.clamp01 },
+  camSignal: {
+    isSignal: camSignal.isSignal,
+    encodeChunks: camSignal.encodeChunks,
+    newReassembler(opts) {
+      const r = new camSignal.Reassembler(opts);
+      return { feed: (from, msg, now) => r.feed(from, msg, now) };
+    }
+  },
   opus: {
     applications: OpusScript.Application,
     create(sampleRate, channels, application) {

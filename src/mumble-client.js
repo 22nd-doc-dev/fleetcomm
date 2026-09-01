@@ -202,6 +202,10 @@ class MumbleClient extends EventEmitter {
       this.users.delete(msg.session);
     } else if (name === "Ping") {
       /* server echo — ignore */
+    } else if (name === "ServerConfig") {
+      /* the server's real text-message ceiling; helmet-cam signaling chunks
+         to fit it instead of assuming murmur's stock 5000 */
+      this.serverConfig = Object.assign(this.serverConfig || {}, msg);
     }
     this.emit(name, msg);
     this.emit("message", name, msg);
@@ -256,6 +260,10 @@ class MumbleClient extends EventEmitter {
   setSelfMuteDeaf(mute, deaf) { this.send("UserState", { session: this.session, selfMute: mute, selfDeaf: deaf }); }
   setComment(comment) { this.send("UserState", { session: this.session, comment }); }
   text(message, channelIds) { this.send("TextMessage", { message, channelId: channelIds }); }
+  /* private message straight to sessions — one send reaches every target.
+     This is helmet-cam's whole signaling transport: it rides the existing
+     control socket, so no new dial ever touches the governor. */
+  sessionText(message, sessionIds) { this.send("TextMessage", { message, session: sessionIds }); }
 
   createChannel(name, parent = 0, description = "") {
     return new Promise((resolve, reject) => {

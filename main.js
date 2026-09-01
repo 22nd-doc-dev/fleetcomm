@@ -1,6 +1,6 @@
 "use strict";
 /* FleetComm — Electron main: window, global PTT hooks, radio stack owner. */
-const { app, BrowserWindow, ipcMain, shell, screen, session } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, screen, session, desktopCapturer } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const http = require("http");
@@ -752,6 +752,9 @@ function createWindow() {
     width: 1180, height: 800, minWidth: 760, minHeight: 500,
     backgroundColor: "#090F16",
     title: "FleetComm",
+    /* 22nd crest on the window/taskbar in dev runs; packaged Windows builds
+       take it from the exe resources (build/icon.png via electron-builder) */
+    icon: path.join(__dirname, "renderer", "crest.png"),
     ...frameOpts,
     webPreferences: {
       preload: path.join(__dirname, "src", "preload.js"),
@@ -791,13 +794,19 @@ function createWindow() {
 
 app.whenReady().then(async () => {
   reconcileUpdate();
+  /* Media permissions stay a MAIN-WINDOW-ONLY allowance. Audio is the mic;
+     video is helmet-cam screen capture through the legacy desktop-capture
+     constraint path (chromeMediaSourceId from the in-app picker). The overlay
+     window is never granted capture of anything. */
   session.defaultSession.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) => {
     const isMainWindow = win && webContents === win.webContents;
-    return !!(isMainWindow && permission === "media" && (!details || !details.mediaType || details.mediaType === "audio"));
+    return !!(isMainWindow && permission === "media" &&
+      (!details || !details.mediaType || details.mediaType === "audio" || details.mediaType === "video"));
   });
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
     const isMainWindow = win && webContents === win.webContents;
-    callback(!!(isMainWindow && permission === "media" && (!details.mediaTypes || details.mediaTypes.includes("audio"))));
+    callback(!!(isMainWindow && permission === "media" &&
+      (!details.mediaTypes || details.mediaTypes.every(t => t === "audio" || t === "video"))));
   });
   try { identity = await loadOrCreate(app.getPath("userData")); }
   catch (e) { console.warn("[fleetcomm] identity cert unavailable:", e.message); }
@@ -864,6 +873,8 @@ ipcMain.handle("connect", async (ev, request) => {
   radio.on("roster", (r) => { if (stack === radio) sendWin("roster", r); });
   radio.on("net-down", (r) => { if (stack === radio) sendWin("net-down", r); });
   radio.on("net-error", (r) => { if (stack === radio) sendWin("net-error", r); });
+  /* helmet-cam signaling chunks, straight through to the renderer's codec */
+  radio.on("signal", (s) => { if (stack === radio) sendWin("cam-signal", { actor: s.actor, from: s.from, message: s.message }); });
   /* ── control relink ──
      Tuned nets heal themselves in the renderer; the control connection is
      invisible there, so it heals here. Same shape as the renderer's backoff
@@ -943,6 +954,21 @@ ipcMain.on("net-mute", (ev, data) => {
 });
 ipcMain.on("send-text", (ev, data) => stack && data && stack.sendText(boundedInt(data.idx, 0, 255, -1), boundedText(data.message, 2000)));
 ipcMain.handle("atc-view", () => stack ? stack.atcView() : []);
+/* ── helmet cam ── */
+ipcMain.handle("cam-peers", () => stack ? { peers: stack.camPeers(), limit: stack.signalLimit() } : { peers: [], limit: 5000 });
+ipcMain.on("cam-signal", (ev, data) => {
+  if (!stack || !data) return;
+  const sessions = (Array.isArray(data.sessions) ? data.sessions : [data.sessions])
+    .map(s => boundedInt(s, 0, 0xFFFFFFF, -1)).filter(s => s >= 0).slice(0, 64);
+  const chunks = Array.isArray(data.chunks) ? data.chunks.slice(0, 12).map(c => boundedText(c, 4900)).filter(Boolean) : [];
+  if (sessions.length && chunks.length) stack.sendSignal(sessions, chunks);
+});
+/* capture sources for the in-app picker — names + thumbnails only; the
+   renderer opens the chosen one via the desktop-capture constraint */
+ipcMain.handle("cam-sources", async () => {
+  const sources = await desktopCapturer.getSources({ types: ["window", "screen"], thumbnailSize: { width: 240, height: 135 } });
+  return sources.map(s => ({ id: s.id, name: String(s.name || "").slice(0, 80), thumb: s.thumbnail.toDataURL() }));
+});
 const NOSTACK = { ok: false, error: "not connected to the relay" };
 ipcMain.handle("net-rename", (ev, data) => stack && data
   ? stack.renameNet(boundedText(data.net, 120), boundedText(data.name, 120)) : NOSTACK);

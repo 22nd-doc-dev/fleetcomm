@@ -43,10 +43,14 @@ const $ = (id) => document.getElementById(id);
 
 /* ── persisted prefs ── */
 let fx = store.get("fx", true), fxPreset = store.get("fxPreset", "standard");
+/* the radio-voice dial: 0 clean · 50 standard · 100 heavy, continuous between.
+   Pre-1.0.1 profiles have only fxPreset — seed the dial from it. */
+let fxIntensity = Math.round(bridge.fxCurve.clamp01(
+  store.get("fxIntensity", bridge.fxCurve.anchorValue(fxPreset)) / 100) * 100);
 let themeMode = store.get("themeMode", "dark");
 /* night-watch defaults — ink paper, bone text, gold accent, vermilion TX.
    These must track the [data-theme="dark"] stylesheet tokens or "RESET TO
-   NIGHT DEFAULTS" hands back a palette that doesn't match night watch. */
+   DARK DEFAULTS" hands back a palette that doesn't match the dark theme. */
 const THEME_DEFAULTS = { bg: "#0C141C", panel: "#111E29", bez: "#090F16", ink: "#E7E0CD",
   muted: "#77828F", line: "#263039", accent: "#C9A96A", grn: "#5CA877", amber: "#CE7250", red: "#C0604A" };
 let customTheme = Object.assign({}, THEME_DEFAULTS, store.get("customTheme", {}));
@@ -142,6 +146,11 @@ let masterBinds = store.get("masterBinds6", {
 
 /* ── net model: flattened package with hierarchy ── */
 let nets = [];   // {cfg, depth, parent, tuned, idx, mon, txOn, vol, pan, bind, roster:Map, speaking:Map, chat:[]}
+/* a row-reorder drag is in flight (armed from the ⠿ grip — see the drag IIFE
+   near the bottom). renderNets resets it: a full rebuild detaches the drag
+   source, so its dragend never reaches the netlist delegate. pollOps skips
+   tree re-syncs while it is true. */
+let rowDragging = false;
 let selectedI = 0, connected = false, openMic = false, override = false, micState = "none";
 function buildNets() {
   nets = [];
@@ -288,14 +297,45 @@ function matchUp(b, src, code, label) {
   if (b.src === "label") return b.label === label;
   return b.src === src && b.code === code;
 }
+/* Resolve the captured net AT WRITE TIME by name — a raw index taken at click
+   time goes stale the moment anything reindexes nets[] (another COMMAND
+   account deleting a net used to make the next keypress bind the WRONG net,
+   or throw and leave capture armed forever, eating every key including PTT). */
+function captureTarget() {
+  return capturing.kind === "net" ? nets.find(x => x.cfg.name === capturing.name) : null;
+}
 function finishCapture(src, code, label, mods) {
   const bind = { src, code, label: bindLabel(mods, label), mods };
-  if (capturing.kind === "net") { nets[capturing.i].bind = bind; savePrefs(); }
-  else { masterBinds[capturing.which] = bind; store.set("masterBinds6", masterBinds); }
+  if (capturing.kind === "net") {
+    const t = captureTarget();
+    if (t) { t.bind = bind; savePrefs(); } else toast("That net left the board — key not bound.");
+  } else { masterBinds[capturing.which] = bind; store.set("masterBinds6", masterBinds); }
+  capturing = null; renderNets(); renderMasterBinds();
+}
+/* Exit capture without binding: keep=false writes null ("unbound") through the
+   same two storage paths finishCapture uses; keep=true just walks away.
+   null is already a first-class bind value everywhere downstream — matchDown/
+   matchUp refuse it, cards render "KEY", masters render "set key". */
+function abortCapture(keep) {
+  if (!keep) {
+    if (capturing.kind === "net") {
+      const t = captureTarget();
+      if (t) { t.bind = null; savePrefs(); }
+    } else { masterBinds[capturing.which] = null; store.set("masterBinds6", masterBinds); }
+  }
   capturing = null; renderNets(); renderMasterBinds();
 }
 function onKeyDown(src, code, label, mods) {
-  if (capturing) { finishCapture(src, code, label, mods); return; }
+  if (capturing) {
+    /* Two ways out before anything binds — labels are identical on the
+       uiohook and DOM paths (verified against UiohookKey): ESC cancels and
+       keeps the old key, BACKSPACE or DELETE sets the action to UNBOUND.
+       Command's ask: cycle-selected-net must be clearable. Plain keys only,
+       so CTRL+BACKSPACE etc. still capture as a combo. */
+    if (!mods.length && label === "Escape") { abortCapture(true); return; }
+    if (!mods.length && (label === "Backspace" || label === "Delete" || label === "NumpadDelete")) { abortCapture(false); return; }
+    finishCapture(src, code, label, mods); return;
+  }
   /* typing must never transmit — but that guard is for KEYBOARDS. A flight
      stick button can't put characters in a text field, and an operator typing
      in chat mid-op still expects stick PTT to key the net. */
@@ -551,11 +591,10 @@ async function openMicOnce() {
     micState = "ok"; renderMic(); return true;
   } catch (e) { micState = "denied"; renderMic(); toast("Microphone unavailable: " + e.message); return false; }
 }
-const FXP = {
-  clean:    { hp: 250, lp: 3400, stages: 1, drive: 0,    comp: null, noise: 0,     tail: 0 },
-  standard: { hp: 300, lp: 3000, stages: 2, drive: 0.35, comp: { th: -28, ratio: 8,  atk: 0.003, rel: 0.12 }, noise: 0.006, tail: 0.05 },
-  heavy:    { hp: 400, lp: 2700, stages: 2, drive: 0.8,  comp: { th: -32, ratio: 12, atk: 0.002, rel: 0.10 }, noise: 0.015, tail: 0.09 }
-};
+/* Preset parameter values live in src/fx-curve.js now — the presets are
+   anchors at 0/50/100 on the fxIntensity dial and the module guarantees the
+   anchor sound is bit-identical to the old FXP table. */
+function fxP() { return bridge.fxCurve.paramsAt(fxIntensity / 100); }
 let noiseBuf = null;
 function getNoiseBuf() {
   if (noiseBuf) return noiseBuf;
@@ -578,7 +617,7 @@ function wireChain(n) {
   (n.fxNodes || []).forEach(x => { try { x.disconnect(); } catch (e) {} });
   [n.gainNode, n.panNode].forEach(x => { try { x.disconnect(); } catch (e) {} });
   if (n.noiseSrc) { try { n.noiseSrc.stop(); } catch (e) {} n.noiseSrc = null; }
-  const p = FXP[fxPreset] || FXP.standard, nodes = [];
+  const p = fxP(), nodes = [];
   let head = n.gainNode;
   for (let i = 0; i < p.stages; i++) { const hp = ctx.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = p.hp; hp.Q.value = 0.7; head.connect(hp); nodes.push(hp); head = hp; }
   for (let i = 0; i < p.stages; i++) { const lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = p.lp; lp.Q.value = 0.7; head.connect(lp); nodes.push(lp); head = lp; }
@@ -590,7 +629,7 @@ function wireChain(n) {
   n.fxNodes = nodes;
 }
 function squelchTail(n) {
-  const p = FXP[fxPreset] || FXP.standard;
+  const p = fxP();
   if (!p.tail || !fx) return;
   try {
     const src = ctx.createBufferSource(); src.buffer = getNoiseBuf();
@@ -726,6 +765,10 @@ function setOverride(on) {
 /* ══ RENDER ══ */
 const netlist = $("netlist");
 function renderNets() {
+  /* a full rebuild detaches any in-flight drag source, so its dragend fires on
+     an orphaned node and never reaches the netlist delegate — without this the
+     rowDragging latch stuck true and silently disabled the 12s tree re-sync */
+  rowDragging = false;
   netlist.innerHTML = "";
   rebuildTree();
   tree.rows.forEach((row) => {
@@ -740,7 +783,10 @@ function renderNets() {
       (i === selectedI ? " sel" : "") + (n.tuned ? "" : " untuned") +
       (n.tx ? " tx-live" : (n.speaking.size ? " rx-live" : ""));
     d.dataset.i = i;
-    d.draggable = true;                    /* client-side ordering — see dragging below */
+    /* Reorder drags arm ONLY from the ⠿ grip (pointerdown handler below).
+       With the whole card draggable, pressing a VOL/L·R slider started a row
+       drag instead of moving the slider — "the sliders don't slide". */
+    d.draggable = false;
     const ship = isShip(n);
     if (ship) d.classList.add("shipgroup");
     /* Name first. The callsign of the net is what an operator scans for mid-op;
@@ -780,7 +826,7 @@ function renderNets() {
           ' title="Hear every net aboard this ship — no need to tune them">LSN ALL</button>' +
         '<button class="ann wide' + (n.txAll ? " lit-a" : "") + '" data-txall' +
           ' title="1MC — transmit to every net aboard this ship, no need to tune them">1MC</button>' +
-        '<button class="keyb mono" data-key title="Talk key for the 1MC">' + esc(n.bind ? n.bind.label : "KEY") + '</button>' +
+        '<button class="keyb mono" data-key title="Talk key for the 1MC — click, press a key (BACKSPACE clears, ESC cancels)">' + esc(n.bind ? n.bind.label : "KEY") + '</button>' +
         (n.tuned ? '<button class="x" data-x title="Leave the ship group">✕</button>' : "") +
         '</div>';
       if (n.tuned) h += '<div class="srow"><label>VOL</label><input type="range" min="0" max="100" value="' + n.vol + '" data-vol>' +
@@ -789,7 +835,7 @@ function renderNets() {
       h += '<div class="nrow">' +
         '<button class="ann' + (n.mon ? " lit-g" : "") + '" data-mon>LSN</button>' +
         '<button class="ann' + (n.txOn ? " lit-a" : "") + '" data-txon>TX</button>' +
-        '<button class="keyb mono" data-key title="Per-net talk key — click, press a key or combo">' + esc(n.bind ? n.bind.label : "KEY") + '</button>' +
+        '<button class="keyb mono" data-key title="Per-net talk key — click, press a key or combo (BACKSPACE clears, ESC cancels)">' + esc(n.bind ? n.bind.label : "KEY") + '</button>' +
         '<button class="x" data-x title="Detune">✕</button></div>' +
         '<div class="srow"><label>VOL</label><input type="range" min="0" max="100" value="' + n.vol + '" data-vol>' +
         '<label>L\u00b7R</label><input type="range" class="pan" min="-100" max="100" value="' + n.pan + '" data-pan></div>';
@@ -893,6 +939,9 @@ function renderMasterBinds() {
   $("bindActive").textContent = masterBinds.active ? masterBinds.active.label : "set key";
   $("bindCycUp").textContent = masterBinds.cycUp ? masterBinds.cycUp.label : "set key";
   $("bindCycDn").textContent = masterBinds.cycDn ? masterBinds.cycDn.label : "set key";
+  /* capture over (bound, cleared, or cancelled) — drop the listening chrome
+     that used to stick to the badges forever */
+  ["bindActive", "bindCycUp", "bindCycDn"].forEach(id => $(id).classList.remove("listen"));
   $("pttKeyLbl").textContent = (masterBinds.active ? masterBinds.active.label : "—").toUpperCase();
 }
 /* transmission log */
@@ -1081,7 +1130,9 @@ netlist.addEventListener("click", async (e) => {
     addLog("sys", n.cfg.name, "detuned"); savePrefs(); renderNets(); return;
   }
   if (e.target.closest("[data-key]")) {
-    capturing = { kind: "net", i };
+    /* capture holds the net's NAME, never its index — the 12s tree re-sync
+       can push/remove nets and reindex the array while a capture is armed */
+    capturing = { kind: "net", name: n.cfg.name };
     const b = card.querySelector("[data-key]");
     b.classList.add("listen"); b.textContent = "press…";
   }
@@ -1432,7 +1483,7 @@ async function playClipOnNet(s, net) {
   for (let i = 0; i < len; i++) { const a = mono[i] < 0 ? -mono[i] : mono[i]; if (a > peak) peak = a; }
   const CLIP_TARGET = 0.18;                      /* well under voice — a clip should sit behind people, not over them */
   /* the 1MC master trim rides on top of normalisation: it scales what the
-     fleet hears AND the sender's monitor, and is independent of VOICE VOL */
+     fleet hears, and is independent of VOICE VOL */
   const norm = (peak > 0.0001 ? Math.min(4, CLIP_TARGET / peak) : 1) * (sbVol / 100);
 
   /* ── where a clip goes ──
@@ -1453,12 +1504,13 @@ async function playClipOnNet(s, net) {
   /* tell everyone else on the net who keyed it; the audio alone doesn't say */
   try { ipcRenderer.send("send-text", { idx: net.idx, message: "1MC — " + callsign + " piped " + name }); } catch (e) {}
 
-  /* local monitor so the sender hears what went out, at the same relative level */
-  const src = ctx.createBufferSource(); src.buffer = audio;
-  const g = ctx.createGain(); g.gain.value = 0.5 * norm;
-  /* deliberately NOT through masterGain: the monitor follows the 1MC slider
-     only, so turning voice down doesn't hide what you're piping to the fleet */
-  src.connect(g); g.connect(ctx.destination); src.start();
+  /* NO local monitor — command's 1.0.1 call. Piping a clip while listening to
+     a subnet of the same ship played it TWICE (the monitor plus the delayed
+     net copy through that other session). The button highlight, the COMM LOG
+     "TX" line and the net chat line are the sender's confirmation; operators
+     tuned into a target subnet hear the real thing like everyone else. Note
+     murmur never echoes a session's own transmission back to it, so with only
+     the ship group tuned the sender intentionally hears nothing. */
 
   const enc = new OpusScript(48000, 1, OpusScript.Application.AUDIO);
   const i16 = new ArrayBuffer(FRAME * 2), i16view = new DataView(i16);
@@ -1776,6 +1828,8 @@ async function afterConnect(cs) {
   $("acctKey").style.display = (acct && acct.account.role === "command") ? "" : "none";
   addLog("sys", "", "operator " + callsign + " authenticated (" + roleTxt + ")");
   renderNets(); chirpDown(); pollOps();
+  /* first ship's-state paint without waiting out the 12s poll */
+  try { renderShipState(await ipcRenderer.invoke("atc-view")); } catch (e) {}
 }
 $("connectBtn").addEventListener("click", function () { doConnect($("csIn").value.trim().toUpperCase(), this); });
 $("connectLegacyBtn").addEventListener("click", function () { doConnect($("csInLegacy").value.trim().toUpperCase(), this); });
@@ -1826,6 +1880,7 @@ if ($("recheckBtn")) $("recheckBtn").addEventListener("click", async () => {
   if (r.ok) applyLogin(r); else toast(r.error || "still pending");
 });
 $("disconnBtn").addEventListener("click", () => {
+  camTeardownAll();      /* cams and their peer links die with the session */
   clearTxState(); ipcRenderer.send("disconnect"); connected = false;
   if (discordMode) {
     acct = null; cmdToken = ""; refreshSounds();
@@ -1838,14 +1893,59 @@ $("disconnBtn").addEventListener("click", () => {
   $("connectOv").classList.remove("hidden");
   $("relayLbl").className = "v dim"; $("relayLbl").textContent = "OFFLINE";
   $("opchip").style.display = "none";
+  /* the ops count and ship rows used to freeze at their last live values */
+  $("opsCount").textContent = "0";
+  renderShipState([]);
 });
 
-/* ══ ATC + operators count ══ */
+/* ══ ATC + operators count + ship's state ══ */
+/* people, not sessions: every operator also holds a silent "NAME|ctl"
+   connection, so counting raw usernames ran double — filter the ghosts */
+function opNames(view) {
+  const s = new Set();
+  view.forEach(c => c.users.forEach(u => { if (!/\|ctl$/.test(u)) s.add(u); }));
+  return s;
+}
+/* ── Ship's State: which ships of the line are actually crewed ──
+   Command asked what this block was for. As of 1.0.1 it answers the question
+   a glance should answer: one row per ship group, with the live operator
+   headcount across the ship and every net aboard her — fed by the same
+   atc-view poll as the ops count, so it works untuned and updates every 12s. */
+function renderShipState(view) {
+  const box = $("shipStateRows");
+  if (!box) return;
+  if (!Array.isArray(view)) view = [];
+  /* a transient empty view mid-session is "no information", not "all hands
+     abandoned ship" — keep the last readout until disconnect clears it */
+  if (!view.length && connected) return;
+  const kids = new Map();
+  view.forEach(c => { const k = kids.get(c.parent); if (k) k.push(c); else kids.set(c.parent, [c]); });
+  const crewOf = (row) => {
+    const names = new Set();
+    const walk = (r) => {
+      r.users.forEach(u => { if (!/\|ctl$/.test(u)) names.add(u); });
+      (kids.get(r.id) || []).forEach(walk);
+    };
+    walk(row);
+    return names.size;
+  };
+  let ships = view.filter(c => c.ship === true);
+  /* channels made before net-meta carried the ship flag decode to null —
+     fall back to the ships the package config knows about */
+  if (!ships.length) {
+    const shipNames = new Set(nets.filter(n => n.cfg.ship).map(n => n.cfg.name));
+    ships = view.filter(c => shipNames.has(c.name));
+  }
+  box.innerHTML = ships.map(s => {
+    const n = crewOf(s);
+    return '<div class="rd"><label title="' + escAttr(s.name) + '">' + esc(s.name) + '</label>' +
+      '<span class="v num ' + (n ? "ok" : "dim") + '">' + n + (n === 1 ? " OP" : " OPS") + '</span></div>';
+  }).join("");
+}
 async function refreshAtc() {
   const view = await ipcRenderer.invoke("atc-view");
   const boxes = view.filter(c => c.id !== 0);
-  const names = new Set(); view.forEach(c => c.users.forEach(u => names.add(u)));
-  $("atcCount").textContent = names.size;
+  $("atcCount").textContent = opNames(view).size;
   $("atcGrid").innerHTML = boxes.map(c => {
     /* same verb as the channel column — one action, one word. A net you are
        already tuned to says so instead of offering a redundant dial. */
@@ -1855,7 +1955,7 @@ async function refreshAtc() {
       ? c.users.map(u => "<i>" + esc(u.replace(/\|/g, " · ")) + "</i>").join("")
       : '<span class="empty">NO OPERATORS</span>') + '</div>' +
     (mine ? '<button class="tunelink here" disabled>ON THIS NET</button>'
-          : '<button class="tunelink" data-name="' + escAttr(c.name) + '">TUNE ▸</button>') + '</div>';
+          : '<button class="tunelink" data-name="' + escAttr(c.name) + '" data-freq="' + escAttr(c.freq || "") + '" data-ship="' + (c.ship ? "1" : "") + '">TUNE ▸</button>') + '</div>';
   }).join("");
 }
 $("atcGrid").addEventListener("click", async (e) => {
@@ -1863,7 +1963,13 @@ $("atcGrid").addEventListener("click", async (e) => {
   const nm = b.dataset.name;
   let i = nets.findIndex(n => n.cfg.name === nm);
   if (i < 0) {
-    nets.push({ cfg: { name: nm, freq: "———.———", enc: false }, depth: 0, parent: null, tuned: false, idx: null, mon: true, txOn: false, vol: 75, pan: 0, bind: null, roster: new Map(), speaking: new Map(), chat: [], tx: false });
+    /* Carry the REAL freq from the ATC view onto the card. The em-dash
+       placeholder is display-only: radio-stack refuses to put a non-frequency
+       in the wire username, but sending the real one keeps every other client
+       naming this session "CALLSIGN|NNN.NNN" like any hand-tuned net. */
+    const freq = /^\d{1,3}\.\d{3}$/.test(b.dataset.freq || "") ? b.dataset.freq : "———.———";
+    const ship = b.dataset.ship === "1";
+    nets.push({ cfg: { name: nm, freq, enc: false, ship, subnets: [] }, depth: 0, parent: null, tuned: false, idx: null, mon: true, txOn: false, vol: 75, pan: 0, bind: null, bcast: false, group: ship, lsnAll: false, txAll: false, roster: new Map(), speaking: new Map(), chat: [], tx: false });
     i = nets.length - 1;
   }
   showPage("pgComms");
@@ -1871,12 +1977,13 @@ $("atcGrid").addEventListener("click", async (e) => {
   selectedI = i; renderNets();
 });
 function showPage(id) {
-  if (id === "pgAtc" && !connected) { toast("Connect first."); return; }
+  if ((id === "pgAtc" || id === "pgCam") && !connected) { toast("Connect first."); return; }
   const leavingSys = document.getElementById("settings").classList.contains("on") && id !== "settings";
   if (leavingSys && !discordMode) { cmdToken = $("tokenIn").value.trim(); store.set("cmdToken", cmdToken); renderTxTargets(); refreshSounds(); }
   document.querySelectorAll(".page").forEach(p => p.classList.toggle("on", p.id === id));
   document.querySelectorAll(".pkey").forEach(k => k.classList.toggle("on", k.dataset.page === id));
   if (id === "pgAtc") refreshAtc();
+  if (id === "pgCam") camScan();
   if (id === "pgAcct") refreshAccts();
   if (id === "pgChat") { renderChatTabs(); renderChat(); }
   if (id === "settings" && !discordMode) $("tokenIn").value = cmdToken;
@@ -1905,8 +2012,21 @@ function pollOps() {
     polling = true;
     try {
     const view = await ipcRenderer.invoke("atc-view");
-    const names = new Set(); view.forEach(c => c.users.forEach(u => names.add(u)));
-    $("opsCount").textContent = names.size;
+    $("opsCount").textContent = opNames(view).size;
+    renderShipState(view);
+    /* A net created mid-session by another COMMAND account used to exist only
+       on the relay: the COMMS board was merged with the tree exclusively after
+       our OWN connects and edits, so everyone else stared at a board that
+       didn't have it (and the ATC page, which DID show it, then tuned it with
+       a placeholder freq — the InvalidUsername reject). Ride the poll we are
+       already paying for. Skip while ANY gesture holds live board state — a
+       row drag mid-flight, a key capture armed, or the net-properties dialog
+       open (dlgIdx is a raw index; a re-sync reindexing nets[] under it would
+       aim APPLY at the wrong net, relay-wide). */
+    if (!rowDragging && !capturing && !document.getElementById("dlg").classList.contains("on")) {
+      const treeChanged = await syncTreeFromRelay();
+      if (treeChanged && document.getElementById("pgAtc").classList.contains("on")) refreshAtc();
+    }
     if (discordMode) {
       const current = await ipcRenderer.invoke("acct", { method: "GET", path: "/api/me" });
       const verdict = bridge.acctHeartbeat.assess(current, acctFails);
@@ -1970,13 +2090,39 @@ Object.keys(THEME_DEFAULTS).forEach(k => {
   const el = $("c_" + k); if (!el) return;
   el.addEventListener("input", function () { customTheme[k] = this.value; themeMode = "custom"; applyTheme(); });
 });
-$("themeReset").addEventListener("click", () => { customTheme = Object.assign({}, THEME_DEFAULTS); applyTheme(); toast("Palette reset to night defaults."); });
+$("themeReset").addEventListener("click", () => { customTheme = Object.assign({}, THEME_DEFAULTS); applyTheme(); toast("Palette reset to dark defaults."); });
 $("closeSet").addEventListener("click", () => showPage("pgComms"));
 $("sfx").addEventListener("click", function () { fx = !fx; this.classList.toggle("on", fx); store.set("fx", fx); if (fx) chirpDown(); });
-$("fxsel").addEventListener("change", function () {
-  fxPreset = this.value; store.set("fxPreset", fxPreset);
+/* rebuild every tuned chain at the current dial and audition the result */
+function applyFxDial() {
   nets.forEach(n => { if (n.tuned) wireChain(n); });
   const t = nets.find(n => n.tuned); if (t) squelchTail(t); else chirpDown();
+}
+/* keep the select and the slider telling the same story: on an anchor the
+   select names it, between anchors it reads Custom (a hidden option that only
+   exists while the dial is off-preset) */
+function renderFxDial() {
+  $("fxSl").value = fxIntensity;
+  $("fxVal").textContent = fxIntensity;
+  const preset = bridge.fxCurve.presetAt(fxIntensity);
+  $("fxCustomOpt").hidden = !!preset;
+  $("fxsel").value = preset || "custom";
+  if (preset) { fxPreset = preset; store.set("fxPreset", fxPreset); }
+}
+$("fxsel").addEventListener("change", function () {
+  if (this.value === "custom") return;               /* placeholder, not a choice */
+  fxPreset = this.value; store.set("fxPreset", fxPreset);
+  fxIntensity = Math.round(bridge.fxCurve.anchorValue(fxPreset));
+  store.set("fxIntensity", fxIntensity);
+  renderFxDial(); applyFxDial();
+});
+/* live readout while dragging; the chain rebuild waits for release so RX audio
+   doesn't click through a rebuild per pixel of travel */
+$("fxSl").addEventListener("input", function () { $("fxVal").textContent = this.value; });
+$("fxSl").addEventListener("change", function () {
+  fxIntensity = Math.max(0, Math.min(100, Math.round(Number(this.value) || 0)));
+  store.set("fxIntensity", fxIntensity);
+  renderFxDial(); applyFxDial();
 });
 $("ovbtn").addEventListener("click", () => ipcRenderer.send("ov-toggle"));
 ipcRenderer.on("ov-shown", (ev, shown) => { $("ovbtn").classList.toggle("onov", shown); if (!shown) $("sovedit").classList.remove("on"); });
@@ -2181,7 +2327,7 @@ try {
 } catch (e) {}
 $("sfx").classList.toggle("on", fx);
 $("sautoupd").classList.toggle("on", autoUpdate);
-$("fxsel").value = fxPreset;
+renderFxDial();
 applyFont(); applyScale(); applyTheme(); refreshAcctEp(); listAudioDevices(); renderGate(); renderCsList(); renderMasterBinds(); renderMic(); renderNets(); refreshSounds();
 $("startupFail").style.display = "none";
 $("signDiscord").style.display = discordMode ? "block" : "none";
@@ -2234,6 +2380,358 @@ $("netAccess").addEventListener("change", async (e) => {
   toast(r.ok ? net + " → " + s2.value.toUpperCase() + " (relay-enforced)" : "Failed: " + r.error);
 });
 
+/* ══ helmet cam ══
+   Operators stream their Star Citizen POV to shipmates: screen capture via the
+   desktop-capture path, video peer-to-peer over WebRTC, and the handshakes
+   riding the relay as session-targeted text on the silent control connection
+   (src/cam-signal.js — no new sockets, nothing for the dial governor to see).
+   One publisher feeds at most CAM_MAX_VIEWERS peer connections; watchers can
+   view one feed solo, several in a grid, or float any tile over the game with
+   native picture-in-picture. NAT reality: with STUN only, a small share of
+   peer pairs (symmetric NAT both ends) cannot connect — the tile says LINK
+   FAILED instead of pretending. */
+const CAM_MAX_VIEWERS = 4;
+const CAM_ICE = [{ urls: "stun:stun.l.google.com:19302" }];
+const CAM_QUAL = {
+  "480":  { w: 854,  h: 480,  fps: 15, kbps: 600 },
+  "720":  { w: 1280, h: 720,  fps: 30, kbps: 1500 },
+  "1080": { w: 1920, h: 1080, fps: 30, kbps: 3000 }
+};
+const cam = {
+  pub: null,                  /* {stream, quality, viewers:Map<actor,pc>} */
+  watching: new Map(),        /* actor → {pc, tile, cs, state} */
+  live: new Map(),            /* actor → callsign of announced publishers  */
+  peers: [], limit: 5000, seq: 0,
+  reasm: bridge.camSignal.newReassembler({ ttlMs: 30000 }),
+  announceTimer: null
+};
+function camSelf() { return cam.peers.find(p => p.self) || null; }
+function camOthers() { return cam.peers.filter(p => !p.self).map(p => p.session); }
+function sendSig(sessions, payload) {
+  const targets = (Array.isArray(sessions) ? sessions : [sessions]).filter(s => Number.isInteger(s));
+  if (!targets.length) return;
+  const size = Math.max(400, Math.min(3800, cam.limit - 200));
+  let chunks;
+  try { chunks = bridge.camSignal.encodeChunks("s" + (++cam.seq) + "x" + Math.floor(Math.random() * 1e6), payload, size); }
+  catch (e) { toast("Cam signal too large — " + e.message); return; }
+  ipcRenderer.send("cam-signal", { sessions: targets, chunks });
+}
+async function camRefreshPeers() {
+  try {
+    const r = await ipcRenderer.invoke("cam-peers");
+    cam.peers = r.peers || []; cam.limit = r.limit || 5000;
+  } catch (e) { cam.peers = []; }
+}
+/* ── the shared signal dispatcher ── */
+ipcRenderer.on("cam-signal", async (ev, s) => {
+  const m = cam.reasm.feed(s.actor, s.message, Date.now());
+  if (!m || typeof m.t !== "string") return;
+  const from = s.from || "OPERATOR";
+  if (m.t === "who") { if (cam.pub) sendSig([s.actor], { t: "on", cs: callsign }); return; }
+  if (m.t === "on") {
+    /* Identity comes from the SERVER's user table (the |ctl username the
+       relay verified), never from the payload — any operator can write any
+       cs into a signal. A fresh announce from the same callsign under a new
+       session id (control relink) retires the stale row and its tile. */
+    for (const [a, cs0] of [...cam.live]) {
+      if (cs0 === from && a !== s.actor) { cam.live.delete(a); camDropTile(a); }
+    }
+    cam.live.set(s.actor, from);
+    renderCamList(); return;
+  }
+  if (m.t === "off") { cam.live.delete(s.actor); camDropTile(s.actor, "OFF AIR"); renderCamList(); return; }
+  if (m.t === "full") { toast(from + "'s cam is full (" + CAM_MAX_VIEWERS + " watchers)."); camDropTile(s.actor, "FULL"); return; }
+  if (m.t === "req") { camServeViewer(s.actor, from); return; }
+  if (m.t === "leave") { camReleaseViewer(s.actor); return; }
+  if (m.t === "end") { camDropTile(s.actor, "OFF AIR"); return; }
+  if (m.t === "offer" && typeof m.sdp === "string") { camAcceptOffer(s.actor, from, m.sdp); return; }
+  if (m.t === "answer" && typeof m.sdp === "string") {
+    const pc = cam.pub && cam.pub.viewers.get(s.actor);
+    if (pc) { try { await pc.setRemoteDescription({ type: "answer", sdp: m.sdp }); } catch (e) {} }
+  }
+});
+function camGatherDone(pc) {
+  if (pc.iceGatheringState === "complete") return Promise.resolve();
+  return new Promise((res) => {
+    /* non-trickle by design: ONE sdp blob per direction keeps the handshake
+       inside murmur's per-user text budget. 4s cap — a stuck gatherer still
+       produces a usable host+srflx description. */
+    const t = setTimeout(res, 4000);
+    pc.addEventListener("icegatheringstatechange", () => {
+      if (pc.iceGatheringState === "complete") { clearTimeout(t); res(); }
+    });
+  });
+}
+/* ── publishing ── */
+async function camStart() {
+  if (cam.pub) return;
+  await camRefreshPeers();
+  let sources;
+  try { sources = await ipcRenderer.invoke("cam-sources"); }
+  catch (e) { toast("Screen capture unavailable: " + e.message); return; }
+  const pick = $("camPick");
+  pick.hidden = false;
+  pick.innerHTML = sources.map((s, i) =>
+    '<div class="src" data-si="' + i + '"><img src="' + s.thumb + '" alt=""><span title="' + escAttr(s.name) + '">' + esc(s.name) + "</span></div>").join("") ||
+    '<div class="hint">Nothing to capture.</div>';
+  pick.onclick = async (e) => {
+    const el = e.target.closest("[data-si]"); if (!el) return;
+    pick.hidden = true; pick.onclick = null;
+    await camGoLive(sources[+el.dataset.si]);
+  };
+}
+async function camGoLive(source) {
+  const q = CAM_QUAL[$("camQual").value] || CAM_QUAL["720"];
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { mandatory: { chromeMediaSource: "desktop", chromeMediaSourceId: source.id,
+        maxWidth: q.w, maxHeight: q.h, maxFrameRate: q.fps } }
+    });
+  } catch (e) { toast("Couldn't capture " + source.name + ": " + e.message); return; }
+  cam.pub = { stream, quality: q, viewers: new Map(), srcName: source.name };
+  stream.getVideoTracks()[0].addEventListener("ended", camStopPub); /* source window closed */
+  $("camStart").hidden = true; $("camStop").hidden = false;
+  $("camStatus").textContent = "ON AIR · 0 WATCHING"; $("camStatus").classList.add("live");
+  addLog("sys", "", "helmet cam live — " + source.name);
+  camMountTile("self", callsign + " (YOU)", stream, true);
+  camAnnounce();
+  /* re-announce once a minute: sessions churn on relinks and latecomers ask
+     WHO only when they open the page */
+  cam.announceTimer = setInterval(camAnnounce, 60000);
+}
+async function camAnnounce() {
+  if (!cam.pub) return;
+  await camRefreshPeers();
+  const others = camOthers();
+  if (others.length) sendSig(others, { t: "on", cs: callsign });
+}
+function camStopPub() {
+  if (!cam.pub) return;
+  clearInterval(cam.announceTimer); cam.announceTimer = null;
+  const others = camOthers();
+  if (others.length) sendSig(others, { t: "off" });
+  for (const pc of cam.pub.viewers.values()) { try { pc.close(); } catch (e) {} }
+  try { cam.pub.stream.getTracks().forEach(t => t.stop()); } catch (e) {}
+  cam.pub = null;
+  camDropTile("self");
+  $("camStart").hidden = false; $("camStop").hidden = true;
+  $("camStatus").textContent = "OFF AIR"; $("camStatus").classList.remove("live");
+  addLog("sys", "", "helmet cam off");
+}
+async function camServeViewer(actor, from) {
+  if (!cam.pub) { sendSig([actor], { t: "end" }); return; }
+  if (cam.pub.viewers.size >= CAM_MAX_VIEWERS && !cam.pub.viewers.has(actor)) {
+    sendSig([actor], { t: "full" }); return;
+  }
+  camReleaseViewer(actor);                       /* replace any stale pc */
+  const pc = new RTCPeerConnection({ iceServers: CAM_ICE });
+  cam.pub.viewers.set(actor, pc);
+  camPubCount();
+  /* every continuation below is identity-guarded on THIS pc: a re-request
+     replaces the map entry, and without the guards the replaced handshake's
+     catch/timeout used to close or out-offer its own replacement */
+  const current = () => cam.pub && cam.pub.viewers.get(actor) === pc;
+  /* a viewer that never answers must not squat a slot until STOP */
+  pc._answerTimer = setTimeout(() => {
+    if (current() && pc.connectionState !== "connected") camReleaseViewer(actor, pc);
+  }, 45000);
+  cam.pub.stream.getTracks().forEach(t => pc.addTrack(t, cam.pub.stream));
+  pc.addEventListener("connectionstatechange", async () => {
+    if (pc.connectionState === "connected") {
+      clearTimeout(pc._answerTimer);
+      /* politeness cap: the encoder budget follows the chosen quality */
+      for (const sender of pc.getSenders()) {
+        try {
+          const p = sender.getParameters();
+          p.encodings = (p.encodings && p.encodings.length) ? p.encodings : [{}];
+          p.encodings[0].maxBitrate = cam.pub.quality.kbps * 1000;
+          await sender.setParameters(p);
+        } catch (e) {}
+      }
+      addLog("sys", "", "helmet cam — " + from + " is watching");
+    }
+    /* "disconnected" is transient and self-healing — the viewer side waits
+       it out, so must we; only a truly dead pc frees the slot */
+    if (["failed", "closed"].includes(pc.connectionState)) camReleaseViewer(actor, pc);
+  });
+  try {
+    await pc.setLocalDescription(await pc.createOffer());
+    await camGatherDone(pc);
+    if (!current()) { try { pc.close(); } catch (e) {} return; }
+    sendSig([actor], { t: "offer", sdp: pc.localDescription.sdp });
+  } catch (e) { camReleaseViewer(actor, pc); }
+}
+function camReleaseViewer(actor, onlyPc) {
+  const pc = cam.pub && cam.pub.viewers.get(actor);
+  if (!pc || (onlyPc && pc !== onlyPc)) return;
+  cam.pub.viewers.delete(actor);
+  clearTimeout(pc._answerTimer);
+  try { pc.close(); } catch (e) {}
+  camPubCount();
+}
+function camPubCount() {
+  if (cam.pub) $("camStatus").textContent = "ON AIR · " + cam.pub.viewers.size + " WATCHING";
+}
+/* ── watching ── */
+function camWatch(actor) {
+  if (cam.watching.has(actor)) return;
+  const cs = cam.live.get(actor) || "OPERATOR";
+  const entry = { pc: null, cs, tile: camMountTile(actor, cs, null, false) };
+  cam.watching.set(actor, entry);
+  /* a req can go unanswered (stale session id, publisher quit) — say so and
+     clean up instead of CALLING… forever */
+  entry.callTimer = setTimeout(() => {
+    if (cam.watching.get(actor) !== entry || entry.pc) return;
+    entry.tile.classList.add("lost");
+    entry.tile.querySelector(".st8").textContent = "NO ANSWER";
+    setTimeout(() => { if (cam.watching.get(actor) === entry && !entry.pc) camUnwatch(actor); }, 4000);
+  }, 12000);
+  sendSig([actor], { t: "req" });
+  renderCamList();
+}
+async function camAcceptOffer(actor, from, sdp) {
+  const entry = cam.watching.get(actor);
+  if (!entry) return;                             /* never asked — ignore */
+  clearTimeout(entry.callTimer);
+  if (entry.pc) { try { entry.pc.close(); } catch (e) {} }
+  const pc = new RTCPeerConnection({ iceServers: CAM_ICE });
+  entry.pc = pc;
+  /* identity-guard every continuation: a newer offer replaces entry.pc, and
+     stale callbacks must neither answer nor mutate the fresh handshake */
+  const current = () => cam.watching.get(actor) === entry && entry.pc === pc;
+  pc.addEventListener("track", (e) => {
+    if (!current()) return;
+    const v = entry.tile.querySelector("video");
+    if (v && v.srcObject !== e.streams[0]) { v.srcObject = e.streams[0]; v.play().catch(() => {}); }
+    entry.tile.classList.remove("lost");
+    entry.tile.querySelector(".st8").textContent = "";
+  });
+  pc.addEventListener("connectionstatechange", () => {
+    if (!current()) return;
+    if (["failed", "disconnected"].includes(pc.connectionState)) {
+      entry.tile.classList.add("lost");
+      entry.tile.querySelector(".st8").textContent = "LINK " + (pc.connectionState === "failed" ? "FAILED" : "LOST");
+      if (pc.connectionState === "failed") {
+        setTimeout(() => { if (current() && pc.connectionState === "failed") camUnwatch(actor); }, 8000);
+      }
+    }
+  });
+  try {
+    await pc.setRemoteDescription({ type: "offer", sdp });
+    await pc.setLocalDescription(await pc.createAnswer());
+    await camGatherDone(pc);
+    if (!current()) { try { pc.close(); } catch (e) {} return; }
+    sendSig([actor], { t: "answer", sdp: pc.localDescription.sdp });
+  } catch (e) {
+    if (!current()) return;
+    entry.tile.classList.add("lost");
+    entry.tile.querySelector(".st8").textContent = "HANDSHAKE FAILED";
+  }
+}
+function camUnwatch(actor) {
+  const entry = cam.watching.get(actor);
+  if (!entry) return;
+  cam.watching.delete(actor);
+  clearTimeout(entry.callTimer);
+  if (entry.pc) { try { entry.pc.close(); } catch (e) {} }
+  sendSig([actor], { t: "leave" });
+  if (entry.tile) entry.tile.remove();
+  camViewState(); renderCamList();
+}
+function camDropTile(actor, why) {
+  if (actor === "self") {
+    const t = document.querySelector('.tile[data-actor="self"]');
+    if (t) t.remove(); camViewState(); return;
+  }
+  const entry = cam.watching.get(actor);
+  if (!entry) return;
+  cam.watching.delete(actor);
+  clearTimeout(entry.callTimer);
+  if (entry.pc) { try { entry.pc.close(); } catch (e) {} }
+  if (entry.tile) entry.tile.remove();
+  if (why) toast(entry.cs + " — cam " + why.toLowerCase() + ".");
+  camViewState(); renderCamList();
+}
+/* ── tiles ── */
+function camMountTile(actor, label, stream, isSelf) {
+  const grid = $("camGrid");
+  const tile = document.createElement("div");
+  tile.className = "tile" + (isSelf ? " self" : "");
+  tile.dataset.actor = String(actor);
+  tile.innerHTML = '<video autoplay muted playsinline></video>' +
+    '<div class="tl"><b>' + esc(label) + '</b><span class="st8">' + (stream ? "" : "CALLING…") + '</span>' +
+    '<button data-pip title="Float this feed over the game">PIP</button>' +
+    (isSelf ? "" : '<button data-close title="Stop watching">✕</button>') + "</div>";
+  const v = tile.querySelector("video");
+  if (stream) { v.srcObject = stream; v.play().catch(() => {}); }
+  v.addEventListener("click", () => {
+    const solo = grid.classList.contains("solo") && tile.classList.contains("focus");
+    grid.classList.toggle("solo", !solo);
+    grid.querySelectorAll(".tile").forEach(t => t.classList.toggle("focus", !solo && t === tile));
+  });
+  tile.querySelector("[data-pip]").addEventListener("click", (e) => {
+    e.stopPropagation();
+    v.requestPictureInPicture().catch(err => toast("PIP refused: " + err.message));
+  });
+  const x = tile.querySelector("[data-close]");
+  if (x) x.addEventListener("click", (e) => { e.stopPropagation(); camUnwatch(actor); });
+  grid.appendChild(tile);
+  camViewState();
+  return tile;
+}
+function camViewState() {
+  const grid = $("camGrid");
+  if (!grid.children.length) grid.classList.remove("solo");
+  $("camEmpty").style.display = grid.children.length ? "none" : "";
+}
+function renderCamList() {
+  const rows = [];
+  for (const [actor, cs] of cam.live) {
+    const self = camSelf();
+    if (self && actor === self.session) continue;
+    const on = cam.watching.has(actor);
+    rows.push('<div class="camrow" data-actor="' + actor + '"><b>' + esc(cs) + '</b><span class="lv">● LIVE</span>' +
+      '<button data-w class="' + (on ? "watching" : "") + '">' + (on ? "WATCHING" : "WATCH") + "</button></div>");
+  }
+  $("camList").innerHTML = rows.join("") || '<div class="hint">No cams on the air.</div>';
+}
+$("camList").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-w]"); if (!b) return;
+  const actor = +b.closest(".camrow").dataset.actor;
+  if (cam.watching.has(actor)) camUnwatch(actor); else camWatch(actor);
+});
+$("camStart").addEventListener("click", camStart);
+$("camStop").addEventListener("click", camStopPub);
+$("camRefresh").addEventListener("click", camScan);
+async function camScan() {
+  await camRefreshPeers();
+  /* forget announcers who left the relay entirely — but an EMPTY snapshot is
+     "no information" (control relink in progress; a live one always contains
+     at least our own |ctl session), not "everyone left": sweeping on it
+     closed every healthy P2P tile over a relay blip the video never felt */
+  if (cam.peers.length) {
+    const alive = new Set(cam.peers.map(p => p.session));
+    for (const actor of [...cam.live.keys()]) if (!alive.has(actor)) { cam.live.delete(actor); camDropTile(actor); }
+  }
+  const others = camOthers();
+  if (others.length) sendSig(others, { t: "who" });
+  renderCamList();
+}
+/* everything down with the session */
+function camTeardownAll() {
+  camStopPub();
+  for (const actor of [...cam.watching.keys()]) {
+    const entry = cam.watching.get(actor);
+    cam.watching.delete(actor);
+    if (entry.pc) { try { entry.pc.close(); } catch (e) {} }
+    if (entry.tile) entry.tile.remove();
+  }
+  cam.live.clear(); cam.peers = [];
+  camViewState(); renderCamList();
+}
+
 /* headless CI hook */
 if (bridge.autotestHost) {
   /* FLEETCOMM_DEMO swaps rig-speak for in-character strings in screenshot
@@ -2266,6 +2764,25 @@ if (bridge.autotestHost) {
       ipcRenderer.send("ov-toggle");
       $("fxsel").value = "heavy"; $("fxsel").dispatchEvent(new Event("change"));
       setTimeout(() => console.log("[AUTOTEST] fx=" + fxPreset + " chains=" + nets.filter(n => n.tuned).every(n => n.fxNodes && n.fxNodes.length > 0)), 1200);
+      /* helmet-cam signaling: a REAL wire round-trip — chunks out through the
+         control connection, session-targeted back at ourselves, reassembled.
+         Proves the whole path: preload allowlists, main relay, radio-stack
+         pacing, fake-murmur's faithful session targeting, the codec. */
+      try {
+        const cp = await ipcRenderer.invoke("cam-peers");
+        const selfPeer = (cp.peers || []).find(p => p.self);
+        if (selfPeer) {
+          const got = new Promise((res) => {
+            const off = ipcRenderer.on("cam-signal", (ev2, sig) => { off(); res(sig); });
+            setTimeout(() => res(null), 6000);
+          });
+          ipcRenderer.send("cam-signal", { sessions: [selfPeer.session],
+            chunks: bridge.camSignal.encodeChunks("rt1", { t: "who", mark: "selftrip" }, 3800) });
+          const sig = await got;
+          const m = sig && bridge.camSignal.newReassembler({}).feed(sig.actor, sig.message, 0);
+          console.log("[AUTOTEST] cam-signal-selftrip=" + !!(m && m.t === "who" && m.mark === "selftrip"));
+        } else console.log("[AUTOTEST] cam-signal-selftrip=no-self-peer");
+      } catch (e) { console.log("[AUTOTEST] cam-signal-selftrip=ERR " + e.message); }
     }, 6000);
   }, 800);
   ipcRenderer.on("ov-shown", (ev, shown) => console.log("[AUTOTEST] overlay=" + shown));
@@ -2304,7 +2821,7 @@ if (bridge.autotestHost) {
     const shot = (name) => ipcRenderer.invoke("autotest-shot", name).catch(() => ({ ok: false }));
     const first = await shot("probe");
     if (first && first.ok) {
-      for (const [pg, name] of [["pgChat", "chat"], ["pgAtc", "atc"], ["settings", "sys"]]) {
+      for (const [pg, name] of [["pgChat", "chat"], ["pgAtc", "atc"], ["pgCam", "cam"], ["settings", "sys"]]) {
         showPage(pg); await wait(1000); await shot(name);
       }
       /* the in-game overlay window too — show it if hidden, capture, restore */
@@ -2490,7 +3007,17 @@ if (bridge.autotestHost) {
       const fq = card && card.querySelector(".fq");
       L("name-bigger-than-freq", nm && fq
         ? parseFloat(getComputedStyle(nm).fontSize) > parseFloat(getComputedStyle(fq).fontSize) : "?");
-      L("rows-draggable", !!(card && card.draggable));
+      /* 1.0.1: rows are NOT draggable at rest — the ⠿ grip arms the drag on
+         pointerdown and release disarms it, so the VOL/L·R sliders slide
+         instead of grabbing the whole card */
+      L("rows-not-draggable-at-rest", !!(card && !card.draggable));
+      const grip = card && card.querySelector("[data-grip]");
+      if (grip) {
+        grip.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+        L("grip-arms-drag", card.draggable === true);
+        window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+        L("release-disarms-drag", card.draggable === false);
+      } else L("grip-arms-drag", "no grip in rig");
     }
     const shapes = netShapes();
     const sub = nets.find(n => n.parent);
@@ -2511,6 +3038,53 @@ if (bridge.autotestHost) {
     masterBinds.active = savedActive; renderMasterBinds();
     L("sys-key-label", (document.getElementById("sysKey").textContent || "").indexOf("SYS") >= 0);
     L("device-pickers", !!document.getElementById("micSel") && !!document.getElementById("outSel"));
+
+    /* keybind unbind (1.0.1): BACKSPACE while listening writes null through
+       the real storage path; ESC walks away keeping the old key */
+    const savedCycUp = masterBinds.cycUp;
+    capturing = { kind: "master", which: "cycUp" };
+    onKeyDown("dom", "Backspace", "Backspace", []);
+    L("bind-clears-to-unbound", masterBinds.cycUp === null && capturing === null);
+    L("bind-clear-persisted", store.get("masterBinds6", {}).cycUp === null);
+    L("bind-badge-reads-set-key", $("bindCycUp").textContent === "set key");
+    masterBinds.cycUp = { src: "label", label: "PageUp", mods: [] };
+    capturing = { kind: "master", which: "cycUp" };
+    onKeyDown("dom", "Escape", "Escape", []);
+    L("bind-esc-keeps-old-key", !!(masterBinds.cycUp && masterBinds.cycUp.label === "PageUp") && capturing === null);
+    masterBinds.cycUp = savedCycUp; store.set("masterBinds6", masterBinds); renderMasterBinds();
+    L("bind-listen-chrome-cleared", !$("bindCycUp").classList.contains("listen"));
+
+    /* fx intensity dial (1.0.1): presets are anchors, off-anchor reads CUSTOM */
+    const savedFxI = fxIntensity;
+    $("fxSl").value = 75; $("fxSl").dispatchEvent(new Event("change"));
+    L("fx-dial-custom", $("fxsel").value === "custom" && fxIntensity === 75);
+    L("fx-dial-between-anchors", (function () {
+      const p = bridge.fxCurve.paramsAt(0.75);
+      return p.hp > 300 && p.hp < 400 && p.drive > 0.35 && p.drive < 0.8;
+    })());
+    $("fxsel").value = "standard"; $("fxsel").dispatchEvent(new Event("change"));
+    L("fx-preset-snaps-dial", fxIntensity === 50 && $("fxVal").textContent === "50" && $("fxCustomOpt").hidden);
+    fxIntensity = savedFxI; store.set("fxIntensity", savedFxI); renderFxDial();
+
+    /* helmet cam (1.0.1): station present, codec sane; the wire round-trip
+       runs in the behavioral block above (cam-signal-selftrip) */
+    L("cam-page-present", !!document.getElementById("pgCam") && !!document.getElementById("camStart") && !!document.getElementById("camGrid"));
+    L("cam-codec-roundtrip", (function () {
+      try {
+        const chunks = bridge.camSignal.encodeChunks("t1", { t: "offer", sdp: "x".repeat(6000) }, 3800);
+        const r = bridge.camSignal.newReassembler({});
+        let out = null;
+        for (const c of chunks) out = r.feed("me", c, 0) || out;
+        return chunks.length >= 2 && !!out && out.sdp.length === 6000;
+      } catch (e) { return "ERR " + e.message; }
+    })());
+
+    /* ship's state (1.0.1): the rail lists the ships of the line */
+    L("ship-state-rows", document.querySelectorAll("#shipStateRows .rd").length > 0);
+
+    /* 1MC (1.0.1): the local monitor is gone — clips reach the sender only
+       through the net like everyone else */
+    L("sb-no-local-monitor", !/ctx\.destination/.test(String(playClipOnNet)));
 
     /* update visibility: busy overlay shows and clears; a version change
        demands acknowledgement and OK records it */
@@ -2652,7 +3226,12 @@ if (bridge.autotestHost) {
 /* ══ drag to reorder ══
    Purely local: it changes the order this operator sees and nothing else. A net
    may be moved among its siblings, never in or out of a nest — src/net-tree.js
-   enforces that and refuses the drop rather than silently re-parenting. */
+   enforces that and refuses the drop rather than silently re-parenting.
+   The drag ARMS only from the ⠿ grip: cards ship draggable=false and a
+   pointerdown on the grip flips the card on just long enough for the browser
+   to start the drag. Anywhere else — the sliders above all — presses behave
+   like ordinary controls again. (rowDragging itself is declared with the
+   board state near the top of the file: renderNets writes it.) */
 (function () {
   let dragName = null;
   const nameAt = (el) => {
@@ -2660,15 +3239,28 @@ if (bridge.autotestHost) {
     const i = card ? +card.dataset.i : -1;
     return nets[i] ? nets[i].cfg.name : null;
   };
+  netlist.addEventListener("pointerdown", (e) => {
+    const card = e.target.closest(".net");
+    if (card && e.target.closest("[data-grip]")) card.draggable = true;
+  });
+  /* disarm on release wherever it lands — a drag that never started must not
+     leave the card grabbable from anywhere */
+  addEventListener("pointerup", () => {
+    netlist.querySelectorAll('.net[draggable="true"]').forEach(c => { c.draggable = false; });
+  });
   netlist.addEventListener("dragstart", (e) => {
+    const card = e.target.closest(".net");
+    if (!card || !card.draggable) { dragName = null; return; }   /* text drags etc. */
     dragName = nameAt(e.target);
     if (!dragName) return;
+    rowDragging = true;
     try { e.dataTransfer.setData("text/plain", dragName); e.dataTransfer.effectAllowed = "move"; } catch (err) {}
-    const card = e.target.closest(".net"); if (card) card.classList.add("dragging");
+    card.classList.add("dragging");
   });
   netlist.addEventListener("dragend", () => {
     dragName = null;
-    netlist.querySelectorAll(".net").forEach(c => c.classList.remove("dragging", "dropok", "dropno"));
+    rowDragging = false;
+    netlist.querySelectorAll(".net").forEach(c => { c.classList.remove("dragging", "dropok", "dropno"); c.draggable = false; });
   });
   netlist.addEventListener("dragover", (e) => {
     const over = nameAt(e.target); if (!dragName || !over) return;

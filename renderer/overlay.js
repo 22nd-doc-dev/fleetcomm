@@ -40,6 +40,15 @@ ipcRenderer.on("ov-state", (ev, nets) => {
   $("empty").style.display = nets.length ? "none" : "block";
   $("rows").replaceChildren(...nets.map(row));
 });
+/* fleet ops are briefed in UTC — a compact readout so nobody alt-tabs to do
+   timezone math mid-op. Drift-proof: re-aligns to the wall clock each tick. */
+function tickClock() {
+  const n = new Date();
+  const p = (x) => String(x).padStart(2, "0");
+  $("clockT").textContent = p(n.getUTCHours()) + ":" + p(n.getUTCMinutes()) + ":" + p(n.getUTCSeconds());
+  setTimeout(tickClock, 1000 - n.getMilliseconds() + 20);
+}
+tickClock();
 $("op").addEventListener("input", function () { cfg.opacity = +this.value; applyCfg(); ipcRenderer.send("ov-set", cfg); });
 $("sc").addEventListener("input", function () { cfg.scale = +this.value; applyCfg(); ipcRenderer.send("ov-set", cfg); });
 $("lock").addEventListener("click", () => ipcRenderer.send("ov-lock"));

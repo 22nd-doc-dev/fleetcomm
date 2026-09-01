@@ -18,7 +18,7 @@ const protobuf = require("protobufjs");
 const selfsigned = require("selfsigned");
 const config = require(path.join(__dirname, "..", "config", "22nd-package.json"));
 
-const MSG = { Version: 0, Authenticate: 2, Ping: 3, ServerSync: 5, ChannelState: 7, UserState: 9, TextMessage: 11 };
+const MSG = { Version: 0, Authenticate: 2, Ping: 3, Reject: 4, ServerSync: 5, ChannelState: 7, UserState: 9, TextMessage: 11 };
 const root = protobuf.loadSync(path.join(__dirname, "..", "proto", "Mumble.proto"));
 const T = (n) => root.lookupType("MumbleProto." + n);
 function frame(type, name, payload) {
@@ -105,6 +105,14 @@ const clients = new Set();
           if (me.muted) continue;
           if (type === MSG.Authenticate) {
             me.name = T("Authenticate").toObject(T("Authenticate").decode(body)).username || "?";
+            /* murmur's stock username regex — enforced here so a client that
+               builds an illegal username (the em-dash placeholder-freq bug)
+               fails in the rig exactly as it fails in the field */
+            if (!/^[-=\w[\]{}()@|.]+$/.test(me.name)) {
+              s.write(frame(MSG.Reject, "Reject", { type: 2 /* InvalidUsername */, reason: "Invalid username" }));
+              s.end();
+              continue;
+            }
             s.write(frame(MSG.Version, "Version", { versionV1: (1 << 16) | (4 << 8) | 230 }));
             for (const c of channels) s.write(frame(MSG.ChannelState, "ChannelState",
               Object.assign({ channelId: c.id, name: c.name }, c.parent == null ? {} : { parent: c.parent })));
@@ -120,7 +128,18 @@ const clients = new Set();
             for (const c of clients) c.s.write(frame(MSG.UserState, "UserState", echo));
           } else if (type === MSG.TextMessage) {
             const m = T("TextMessage").toObject(T("TextMessage").decode(body));
-            for (const c of clients) if (c !== me) c.s.write(frame(MSG.TextMessage, "TextMessage", Object.assign({}, m, { actor: me.session })));
+            const out = Object.assign({}, m, { actor: me.session });
+            /* murmur-faithful targeting: session-targeted messages reach ONLY
+               the named sessions (self included, murmur delivers those);
+               channel/untargeted messages keep the old everyone-else fan-out.
+               Without this, cam signaling "passed" while leaking to the whole
+               relay — the classic tests-green-app-broken trap. */
+            if (Array.isArray(m.session) && m.session.length) {
+              const want = new Set(m.session.map(Number));
+              for (const c of clients) if (want.has(c.session)) c.s.write(frame(MSG.TextMessage, "TextMessage", out));
+            } else {
+              for (const c of clients) if (c !== me) c.s.write(frame(MSG.TextMessage, "TextMessage", out));
+            }
           }
         } catch (e) { /* malformed test traffic — ignore */ }
       }
