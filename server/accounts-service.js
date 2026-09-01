@@ -169,7 +169,9 @@ async function requireGuildMember(token) {
 }
 
 function verifyDiscord(body) {
-  if (MOCK) {
+  /* a real token verifies for real even on a mock rig — the web OAuth flow
+     (portal callback) coexists with mock dev sign-ins */
+  if (MOCK && !body.discordToken) {
     if (!body.mockId) return Promise.reject(new Error("mock login requires mockId"));
     return Promise.resolve({ id: String(body.mockId), username: body.mockName || "mock-user" });
   }
