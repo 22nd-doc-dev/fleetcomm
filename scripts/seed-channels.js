@@ -22,7 +22,23 @@ async function seed(host, superPw, cfg, port) {
     for (const item of items || []) {
       const name = chanName(item.name);
       let id = c.channelByName(name);
-      if (id == null) { id = await c.createChannel(name, parentId, encodeMeta(item)); await pause(400); } // stay under the server's flood limiter
+      if (id == null) {
+        /* murmur throttles bulk channel creation with a slowly-refilling
+           bucket (proven against the droplet: a fixed 400ms pace stalls
+           partway through a 44-channel tree). Ride it out per channel —
+           and re-check by name first on every retry, because a creation can
+           LAND while its ack loses the race with our timeout. */
+        for (let attempt = 1; ; attempt++) {
+          try { id = await c.createChannel(name, parentId, encodeMeta(item)); break; }
+          catch (e) {
+            id = c.channelByName(name);
+            if (id != null) break;
+            if (!/timeout creating/.test(e.message) || attempt >= 12) throw e;
+            await pause(2500);
+          }
+        }
+        await pause(400); // baseline pacing between creations
+      }
       const key = prefix ? prefix + "/" + item.name : item.name;
       ids[key] = id;
       await addAll(item.subnets, id, key);
