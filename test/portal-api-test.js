@@ -344,6 +344,46 @@ const pause = ms => new Promise(r => setTimeout(r, ms));
   r = await api("GET", "/api/oauth/config");
   ok(r.body.mock === true && r.body.configured === false, "oauth config reports mock mode honestly");
 
+  /* ── the legacy roster import: idempotent, honest about unknowns ── */
+  const importBody = { members: [
+    { callsign: "Travis Barnes", rank: "CDRE", rsiHandle: "Travis_Barnes",
+      timezone: "Eastern Time (US & Canada)", joinedAt: 1753030800000 },
+    { callsign: "Deacyn Rodriguez", rank: "MCPO", rating: "BMMC", loa: true, loaSince: 1776013200000 },
+    { callsign: "Keleus Harper", loa: true },
+    { callsign: "Victor Makya", contractor: true },
+  ] };
+  r = await api("POST", "/api/personnel/import", importBody, oak);
+  ok(r.status === 403, "the import door needs management access");
+  /* CDRE isn't in the stock ladder — the import names the gap instead of guessing */
+  r = await api("POST", "/api/personnel/import", importBody, doc);
+  ok(r.status === 200 && r.body.errors.some(e => /CDRE/.test(e)) && r.body.created === 3,
+     "an unknown rank is reported per-member while the rest import");
+  r = await api("POST", "/api/catalog", { ranks: (await api("GET", "/api/catalog", null, doc)).body.catalog.ranks
+    .concat({ grade: "O-7", name: "Commodore", abbr: "CDRE" }) }, doc);
+  ok(r.status === 200, "COMMAND adds Commodore to the ladder in-site");
+  r = await api("POST", "/api/personnel/import", importBody, doc);
+  ok(r.status === 200 && r.body.created === 1 && r.body.updated === 3 && !r.body.errors.length,
+     "re-running the import updates in place — nobody is duplicated");
+  r = await api("GET", "/api/personnel", null, doc);
+  const trav = r.body.roster.find(x => x.callsign === "TRAVIS BARNES");
+  const deac = r.body.roster.find(x => x.callsign === "DEACYN RODRIGUEZ");
+  const kel = r.body.roster.find(x => x.callsign === "KELEUS HARPER");
+  const vic = r.body.roster.find(x => x.callsign === "VICTOR MAKYA");
+  ok(trav && trav.rank.abbr === "CDRE" && trav.rsiHandle === "Travis_Barnes" &&
+     trav.joinedAt === 1753030800000 && trav.manual === true,
+     "the Commodore lands ranked, dated, and linked to his RSI profile");
+  ok(trav === r.body.roster[0], "the senior-most officer tops the roster sort");
+  ok(deac && deac.rating === "BMMC" && deac.rank.abbr === "MCPO", "rated prefixes ride alongside the ladder rank");
+  ok(kel && kel.rank.abbr === "—" && kel.rank.grade === "?", "an unknown rank stays an honest dash, never a defaulted SR");
+  ok(vic && vic.contractor === true, "contractors carry the flag");
+  r = await api("GET", "/api/loa", null, doc);
+  ok(r.body.active.some(x => x.discordId === deac.discordId && x.start === 1776013200000) &&
+     r.body.active.some(x => x.discordId === kel.discordId),
+     "on-leave members arrive on leave, with their dates");
+  const importNotes = (await api("GET", "/api/personnel/" + trav.discordId, null, doc))
+    .body.profile.record.filter(e => /Imported from the legacy/.test(e.text));
+  ok(importNotes.length === 1, "re-imports never repeat the import note");
+
   /* the personnel layer never leaks through the old routes */
   r = await api("GET", "/api/accounts", null, oak);
   ok(r.status === 403, "the existing COMMAND-only account list is still COMMAND-only");

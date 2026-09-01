@@ -158,9 +158,13 @@ module.exports = function createPortalApi(deps) {
     return {
       discordId: id, discordName: acc.discordName, callsign: acc.callsign || null,
       role: acc.role, manual: acc.manual === true, itAdmin: acc.itAdmin === true,
+      contractor: acc.contractor === true,
       scopes: Array.isArray(acc.scopes) ? acc.scopes : [],
+      rsiHandle: acc.rsiHandle || null, timezone: acc.timezone || null,
       lastSeen: acc.lastSeen || null, joinedAt: acc.createdAt || null,
       rank: rankByAbbr(rec.rank) || { grade: "?", name: rec.rank, abbr: rec.rank },
+      /* the rated form of the rank (BMMC, GM1, QMSC…) — display trumps ladder */
+      rating: rec.rating || null,
       awards: rec.awards, certs: rec.certs, record: rec.record
     };
   }
@@ -835,6 +839,59 @@ module.exports = function createPortalApi(deps) {
       return true;
     }
 
+    /* ── legacy roster import: the whole fleet in one order. Idempotent —
+       members match by callsign (case-insensitive), existing records are
+       UPDATED, never duplicated, and the import note is written once. Rank
+       null means genuinely unknown and stays an honest "—" rather than a
+       defaulted Starman Recruit; on-leave members arrive on leave. ── */
+    if (p === "/api/personnel/import" && req.method === "POST") {
+      if (need(isAdmin(actor), 403, "management access required")) return true;
+      const b = await body(req);
+      if (need(Array.isArray(b.members) && b.members.length && b.members.length <= 400,
+        400, "members: an array of 1-400 entries")) return true;
+      const byCallsign = new Map();
+      for (const [aid, acc] of Object.entries(db.accounts))
+        if (acc.callsign) byCallsign.set(String(acc.callsign).toUpperCase(), aid);
+      const out = { created: 0, updated: 0, errors: [] };
+      await serializeMutation(async () => {
+        for (const mm of b.members.map(x => x && typeof x === "object" ? x : {})) {
+          const callsign = String(mm.callsign || "").trim().toUpperCase()
+            .replace(/[^ A-Z0-9_.\-'"()[\]]+/g, "").slice(0, 40);
+          if (!callsign) { out.errors.push("entry without a callsign"); continue; }
+          const rank = mm.rank == null ? null : String(mm.rank);
+          if (rank && rankIdx(rank) < 0) { out.errors.push(callsign + ": no such rank " + rank); continue; }
+          let id = byCallsign.get(callsign), created = false;
+          if (!id) {
+            id = "m-" + crypto.randomBytes(5).toString("hex");
+            db.accounts[id] = { discordName: String(mm.discordName || callsign).slice(0, 80),
+              callsign, role: "member", manual: true, createdAt: Date.now() };
+            byCallsign.set(callsign, id); created = true;
+          }
+          const acc = db.accounts[id];
+          if (mm.joinedAt != null && Number.isFinite(Number(mm.joinedAt))) acc.createdAt = Number(mm.joinedAt);
+          if (mm.rsiHandle != null) acc.rsiHandle = String(mm.rsiHandle).slice(0, 60);
+          if (mm.timezone != null) acc.timezone = String(mm.timezone).slice(0, 60);
+          acc.contractor = mm.contractor === true;
+          const rec = recFor(id);
+          if (rank) rec.rank = rank;
+          else if (created) rec.rank = "—";
+          if (mm.rating != null) rec.rating = String(mm.rating).slice(0, 12);
+          if (created) logEntry(rec, actor.name, "note", "Imported from the legacy fleet roster");
+          const l = pdb.loa[id] || (pdb.loa[id] = { active: null, history: [] });
+          if (mm.loa === true && !l.active)
+            l.active = { start: Number(mm.loaSince) || Date.now(), reason: "Carried over from the legacy roster" };
+          if (mm.loa !== true && l.active && String(l.active.reason || "").startsWith("Carried over")) {
+            l.history.unshift({ start: l.active.start, end: Date.now(), reason: l.active.reason });
+            l.active = null;
+          }
+          out[created ? "created" : "updated"]++;
+        }
+        deps.persist(); persist("personnel"); persist("loa");
+      });
+      send(res, 200, Object.assign({ ok: true }, out));
+      return true;
+    }
+
     /* ── one-file fleet backup (humans with admin only — no secrets inside) ── */
     if (p === "/api/export" && req.method === "GET" && !actor.bot) {
       if (need(isAdmin(actor), 403, "management access required")) return true;
@@ -842,6 +899,8 @@ module.exports = function createPortalApi(deps) {
       for (const [id, acc] of Object.entries(db.accounts)) accounts[id] = {
         discordName: acc.discordName, callsign: acc.callsign || null, role: acc.role,
         manual: acc.manual === true, itAdmin: acc.itAdmin === true,
+        contractor: acc.contractor === true,
+        rsiHandle: acc.rsiHandle || null, timezone: acc.timezone || null,
         scopes: Array.isArray(acc.scopes) ? acc.scopes : [],
         createdAt: acc.createdAt || null, lastSeen: acc.lastSeen || null };
       send(res, 200, { ok: true, exportedAt: Date.now(), accounts,
