@@ -98,7 +98,10 @@ function captureGuild(g) {
   log("guild mapped:", state.channels.size, "text channels,", state.roles.size, "roles");
 }
 
+let mapTimer = null, mapping = false;
 async function refreshGuildMaps() {
+  if (mapping) return;
+  mapping = true;
   try {
     const [channels, roles] = await Promise.all([
       dapi("GET", "/guilds/" + GUILD + "/channels"),
@@ -106,7 +109,10 @@ async function refreshGuildMaps() {
     ]);
     captureGuild({ channels, roles });
   } catch (e) { log("guild map refresh failed:", e.message); }
+  finally { mapping = false; }
 }
+/* setup bursts (channel after channel) collapse into one refresh */
+function scheduleMapRefresh() { clearTimeout(mapTimer); mapTimer = setTimeout(refreshGuildMaps, 3000); }
 
 /* ── embeds, LT Crunch's uniform ── */
 const GOLD = 0xC9A96A, GREEN = 0x5CA877, RED = 0xC0604A;
@@ -208,20 +214,30 @@ async function drainOutbox() {
   try {
     const { jobs } = await papi("GET", "/api/bot/outbox");
     for (const job of jobs) {
+      const held = jobFails.get(job.id);
+      if (held && Date.now() < held.nextTry) continue;  /* cooling off */
       try {
         const result = await handleJob(job);
         if (result === "wait") continue;               /* channel not there yet — keep queued */
         await papi("POST", "/api/bot/outbox/ack", { id: job.id, result: result || {} });
         jobFails.delete(job.id);
       } catch (e) {
-        const n = (jobFails.get(job.id) || 0) + 1;
-        jobFails.set(job.id, n);
+        if (e.status === 403) {
+          /* an access wall is Command's to open, not a poison job — hold the
+             card until CAPT Glasc is allowed into the channel */
+          log("job", job.type, job.id, "blocked: the bot lacks access to the target channel —",
+            "grant the FleetComm role View Channel + Send Messages there; the card posts itself once opened");
+          jobFails.set(job.id, { n: 0, nextTry: Date.now() + 30000 });
+          continue;
+        }
+        const n = ((held && held.n) || 0) + 1;
+        jobFails.set(job.id, { n, nextTry: Date.now() + Math.min(n * 30000, 300000) });
         log("job", job.type, job.id, "failed (" + n + "):", e.message);
-        if (n >= 5) {                                   /* poison — drop it, loudly */
+        if (n >= 8) {                                   /* poison — drop it, loudly */
           await papi("POST", "/api/bot/outbox/ack", { id: job.id, result: { failed: e.message } })
             .catch(() => {});
           jobFails.delete(job.id);
-          log("job", job.id, "dropped after 5 failures");
+          log("job", job.id, "dropped after 8 failures");
         }
       }
     }
@@ -471,7 +487,7 @@ function onDispatch(t, d) {
     scheduleMuster();
   } else if (["GUILD_ROLE_CREATE", "GUILD_ROLE_UPDATE", "GUILD_ROLE_DELETE",
               "CHANNEL_CREATE", "CHANNEL_UPDATE", "CHANNEL_DELETE"].includes(t)) {
-    refreshGuildMaps();
+    scheduleMapRefresh();
   }
 }
 

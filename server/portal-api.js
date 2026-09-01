@@ -760,6 +760,15 @@ module.exports = function createPortalApi(deps) {
       send(res, 200, { ok: true });
       return true;
     }
+    /* send the Discord card again — a dropped job, a deleted message */
+    if ((m = /^\/api\/events\/([a-f0-9]{16})\/repost$/.exec(p)) && req.method === "POST") {
+      if (need(isAdmin(actor), 403, "management access required")) return true;
+      if (need(pdb.events[m[1]], 404, "no such event")) return true;
+      if (!pdb.discord.outbox.some(j => j.type === "event" && j.eventId === m[1]))
+        enqueue("event", { eventId: m[1] });
+      send(res, 200, { ok: true });
+      return true;
+    }
     if ((m = /^\/api\/events\/([a-f0-9]{16})\/rsvp$/.exec(p)) && req.method === "POST" && !actor.bot) {
       const b = await body(req);
       if (need(pdb.events[m[1]], 404, "no such event")) return true;
