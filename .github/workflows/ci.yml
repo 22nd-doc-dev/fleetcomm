@@ -4,7 +4,7 @@ on:
     branches: [main]
   pull_request:
 permissions:
-  contents: write   # only used by the on-failure debug-log publish below
+  contents: read
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -16,18 +16,4 @@ jobs:
       - run: npm run verify
       - run: sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq mumble-server
       - run: sudo systemctl stop mumble-server || true
-      - run: bash test/run-relay-tests.sh 2>&1 | tee relay-out.log
-      # TEMPORARY DIAGNOSTIC: job logs need repo-admin auth to download, so a
-      # failing relay run publishes its own output to a throwaway branch that
-      # can be read anonymously. Remove once the relay suites are green again.
-      - name: publish failure log
-        if: failure()
-        run: |
-          d=$(mktemp -d)
-          cp relay-out.log "$d"/ 2>/dev/null || echo "no relay-out.log produced" > "$d"/relay-out.log
-          cd "$d"
-          git init -q .
-          git checkout -qb ci-debug-log
-          git add relay-out.log
-          git -c user.email=ci@fleetcomm -c user.name=ci-debug commit -qm "relay failure log $GITHUB_SHA"
-          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" ci-debug-log
+      - run: bash test/run-relay-tests.sh
