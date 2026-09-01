@@ -251,7 +251,7 @@ module.exports = function createPortalApi(deps) {
     if (!a) return null;
     return { bot: false, id: a.id, acc: a.acc, name: a.acc.callsign || a.acc.discordName,
       command: a.acc.role === "command",
-      member: ["member", "command"].includes(a.acc.role) };
+      member: ["member", "element", "command"].includes(a.acc.role) };
   }
 
   /* ── CORS: the portal may be served from a different origin than the API ── */
@@ -434,7 +434,7 @@ module.exports = function createPortalApi(deps) {
     /* everything below needs an operator session or the bot secret */
     const actor = actorOf(req);
     const need = (ok, code, msg) => { if (!ok) { send(res, code, { ok: false, error: msg }); return true; } return false; };
-    if (!/^\/api\/(catalog|personnel|coc|availability|events|sso|activity|loa|roster|squadrons|record|export|bot|me\/permissions)/.test(p)) return false;
+    if (!/^\/api\/(catalog|personnel|coc|availability|events|sso|activity|loa|roster|squadrons|record|export|bot|cam-viewers|me\/permissions)/.test(p)) return false;
     if (need(actor, 401, "unauthorized")) return true;
     /* pending accounts can see nothing but their own approval state */
     if (need(actor.bot || actor.member, 403, "awaiting COMMAND approval")) return true;
@@ -490,7 +490,7 @@ module.exports = function createPortalApi(deps) {
         if (need(ev, 404, "no such event")) return true;
         const who = String(b.discordId || "");
         const acc = db.accounts[who];
-        if (need(acc && ["member", "command"].includes(acc.role), 403,
+        if (need(acc && ["member", "element", "command"].includes(acc.role), 403,
           "not on the fleet rolls — sign in at the portal first")) return true;
         if (need(["going", "maybe", "no"].includes(b.answer), 400, "answer must be going|maybe|no")) return true;
         ev.rsvp[who] = b.answer;
@@ -528,7 +528,7 @@ module.exports = function createPortalApi(deps) {
       if (p === "/api/bot/roleplan" && req.method === "GET") {
         const plan = [];
         for (const [id2, acc] of Object.entries(db.accounts)) {
-          if (acc.manual || !["member", "command"].includes(acc.role)) continue;
+          if (acc.manual || !["member", "element", "command"].includes(acc.role)) continue;
           const rec = pdb.personnel[id2] || {};
           const roles = [];
           if (rec.rank && rec.rank !== "—") roles.push(rec.rank);
@@ -542,6 +542,19 @@ module.exports = function createPortalApi(deps) {
         return true;
       }
       send(res, 404, { ok: false, error: "unknown bot route" });
+      return true;
+    }
+
+    /* ── who may WATCH helmet cams in FleetComm: Element Leaders + COMMAND.
+       Everyone keeps the right to stream; this gates viewing only, enforced
+       app-side. Callsigns only — an account that never signed into the app
+       has no wire identity to match (and a discordName fallback could
+       collide with someone else's callsign). ── */
+    if (p === "/api/cam-viewers" && req.method === "GET") {
+      const viewers = Object.values(db.accounts)
+        .filter(a2 => ["element", "command"].includes(a2.role) && a2.callsign)
+        .map(a2 => a2.callsign);
+      send(res, 200, { ok: true, viewers });
       return true;
     }
 

@@ -460,6 +460,25 @@ const pause = ms => new Promise(r => setTimeout(r, ms));
   ok(oakPlan && oakPlan.roles.length >= 1 && r.body.managed.includes("DESRON-38"),
      "the role plan names each member's due roles inside a managed namespace");
 
+  /* ── Element Leader: member everywhere, helmet-cam viewer to the app ── */
+  r = await api("POST", "/api/callsign", { callsign: "Oak Morcroft" }, oak);
+  ok(r.status === 200, "Oak takes a callsign for the cam-viewer test");
+  r = await api("POST", "/api/accounts/2002/role", { role: "element" }, doc);
+  ok(r.status === 200, "COMMAND grants Element Leader standing");
+  r = await api("GET", "/api/personnel", null, oak);
+  ok(r.status === 200, "an Element Leader still reads the fleet like any member");
+  r = await api("POST", "/api/personnel/bulk", { ids: ["2002"], action: { type: "note", text: "x" } }, oak);
+  ok(r.status === 403, "Element Leader carries no COMMAND powers");
+  r = await api("GET", "/api/cam-viewers", null, oak);
+  ok(r.status === 200 && r.body.viewers.some(v => /OAK/i.test(v)),
+     "cam-viewers lists Element Leaders by raw callsign");
+  ok(!r.body.viewers.some(v => /TRAVIS/i.test(v)),
+     "a callsign-less or member-tier account never reaches the viewer list");
+  r = await api("GET", "/api/cam-viewers");
+  ok(r.status === 401, "the viewer list is not public");
+  r = await api("POST", "/api/accounts/2002/role", { role: "member" }, doc);
+  ok(r.status === 200, "the tier steps back down cleanly");
+
   await stop();
   fs.rmSync(dataDir, { recursive: true, force: true });
   console.log("\n✔ PORTAL API PASS — profiles, bulk actions, CoC, availability, events, SSO and the bot door hold their gates");

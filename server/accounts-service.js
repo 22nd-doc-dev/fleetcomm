@@ -114,7 +114,7 @@ function serializeMutation(work) {
 let migrated = false;
 for (const account of Object.values(db.accounts)) {
   if (!account || typeof account !== "object") throw new Error("invalid account record");
-  if (!["pending", "member", "command", "revoked"].includes(account.role)) { account.role = "pending"; migrated = true; }
+  if (!["pending", "member", "element", "command", "revoked"].includes(account.role)) { account.role = "pending"; migrated = true; }
   if (!/^u-[0-9a-f]{36}$/.test(String(account.relayToken || ""))) {
     account.relayToken = "u-" + crypto.randomBytes(18).toString("hex"); migrated = true;
   }
@@ -205,7 +205,7 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const CHANNEL_ACCESS = PERM.Traverse | PERM.Enter | PERM.Speak | PERM.Whisper | PERM.Text | PERM.Listen;
 function allowedAccounts(level) {
   return Object.values(db.accounts).filter(account => account.relayToken &&
-    (level === "command" ? account.role === "command" : ["member", "command"].includes(account.role)));
+    (level === "command" ? account.role === "command" : ["member", "element", "command"].includes(account.role)));
 }
 function accessAcls(level) {
   if (level === "open") return [];
@@ -475,7 +475,7 @@ const server = http.createServer(async (req, res) => {
        than a Discord snowflake */
     if ((m = /^\/api\/accounts\/([A-Za-z0-9-]{1,40})\/role$/.exec(p)) && req.method === "POST") {
       const b = await body(req);
-      if (!["pending", "member", "command", "revoked"].includes(b.role)) return send(res, 400, { ok: false, error: "bad role" });
+      if (!["pending", "member", "element", "command", "revoked"].includes(b.role)) return send(res, 400, { ok: false, error: "bad role" });
       if (m[1] === a.id && b.role !== "command") return send(res, 400, { ok: false, error: "cannot demote yourself" });
       const updated = await serializeMutation(async () => {
         const target = db.accounts[m[1]];
