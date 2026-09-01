@@ -10,7 +10,11 @@
      (left rule + lamp + tinted name). Square corners, no chrome. ══ */
   :root{
     --panelRGB:9,15,22; --holoRGB:92,168,119;
-    --panel:rgba(var(--panelRGB),var(--bgA,.72));
+    /* NEVER pre-compose a --panel here: a custom property substitutes its
+       inner var()s at the element it computes on, so :root would bake the
+       DARK --panelRGB in and body.light's override could never reach it —
+       exactly the illegible mixed-theme overlay of 2026-09-01. Compose
+       rgba(var(--panelRGB),var(--bgA,.72)) at every use site instead. */
     --ink:#E7E0CD; --muted:#8f99a5; --holo:#5CA877; --tx:#CE7250; --gold:#C9A96A; --off:#26303B;
   }
   body.light{
@@ -29,7 +33,7 @@
   body{font:13px/1.4 "Atkinson Hyperlegible",-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:var(--ink);
     display:flex;flex-direction:column;justify-content:flex-start}
   #box{transform-origin:top left;padding:6px}
-  .row{display:flex;align-items:center;gap:7px;background:var(--panel);
+  .row{display:flex;align-items:center;gap:7px;background:rgba(var(--panelRGB),var(--bgA,.72));
     border:1px solid rgba(var(--holoRGB),.16);border-left:2px solid transparent;
     padding:5px 9px;margin-bottom:4px;
     transition:border-color .1s;backdrop-filter:blur(2px)}
@@ -61,11 +65,11 @@
   #edit button{-webkit-app-region:no-drag;background:var(--gold);border:none;
     font-family:"IBM Plex Mono",Consolas,ui-monospace,monospace;letter-spacing:.1em;
     padding:6px 12px;font-weight:600;font-size:11px;cursor:pointer;color:#16222C;width:100%;margin-top:4px}
-  #empty{color:var(--muted);font-size:12px;padding:6px;background:var(--panel);display:none}
+  #empty{color:var(--muted);font-size:12px;padding:6px;background:rgba(var(--panelRGB),var(--bgA,.72));display:none}
   /* UTC readout — a chip, deliberately NOT a full-width bar (command's spec).
      Lives outside #rows so state pushes never rebuild it. */
   #clock{display:inline-flex;align-items:center;gap:6px;width:max-content;
-    background:var(--panel);border:1px solid rgba(var(--holoRGB),.16);
+    background:rgba(var(--panelRGB),var(--bgA,.72));border:1px solid rgba(var(--holoRGB),.16);
     padding:3px 9px;margin-bottom:4px;backdrop-filter:blur(2px);
     font-family:"IBM Plex Mono",Consolas,ui-monospace,monospace;font-weight:500;
     font-size:11px;letter-spacing:.08em;color:var(--ink)}

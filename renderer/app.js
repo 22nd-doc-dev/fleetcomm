@@ -2845,6 +2845,12 @@ if (bridge.autotestHost) {
       await wait(900); await shot("overlay");
       if (ovWasHidden) $("ovShowBtn").click();
       themeMode = "light"; applyTheme(); showPage("pgComms"); await wait(1000); await shot("day");
+      /* the overlay in DAYLIGHT too — it shipped broken once because the
+         series only ever photographed it in the dark */
+      const ovWasHidden2 = $("ovShowBtn").textContent === "SHOW";
+      if (ovWasHidden2) $("ovShowBtn").click();
+      await wait(900); await shot("overlay-day");
+      if (ovWasHidden2) $("ovShowBtn").click();
       themeMode = "dark"; applyTheme(); await wait(400);
       /* the quarterdeck: un-hide the sign-in overlay long enough for its
          entrance to settle, capture, put it back */

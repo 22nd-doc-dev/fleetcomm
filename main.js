@@ -187,7 +187,7 @@ ipcMain.handle("autotest-shot", async (e, suffix) => {
   try {
     /* "overlay" captures the in-game overlay window — its pixels matter as
        much as the board's and no other check ever looks at them */
-    const src = suffix === "overlay" && overlay && !overlay.isDestroyed() ? overlay : win;
+    const src = String(suffix).startsWith("overlay") && overlay && !overlay.isDestroyed() ? overlay : win;
     const img = await src.webContents.capturePage();
     const p = process.env.FLEETCOMM_SHOT.replace(/\.png$/i, "") + "-" +
       String(suffix).replace(/[^a-z0-9-]/gi, "").slice(0, 24) + ".png";
@@ -734,7 +734,12 @@ ipcMain.on("open-external", (ev, url) => {
 });
 let curTheme = null;
 ipcMain.on("theme", (ev, t) => {
-  if (!t || !/^#[0-9a-f]{6}$/i.test(t.bg || "") || !/^#[0-9a-f]{6}$/i.test(t.ink || "")) return;
+  if (!t || !/^#[0-9a-f]{6}$/i.test(t.bg || "") || !/^#[0-9a-f]{6}$/i.test(t.ink || "")) {
+    /* a silently dropped theme means the overlay and titlebar quietly stop
+       following the board — say so, loudly, in the log */
+    console.log("[theme] DROPPED invalid theme message: " + JSON.stringify(t));
+    return;
+  }
   curTheme = t;
   sendOverlay("ov-theme", t);
   if (process.platform !== "darwin" && win && !win.isDestroyed()) {
