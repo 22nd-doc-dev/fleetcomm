@@ -127,6 +127,18 @@ const pause = ms => new Promise(r => setTimeout(r, ms));
   ok(r.status === 400, "a billet under a missing parent is refused");
   r = await api("POST", "/api/coc", { nodes }, oak);
   ok(r.status === 403, "members cannot edit the chain");
+  /* title cards: a unit or office holds a spot in the chain with no person */
+  r = await api("POST", "/api/coc", { nodes: [
+    { id: "cascom", title: "CASCOM", card: true, assignee: "1001", parent: null },
+    { id: "co", title: "Fleet CO", assignee: "1001", parent: "cascom", note: "Reports to CASCOM" },
+    { id: "if55", title: "IF-55", card: true, parent: "co" },
+    { id: "if55-act", title: "Acting CO", assignee: "2002", parent: "if55", note: "CO on LOA" }
+  ] }, doc);
+  ok(r.status === 200 && r.body.nodes[0].card === true && r.body.nodes[0].assignee === null,
+     "a title card publishes as a unit — any stray assignee is struck");
+  ok(r.body.nodes[3].note === "CO on LOA", "notes ride the chain (Acting CO, LOA)");
+  r = await api("POST", "/api/coc", { nodes }, doc);   /* restore the plain chain */
+  ok(r.status === 200, "the plain chain is restored");
 
   /* ── availability: painted days, own only; COMMAND sees the fleet ── */
   r = await api("POST", "/api/availability", { days: { "2026-09-05": "y", "2026-09-06": "loa", "2026-09-07": "zz", "bad-key": "y" } }, oak);

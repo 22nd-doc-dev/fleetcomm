@@ -474,7 +474,11 @@ module.exports = function createPortalApi(deps) {
       const clean = nodes.map(n => ({
         id: String(n.id || "").slice(0, 40),
         title: String(n.title || "").slice(0, 80),
-        assignee: n.assignee ? String(n.assignee) : null,
+        /* a title card is a unit or office (CASCOM, IF-55) — it holds a spot
+           in the chain but no person; a note rides on any node (Acting CO, LOA) */
+        card: n.card === true,
+        note: String(n.note || "").slice(0, 80),
+        assignee: n.card === true ? null : (n.assignee ? String(n.assignee) : null),
         parent: n.parent ? String(n.parent) : null
       }));
       const ids = new Set(clean.map(n => n.id));
