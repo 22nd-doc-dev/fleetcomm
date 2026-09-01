@@ -228,7 +228,11 @@ async function withSuperUser(work) {
 }
 function applyAcl(c, channelId, acls) {
   c.send("ACL", { channelId, inheritAcls: true, groups: [], acls, query: false });
-  return pause(350);
+  /* ACL writes are not subject to murmur's channel-CREATION throttle (that is
+     what the 400ms seeding pace guards); 75ms is plain courtesy. At 350ms a
+     full-tree sync of the 59-channel fleet took ~21s — past our own request
+     timeout, so every role change died mid-flight with ECONNRESET. */
+  return pause(75);
 }
 async function applyNetAccess(netName, level) {
   await withSuperUser(async c => {
@@ -531,7 +535,10 @@ const server = http.createServer(async (req, res) => {
     return send(res, e.statusCode || 500, { ok: false, error: e.message });
   }
 });
-server.requestTimeout = 15000;
+/* role changes legitimately hold their request open through a fail-closed
+   full-tree ACL sync — budget for the fleet's real channel count with room
+   to grow, not for a toy tree */
+server.requestTimeout = 45000;
 server.headersTimeout = 16000;
 server.keepAliveTimeout = 5000;
 server.maxRequestsPerSocket = 100;
