@@ -179,6 +179,23 @@ async function checkUpdates() {
   } catch (e) { availableUpdate = null; return { status: "error", error: e.message }; }
 }
 ipcMain.handle("check-updates", () => checkUpdates());
+/* Visual smoke series: the rig walks each station (and both watches) and asks
+   for a capture — UI work is judged by looking at every page, not just COMMS.
+   Double-gated: only in autotest runs that asked for screenshots. */
+ipcMain.handle("autotest-shot", async (e, suffix) => {
+  if (!process.env.FLEETCOMM_AUTOTEST || !process.env.FLEETCOMM_SHOT || !win) return { ok: false };
+  try {
+    /* "overlay" captures the in-game overlay window — its pixels matter as
+       much as the board's and no other check ever looks at them */
+    const src = suffix === "overlay" && overlay && !overlay.isDestroyed() ? overlay : win;
+    const img = await src.webContents.capturePage();
+    const p = process.env.FLEETCOMM_SHOT.replace(/\.png$/i, "") + "-" +
+      String(suffix).replace(/[^a-z0-9-]/gi, "").slice(0, 24) + ".png";
+    fs.writeFileSync(p, img.toPNG());
+    console.log("[AUTOTEST] screenshot=" + p);
+    return { ok: true };
+  } catch (err) { console.log("[AUTOTEST] screenshot-failed=" + err.message); return { ok: false }; }
+});
 
 /* ── self-update (Windows portable) ──
    Downloads the new exe straight from the release, then hands off to a tiny
@@ -730,10 +747,10 @@ function createWindow() {
     ? { titleBarStyle: "hidden", trafficLightPosition: { x: 12, y: 12 } }
     /* first paint before the renderer reports its theme — match the night bezel,
        not an older palette, so the controls never flash a foreign colour */
-    : { titleBarStyle: "hidden", titleBarOverlay: { color: "#1c2126", symbolColor: "#e8edf1", height: 38 } };
+    : { titleBarStyle: "hidden", titleBarOverlay: { color: "#090F16", symbolColor: "#E7E0CD", height: 38 } };
   win = new BrowserWindow({
     width: 1180, height: 800, minWidth: 760, minHeight: 500,
-    backgroundColor: "#0b141f",
+    backgroundColor: "#090F16",
     title: "FleetComm",
     ...frameOpts,
     webPreferences: {

@@ -44,9 +44,22 @@ const $ = (id) => document.getElementById(id);
 /* ── persisted prefs ── */
 let fx = store.get("fx", true), fxPreset = store.get("fxPreset", "standard");
 let themeMode = store.get("themeMode", "dark");
-const THEME_DEFAULTS = { bg: "#0b0f13", panel: "#11161b", bez: "#1c2126", ink: "#e8edf1",
-  muted: "#8b979f", line: "#242b32", accent: "#4fd4e8", grn: "#49d17c", amber: "#ffb648", red: "#ff5a5a" };
+/* night-watch defaults — ink paper, bone text, gold accent, vermilion TX.
+   These must track the [data-theme="dark"] stylesheet tokens or "RESET TO
+   NIGHT DEFAULTS" hands back a palette that doesn't match night watch. */
+const THEME_DEFAULTS = { bg: "#0C141C", panel: "#111E29", bez: "#090F16", ink: "#E7E0CD",
+  muted: "#77828F", line: "#263039", accent: "#C9A96A", grn: "#5CA877", amber: "#CE7250", red: "#C0604A" };
 let customTheme = Object.assign({}, THEME_DEFAULTS, store.get("customTheme", {}));
+/* pre-1.0 builds persisted the full avionics palette on every launch, so the
+   stored object shadows every new default. A profile still carrying the old
+   defaults UNTOUCHED never chose them — hand it the night watch. */
+{
+  const pre10 = { bg: "#0b0f13", panel: "#11161b", bez: "#1c2126", ink: "#e8edf1",
+    muted: "#8b979f", line: "#242b32", accent: "#4fd4e8", grn: "#49d17c", amber: "#ffb648", red: "#ff5a5a" };
+  if (Object.keys(pre10).every(k => customTheme[k] === pre10[k])) {
+    customTheme = Object.assign({}, THEME_DEFAULTS);
+  }
+}
 let autoUpdate = store.get("autoUpdate", true);
 
 /* ══ legibility ══
@@ -211,7 +224,7 @@ function applyTheme() {
      leaves the bezel and status colors stuck on the old custom palette */
   ["--bg","--panel","--tint","--bez","--bez2","--bezline","--line","--line2","--ink","--muted",
    "--holo","--holo-bright","--holo-tint","--grn","--grn-tint","--amber","--amber-tint",
-   "--tx","--tx-tint","--ok","--ok-tint","--red","--red-tint","--grid","--lamp-off"]
+   "--tx","--tx-tint","--ok","--ok-tint","--red","--red-tint","--grid","--lamp-off","--sel-ink"]
     .forEach(k => r.style.removeProperty(k));
   let msg;
   if (themeMode === "custom") {
@@ -231,6 +244,9 @@ function applyTheme() {
     set("--ok", t.grn); set("--ok-tint", rgbaHex(t.grn, 0.12));
     set("--red", t.red); set("--red-tint", rgbaHex(t.red, 0.14));
     set("--lamp-off", mixHex(t.panel, t.ink, 0.2));
+    /* selection ink must contrast the ACCENT it sits on, not the theme —
+       a dark custom accent needs bone text, a light one needs ink */
+    set("--sel-ink", luminance(t.accent) < 0.5 ? "#F2EDE0" : "#16222C");
     msg = { dark, bg: cssHex("--bez", t.bez), ink: cssHex("--ink", t.ink),
       palette: { panelRGB: hexRgb(t.panel).join(","), ink: t.ink, muted: t.muted, accent: t.grn, accentRGB: hexRgb(t.grn).join(",") } };
   } else {
@@ -238,8 +254,8 @@ function applyTheme() {
     r.setAttribute("data-theme", dark ? "dark" : "light");
     /* take the bezel and text colours from the stylesheet that just applied, so
        the window controls always match the header they sit in */
-    msg = { dark, bg: cssHex("--bez", dark ? "#1c2126" : "#c8cdd2"),
-            ink: cssHex("--ink", dark ? "#e8edf1" : "#12242e"), palette: null };
+    msg = { dark, bg: cssHex("--bez", dark ? "#090F16" : "#EAE3D1"),
+            ink: cssHex("--ink", dark ? "#E7E0CD" : "#16222C"), palette: null };
   }
   store.set("themeMode", themeMode); store.set("customTheme", customTheme);
   $("sthemesel").value = themeMode;
@@ -871,7 +887,7 @@ function renderMasterBinds() {
   const unbound = !masterBinds.active;
   $("pttRow").classList.toggle("unbound", unbound);
   $("pttHint").textContent = unbound
-    ? "No talk key set — you cannot transmit until you choose one."
+    ? "No talk key set — only the on-screen PTT works until you choose one."
     : "Transmits on every net with TX armed";
   $("ptt").classList.toggle("needsbind", unbound);
   $("bindActive").textContent = masterBinds.active ? masterBinds.active.label : "set key";
@@ -1830,11 +1846,17 @@ async function refreshAtc() {
   const boxes = view.filter(c => c.id !== 0);
   const names = new Set(); view.forEach(c => c.users.forEach(u => names.add(u)));
   $("atcCount").textContent = names.size;
-  $("atcGrid").innerHTML = boxes.map(c =>
-    '<div class="atcbox"><h4>' + esc(c.name) + '<span class="c">' + c.users.length + '</span></h4>' +
-    '<div class="who">' + (c.users.length ? c.users.map(u => "<i>" + esc(u) + "</i>").join("") : '<span class="empty">empty</span>') + '</div>' +
-    '<button class="tunelink" data-name="' + escAttr(c.name) + '">TUNE ME HERE ▸</button></div>'
-  ).join("");
+  $("atcGrid").innerHTML = boxes.map(c => {
+    /* same verb as the channel column — one action, one word. A net you are
+       already tuned to says so instead of offering a redundant dial. */
+    const mine = nets.some(n => n.tuned && n.cfg.name === c.name);
+    return '<div class="atcbox"><h4>' + esc(c.name) + '<span class="c">' + c.users.length + '</span></h4>' +
+    '<div class="who">' + (c.users.length
+      ? c.users.map(u => "<i>" + esc(u.replace(/\|/g, " · ")) + "</i>").join("")
+      : '<span class="empty">NO OPERATORS</span>') + '</div>' +
+    (mine ? '<button class="tunelink here" disabled>ON THIS NET</button>'
+          : '<button class="tunelink" data-name="' + escAttr(c.name) + '">TUNE ▸</button>') + '</div>';
+  }).join("");
 }
 $("atcGrid").addEventListener("click", async (e) => {
   const b = e.target.closest("[data-name]"); if (!b) return;
@@ -1862,7 +1884,10 @@ function showPage(id) {
      just added appear without a re-sign-in */
   if (id === "settings") refreshSounds();
 }
-document.querySelectorAll(".pkey").forEach(k => k.addEventListener("click", () => showPage(k.dataset.page)));
+document.querySelectorAll(".pkey").forEach(k => k.addEventListener("click", () => {
+  showPage(k.dataset.page);
+  document.body.classList.remove("rail-open");
+}));
 let opsTimer = null;
 function pollOps() {
   clearInterval(opsTimer);
@@ -1937,6 +1962,9 @@ window.addEventListener("keydown", (e) => {
   else if (e.key === "0") { uiScale = 1; applyScale(); e.preventDefault(); }
 });
 $("themebtn").addEventListener("click", () => { themeMode = dark ? "light" : "dark"; applyTheme(); });
+/* narrow windows: the command rail slides off-canvas; the burger brings it back */
+$("railBurger").addEventListener("click", (e) => { e.stopPropagation(); document.body.classList.toggle("rail-open"); });
+$("railScrim").addEventListener("click", () => document.body.classList.remove("rail-open"));
 $("sthemesel").addEventListener("change", function () { themeMode = this.value; applyTheme(); });
 Object.keys(THEME_DEFAULTS).forEach(k => {
   const el = $("c_" + k); if (!el) return;
@@ -2131,7 +2159,19 @@ function toast(msg) {
 })();
 
 /* clock */
-setInterval(() => { $("clock").textContent = utc(); }, 1000);
+/* the fleet clock: lore year (real + 930), day-of-year, UTC, "SET" suffix —
+   the same ambient ritual as the org site. Still UTC underneath, so it stays
+   a real ops clock; the log keeps plain utc() timestamps. */
+function fleetTime() {
+  /* floor, not ceil: Date.UTC(y,0,0) is Dec 31, so elapsed time on day N is
+     N-point-something days — ceil() called every day N+1 all day long */
+  const n = new Date();
+  const doy = String(Math.floor((Date.now() - Date.UTC(n.getUTCFullYear(), 0, 0)) / 864e5)).padStart(3, "0");
+  return (n.getUTCFullYear() + 930) + "." + doy + " // " + utc() + " SET";
+}
+const clockTick = () => { $("clock").textContent = fleetTime(); };
+clockTick();
+setInterval(clockTick, 1000);
 
 /* init */
 try {
@@ -2250,6 +2290,32 @@ if (bridge.autotestHost) {
     console.log("[AUTOTEST] onair-hidden-when-quiet=" + !!(quiet && getComputedStyle(quiet).display === "none"));
   }, 24000);
 
+  /* visual smoke SERIES — after main's 28s COMMS capture, walk every station
+     and both watches. Each shot lands as <FLEETCOMM_SHOT stem>-<name>.png;
+     the invoke no-ops (ok:false) in runs without FLEETCOMM_SHOT. */
+  setTimeout(async () => {
+    const wait = (ms) => new Promise((res) => setTimeout(res, ms));
+    const shot = (name) => ipcRenderer.invoke("autotest-shot", name).catch(() => ({ ok: false }));
+    const first = await shot("probe");
+    if (first && first.ok) {
+      for (const [pg, name] of [["pgChat", "chat"], ["pgAtc", "atc"], ["settings", "sys"]]) {
+        showPage(pg); await wait(1000); await shot(name);
+      }
+      /* the in-game overlay window too — show it if hidden, capture, restore */
+      const ovWasHidden = $("ovShowBtn").textContent === "SHOW";
+      if (ovWasHidden) $("ovShowBtn").click();
+      await wait(900); await shot("overlay");
+      if (ovWasHidden) $("ovShowBtn").click();
+      themeMode = "light"; applyTheme(); showPage("pgComms"); await wait(1000); await shot("day");
+      themeMode = "dark"; applyTheme(); await wait(400);
+      /* the quarterdeck: un-hide the sign-in overlay long enough for its
+         entrance to settle, capture, put it back */
+      $("connectOv").classList.remove("hidden"); await wait(1400); await shot("signin");
+      $("connectOv").classList.add("hidden");
+      console.log("[AUTOTEST] shot-series-done");
+    }
+  }, 30000);
+
   /* ── v0.9 feature checks ── */
   setTimeout(async () => {
     const cs = getComputedStyle(document.documentElement);
@@ -2288,7 +2354,14 @@ if (bridge.autotestHost) {
     cmdToken = "autotest-token";
     /* typography actually applied? */
     document.fonts.ready.then(() => {
-      L("font-loaded", document.fonts.check('16px "Atkinson Hyperlegible"'));
+      /* Atkinson now serves the instrument values (bold face) — check the
+         weight that's actually on duty */
+      L("font-loaded", document.fonts.check('700 16px "Atkinson Hyperlegible"'));
+      /* the trio IS the brand — a missing woff2 silently falls back to
+         Arial/Georgia/Consolas and the whole watch reads wrong */
+      L("font-display-loaded", document.fonts.check('600 16px "Barlow Condensed"'));
+      L("font-prose-loaded", document.fonts.check('16px "Newsreader"'));
+      L("font-mono-loaded", document.fonts.check('16px "IBM Plex Mono"'));
       L("body-font", getComputedStyle(document.body).fontFamily.split(",")[0]);
       L("body-size", getComputedStyle(document.body).fontSize);
       const tiny = [...document.querySelectorAll("*")]
@@ -2430,7 +2503,7 @@ if (bridge.autotestHost) {
     masterBinds.active = { src: "label", label: "F14" }; renderMasterBinds();
     L("ptt-bound-clears", !document.getElementById("pttRow").classList.contains("unbound"));
     masterBinds.active = savedActive; renderMasterBinds();
-    L("sys-key-cog", (document.getElementById("sysKey").textContent || "").indexOf("\u2699") >= 0);
+    L("sys-key-label", (document.getElementById("sysKey").textContent || "").indexOf("SYS") >= 0);
     L("device-pickers", !!document.getElementById("micSel") && !!document.getElementById("outSel"));
 
     /* update visibility: busy overlay shows and clears; a version change
@@ -2516,11 +2589,14 @@ if (bridge.autotestHost) {
     $("sbVolSl").value = 130; $("sbVolSl").dispatchEvent(new Event("input"));
     L("sbvol-independent", Math.abs(masterGain.gain.value - 0.6) < 0.001 && sbVol === 130 && store.get("sbVol") === 130);
     masterVol = volWas; sbVol = sbWas; applyMasterVols();
-    L("bezel-wraps", getComputedStyle(document.getElementById("bezel")).flexWrap);
-    /* narrow the window and confirm nothing overflows the bezel horizontally */
+    /* the command rail replaced the bezel: it must never overflow sideways,
+       and the docstrip must truncate rather than push the clock off-window */
+    const railEl = document.getElementById("rail");
+    L("rail-overflow-x", Math.max(0, railEl.scrollWidth - railEl.clientWidth));
+    L("rail-nav-keys", document.querySelectorAll("#rail .pkey").length);
     document.body.style.width = "720px";
-    const bz = document.getElementById("bezel");
-    L("bezel-overflow-at-720", Math.max(0, bz.scrollWidth - bz.clientWidth));
+    const ds = document.getElementById("docstrip");
+    L("docstrip-overflow-at-720", Math.max(0, ds.scrollWidth - ds.clientWidth));
     document.body.style.width = "";
 
     /* soundboard: COMMAND-gated, and visible on a ship net */
