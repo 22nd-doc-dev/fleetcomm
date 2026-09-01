@@ -95,6 +95,14 @@ function applyNameTrunc() {
   const el = $("snametrunc"); if (el) el.classList.toggle("on", !!nameTrunc);
   store.set("nameTrunc", nameTrunc);
 }
+/* helmet-cam feeds wear faint scanlines by default — a field feed, not a
+   stream. Pure CSS on a root attribute; SYS turns it off for clean video. */
+let camScanFx = store.get("camScanFx", true);
+function applyCamScanFx() {
+  document.documentElement.toggleAttribute("data-camscan", !!camScanFx);
+  const el = $("sscanfx"); if (el) el.classList.toggle("on", !!camScanFx);
+  store.set("camScanFx", camScanFx);
+}
 let myCallsigns = store.get("callsigns", []);
 let callsign = store.get("callsign", "");
 let cmdToken = store.get("cmdToken", "");
@@ -2087,6 +2095,7 @@ $("acctEpReset").addEventListener("click", async function () {
 });
 $("sfontsel").addEventListener("change", function () { uiFont = this.value; applyFont(); });
 $("snametrunc").addEventListener("click", () => { nameTrunc = !nameTrunc; applyNameTrunc(); });
+$("sscanfx").addEventListener("click", () => { camScanFx = !camScanFx; applyCamScanFx(); });
 $("scaleup").addEventListener("click", () => bumpScale(0.1));
 $("scaledn").addEventListener("click", () => bumpScale(-0.1));
 $("scalereset").addEventListener("click", () => { uiScale = 1; applyScale(); });
@@ -2343,7 +2352,7 @@ try {
 $("sfx").classList.toggle("on", fx);
 $("sautoupd").classList.toggle("on", autoUpdate);
 renderFxDial();
-applyFont(); applyScale(); applyNameTrunc(); applyTheme(); refreshAcctEp(); listAudioDevices(); renderGate(); renderCsList(); renderMasterBinds(); renderMic(); renderNets(); refreshSounds();
+applyFont(); applyScale(); applyNameTrunc(); applyCamScanFx(); applyTheme(); refreshAcctEp(); listAudioDevices(); renderGate(); renderCsList(); renderMasterBinds(); renderMic(); renderNets(); refreshSounds();
 $("startupFail").style.display = "none";
 $("signDiscord").style.display = discordMode ? "block" : "none";
 $("signLegacy").style.display = discordMode ? "none" : "block";
@@ -2420,6 +2429,37 @@ const cam = {
   reasm: bridge.camSignal.newReassembler({ ttlMs: 30000 }),
   announceTimer: null
 };
+/* ── cam viewing is GATED: Element Leaders and COMMAND watch; everyone may
+   still STREAM (who knows who'll be ordered to share on the fly). Two ends:
+   the viewer's own role hides the watch UI, and the STREAMER refuses signal
+   traffic from operators the accounts service doesn't clear — identity being
+   the relay-verified username, never the payload. The authority list comes
+   from /api/cam-viewers; while a droplet predates that endpoint the streamer
+   fails OPEN (legacy relays have no roles at all, so open is also correct
+   there). Args are injectable so the gate logic is testable in the rig. */
+function camMayWatch(dm, a) {
+  const mode = dm === undefined ? discordMode : dm;
+  const account = a === undefined ? acct : a;
+  if (!mode || !account) return true;                    /* legacy = open */
+  return ["element", "command"].includes(account.account.role);
+}
+const camCanon = (s) => String(s || "").toUpperCase().replace(/[^A-Z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+let camViewersCache = { at: 0, set: null };              /* null = unknown → open */
+async function camAuthorizedViewers() {
+  if (!discordMode) return null;
+  if (Date.now() - camViewersCache.at < 60000) return camViewersCache.set;
+  camViewersCache.at = Date.now();
+  try {
+    const r = await ipcRenderer.invoke("acct", { method: "GET", path: "/api/cam-viewers" });
+    camViewersCache.set = (r && r.ok && Array.isArray(r.viewers))
+      ? new Set(r.viewers.map(camCanon)) : null;
+  } catch (e) { camViewersCache.set = null; }
+  return camViewersCache.set;
+}
+async function camViewerAllowed(fromName) {
+  const set = await camAuthorizedViewers();
+  return !set || set.has(camCanon(fromName));
+}
 function camSelf() { return cam.peers.find(p => p.self) || null; }
 function camOthers() { return cam.peers.filter(p => !p.self).map(p => p.session); }
 function sendSig(sessions, payload) {
@@ -2442,7 +2482,10 @@ ipcRenderer.on("cam-signal", async (ev, s) => {
   const m = cam.reasm.feed(s.actor, s.message, Date.now());
   if (!m || typeof m.t !== "string") return;
   const from = s.from || "OPERATOR";
-  if (m.t === "who") { if (cam.pub) sendSig([s.actor], { t: "on", cs: callsign }); return; }
+  if (m.t === "who") {
+    if (cam.pub && await camViewerAllowed(from)) sendSig([s.actor], { t: "on", cs: callsign });
+    return;
+  }
   if (m.t === "on") {
     /* Identity comes from the SERVER's user table (the |ctl username the
        relay verified), never from the payload — any operator can write any
@@ -2456,7 +2499,12 @@ ipcRenderer.on("cam-signal", async (ev, s) => {
   }
   if (m.t === "off") { cam.live.delete(s.actor); camDropTile(s.actor, "OFF AIR"); renderCamList(); return; }
   if (m.t === "full") { toast(from + "'s cam is full (" + CAM_MAX_VIEWERS + " watchers)."); camDropTile(s.actor, "FULL"); return; }
-  if (m.t === "req") { camServeViewer(s.actor, from); return; }
+  if (m.t === "req") {
+    if (await camViewerAllowed(from)) camServeViewer(s.actor, from);
+    else sendSig([s.actor], { t: "deny" });
+    return;
+  }
+  if (m.t === "deny") { toast(from + "'s cam is restricted to Element Leaders and COMMAND."); camDropTile(s.actor, "NOT CLEARED"); return; }
   if (m.t === "leave") { camReleaseViewer(s.actor); return; }
   if (m.t === "end") { camDropTile(s.actor, "OFF AIR"); return; }
   if (m.t === "offer" && typeof m.sdp === "string") { camAcceptOffer(s.actor, from, m.sdp); return; }
@@ -2520,7 +2568,14 @@ async function camAnnounce() {
   if (!cam.pub) return;
   await camRefreshPeers();
   const others = camOthers();
-  if (others.length) sendSig(others, { t: "on", cs: callsign });
+  /* announce only to cleared viewers — a gated member never even learns the
+     cam exists (fail-open while the authority list is unknown) */
+  const authorized = await camAuthorizedViewers();
+  const targets = authorized
+    ? others.filter(sess => { const p = cam.peers.find(x => x.session === sess);
+        return p && authorized.has(camCanon(p.callsign)); })
+    : others;
+  if (targets.length) sendSig(targets, { t: "on", cs: callsign });
 }
 function camStopPub() {
   if (!cam.pub) return;
@@ -2676,7 +2731,7 @@ function camMountTile(actor, label, stream, isSelf) {
   tile.className = "tile" + (isSelf ? " self" : "");
   tile.dataset.actor = String(actor);
   tile.innerHTML = '<video autoplay muted playsinline></video>' +
-    '<div class="tl"><b>' + esc(label) + '</b><span class="st8">' + (stream ? "" : "CALLING…") + '</span>' +
+    '<div class="tl"><span class="livebadge">LIVE</span><b>' + esc(label) + '</b><span class="st8">' + (stream ? "" : "CALLING…") + '</span>' +
     '<button data-pip title="Float this feed over the game">PIP</button>' +
     (isSelf ? "" : '<button data-close title="Stop watching">✕</button>') + "</div>";
   const v = tile.querySelector("video");
@@ -2702,6 +2757,11 @@ function camViewState() {
   $("camEmpty").style.display = grid.children.length ? "none" : "";
 }
 function renderCamList() {
+  if (!camMayWatch()) {
+    $("camList").innerHTML = '<div class="camgated">ELEMENT LEADERS &amp; COMMAND ONLY</div>' +
+      '<div class="hint">Watching the fleet\'s cams needs the Element Leader role — your own cam can still stream to those cleared to see it.</div>';
+    return;
+  }
   const rows = [];
   for (const [actor, cs] of cam.live) {
     const self = camSelf();
@@ -2714,6 +2774,7 @@ function renderCamList() {
 }
 $("camList").addEventListener("click", (e) => {
   const b = e.target.closest("[data-w]"); if (!b) return;
+  if (!camMayWatch()) { toast("Watching cams needs the Element Leader role."); return; }
   const actor = +b.closest(".camrow").dataset.actor;
   if (cam.watching.has(actor)) camUnwatch(actor); else camWatch(actor);
 });
@@ -2730,8 +2791,11 @@ async function camScan() {
     const alive = new Set(cam.peers.map(p => p.session));
     for (const actor of [...cam.live.keys()]) if (!alive.has(actor)) { cam.live.delete(actor); camDropTile(actor); }
   }
-  const others = camOthers();
-  if (others.length) sendSig(others, { t: "who" });
+  /* soliciting the fleet's cams is a viewer act — the gated don't knock */
+  if (camMayWatch()) {
+    const others = camOthers();
+    if (others.length) sendSig(others, { t: "who" });
+  }
   renderCamList();
 }
 /* everything down with the session */
@@ -2839,6 +2903,10 @@ if (bridge.autotestHost) {
       for (const [pg, name] of [["pgChat", "chat"], ["pgAtc", "atc"], ["pgCam", "cam"], ["settings", "sys"]]) {
         showPage(pg); await wait(1000); await shot(name);
       }
+      /* the source picker too — it shipped ugly once because nobody ever
+         photographed it */
+      showPage("pgCam"); $("camStart").click(); await wait(900); await shot("cam-pick");
+      $("camPick").hidden = true; $("camPick").innerHTML = "";
       /* the in-game overlay window too — show it if hidden, capture, restore */
       const ovWasHidden = $("ovShowBtn").textContent === "SHOW";
       if (ovWasHidden) $("ovShowBtn").click();
@@ -3220,6 +3288,22 @@ if (bridge.autotestHost) {
       $("snametrunc").click();
       L("trunc-off-restores", nameTrunc === false && nmOf() !== "none");
     }
+
+    /* helmet-cam gating: the injectable gate proves every role's verdict,
+       and the rig itself (legacy mode, no account) stays ungated */
+    L("cam-gate-legacy-open", camMayWatch() === true);
+    L("cam-gate-member-blocked", camMayWatch(true, { account: { role: "member" } }) === false);
+    L("cam-gate-element-allowed", camMayWatch(true, { account: { role: "element" } }) === true);
+    L("cam-gate-command-allowed", camMayWatch(true, { account: { role: "command" } }) === true);
+    L("cam-canon-wire-match", camCanon("TIBER DOC 1") === "TIBER-DOC-1" &&
+      camCanon("tiber-doc-1") === "TIBER-DOC-1");
+    /* scanline toggle: on by default, off kills the root attribute, back on */
+    const scanAttr = () => document.documentElement.hasAttribute("data-camscan");
+    L("camscan-default-on", scanAttr() === true);
+    $("sscanfx").click();
+    L("camscan-toggles-off", scanAttr() === false && store.get("camScanFx") === false);
+    $("sscanfx").click();
+    L("camscan-back-on", scanAttr() === true);
 
     /* soundboard: COMMAND-gated, and visible on a ship net */
     const shipIdx = nets.findIndex(n => n.cfg.ship);

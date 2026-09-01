@@ -435,10 +435,12 @@
   #camStop:hover{background:var(--tx);color:#0C141C}
   #camHint{text-align:left;font-size:.78rem;margin-bottom:10px}
   #camPick{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0}
-  #camPick .src{border:1px solid var(--line);background:var(--panel);cursor:pointer;padding:0 0 4px;
+  #camPick .src{min-width:0;border:1px solid var(--line);background:var(--panel);cursor:pointer;padding:0 0 4px;
     transition:border-color .2s,transform .2s var(--ease-out)}
   #camPick .src:hover{border-color:var(--gold);transform:translateY(-2px)}
-  #camPick .src img{width:100%;display:block;background:#000}
+  /* fixed-height thumbnails: a portrait monitor must not turn the picker
+     into a wall — crop from the top, where the action is */
+  #camPick .src img{width:100%;height:72px;object-fit:cover;object-position:top;display:block;background:#000}
   #camPick .src span{display:block;font-family:var(--font-mono);font-size:.64rem;letter-spacing:.08em;
     color:var(--ink2);padding:4px 6px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   #camList .camrow{display:flex;align-items:center;gap:8px;border:1px solid var(--line);
@@ -462,8 +464,30 @@
   .tile{position:relative;border:1px solid var(--grn);background:#000;min-height:0;
     box-shadow:var(--shadow-sm)}
   .tile video{width:100%;height:100%;max-height:74vh;display:block;object-fit:contain;background:#000;cursor:pointer}
+  /* ── the field-feed treatment (SYS-togglable, on by default): faint
+     scanlines + a slow-drifting refresh band, IN the feed, never on the
+     chrome — the design language bans HUD scanlines, but a helmet cam IS
+     diegetic video. Pure CSS, pointer-transparent, killed by reduced-motion
+     and by the SYS switch (root data-camscan gates it). ── */
+  [data-camscan] .tile::after{content:"";position:absolute;inset:0;z-index:1;pointer-events:none;
+    background:repeating-linear-gradient(0deg, rgba(0,0,0,.20) 0 1px, transparent 1px 3px)}
+  [data-camscan] .tile::before{content:"";position:absolute;left:0;right:0;top:-32%;height:26%;
+    z-index:1;pointer-events:none;opacity:.10;
+    background:linear-gradient(rgba(231,224,205,0), rgba(231,224,205,.7), rgba(231,224,205,0));
+    animation:camband 7s linear infinite}
+  @keyframes camband{to{transform:translateY(520%)}}
+  @media (prefers-reduced-motion:reduce){[data-camscan] .tile::before{animation:none;opacity:0}}
+  /* the LIVE lamp: vermilion, softly pulsing — a broadcast is somebody's
+     carrier on the air */
+  .tile .livebadge{display:inline-flex;align-items:center;gap:6px;flex:0 0 auto;
+    font-family:var(--font-mono);font-size:.62rem;font-weight:600;letter-spacing:.18em;
+    color:var(--amber);border:1px solid var(--amber);background:rgba(9,15,22,.55);
+    padding:1px 7px}
+  .tile .livebadge::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--amber);
+    animation:onairlamp 1.2s ease-in-out infinite}
+  .tile.lost .livebadge{display:none}
   .tile .tl{position:absolute;left:0;right:0;top:0;display:flex;align-items:center;gap:8px;
-    padding:5px 9px;background:linear-gradient(rgba(9,15,22,.85),transparent);
+    padding:5px 9px;background:linear-gradient(rgba(9,15,22,.85),transparent);z-index:2;
     font-family:var(--font-mono);font-size:.64rem;letter-spacing:.14em;color:var(--ink)}
   .tile .tl b{color:var(--grn);font-weight:600}
   .tile .tl .st8{margin-left:auto;color:var(--muted)}
@@ -478,6 +502,8 @@
     letter-spacing:.2em;color:var(--muted);line-height:2}
   #camEmpty small{font-size:.64rem;letter-spacing:.14em;text-transform:none}
   #camStatus.live{color:var(--tx)}
+  .camgated{font-family:var(--font-mono);font-size:.64rem;font-weight:500;letter-spacing:.18em;
+    color:var(--muted);border:1px dashed var(--line2);padding:8px 10px;margin-bottom:8px;text-align:center}
   @media (max-width:900px){.camside{flex-basis:230px}}
 
   /* ═ SYS — ship's systems ═ */
@@ -964,6 +990,7 @@
       <div class="togrow"><div class="tl"><b>Prose typeface</b><span>The manual's serif, or a plain system face if serif reads slower for you — data and labels stay mono either way</span></div>
         <select class="orgsel" id="sfontsel"><option value="legible">Manual serif</option><option value="system">System sans</option></select></div>
       <div class="togrow"><div class="tl"><b>Truncate net names</b><span>Tagged ship nets show just their tag, for a narrow channel column — full names are the default; hover a row for the complete name</span></div><button class="switch" id="snametrunc"></button></div>
+      <div class="togrow"><div class="tl"><b>Helmet-cam scanlines</b><span>Feeds wear faint scanlines and a slow refresh band — a field feed, not a stream. Turn off for clean video</span></div><button class="switch on" id="sscanfx"></button></div>
       <div class="togrow"><div class="tl"><b>Text size</b><span>Scales the whole board — Ctrl + and Ctrl - also work</span></div>
         <div id="scalerow"><button class="btn" id="scaledn" title="Smaller">A−</button>
           <span class="num" id="scaleval">100%</span>
