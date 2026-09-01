@@ -92,6 +92,28 @@ const db = {
 };
 const persist = () => { save("accounts.json", db.accounts); save("sessions.json", db.sessions); save("netaccess.json", db.netAccess); };
 
+/* -- the audit ledger: append-only by construction. Every privileged action
+   lands here, and no API exists to clear or rewrite it - that is the design.
+   A separate JSONL file, so the JSON-store rewrite cycle never touches it. -- */
+const AUDIT_PATH = path.join(DATA, "audit.jsonl");
+function audit(byName, byId, action, detail) {
+  try {
+    fs.appendFileSync(AUDIT_PATH,
+      JSON.stringify({ at: Date.now(), by: String(byName || "?").slice(0, 80),
+        id: String(byId || "").slice(0, 40), action: String(action || "").slice(0, 60),
+        detail: String(detail || "").slice(0, 400) }) + "\n",
+      { mode: 0o600 });
+  } catch (error) { console.error("[audit] write failed:", error.message); }
+}
+function auditTail(limit) {
+  try {
+    return fs.readFileSync(AUDIT_PATH, "utf8").split("\n").filter(Boolean)
+      .slice(-limit).reverse()
+      .map(l => { try { return JSON.parse(l); } catch (error) { return null; } })
+      .filter(Boolean);
+  } catch (error) { return []; }
+}
+
 /* ── shared 1MC sound library ──
    Clips are fleet property, not per-machine files: a clip one COMMAND account
    uploads must be on the 1MC of every ship net for every COMMAND account.
@@ -339,7 +361,7 @@ let createPortalApi;
 try { createPortalApi = require("./portal-api"); }
 catch (error) { createPortalApi = require("../server/portal-api"); }
 const portal = createPortalApi({ load, save, record, send, body, auth, serializeMutation,
-  db, MOCK, SESSION_TTL_MS, verifyDiscord, requireGuildMember, persist });
+  db, MOCK, SESSION_TTL_MS, verifyDiscord, requireGuildMember, persist, audit, auditTail });
 
 /* ── routes ── */
 const server = http.createServer(async (req, res) => {
@@ -490,6 +512,8 @@ const server = http.createServer(async (req, res) => {
         const previousRole = target.role;
         const removedSessions = {};
         target.role = b.role;
+        audit(a.acc.callsign || a.acc.discordName, a.id, "standing",
+          (target.callsign || target.discordName || m[1]) + ": " + previousRole + " -> " + b.role);
         tokensFor(target);
         if (b.role === "revoked") {
           for (const [sessionToken, session] of Object.entries(db.sessions)) {

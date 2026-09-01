@@ -488,6 +488,20 @@ const pause = ms => new Promise(r => setTimeout(r, ms));
   ok(r.body.jobs.some(j => j.type === "remind-now" && j.eventId === botEvId),
      "the manual reminder lands in the outbox for the bot");
 
+  /* ── the audit ledger: append-only, admin eyes, no clear anywhere ── */
+  r = await api("GET", "/api/audit", null, oak);
+  ok(r.status === 403, "the ledger is for management eyes only");
+  r = await api("GET", "/api/audit", null, doc);
+  const audBefore = r.body.entries.length;
+  ok(r.status === 200 && audBefore > 0, "privileged actions have been landing on the ledger");
+  ok(r.body.entries.some(e => e.action === "standing") &&
+     r.body.entries.some(e => /^bulk /.test(e.action)),
+     "standing changes and bulk orders both sit on the ledger");
+  await api("POST", "/api/events", { title: "Ledger Op", at: Date.now() + 86400e3 }, doc);
+  r = await api("GET", "/api/audit", null, doc);
+  ok(r.body.entries.length === audBefore + 1 && r.body.entries[0].action === "event",
+     "the ledger only ever grows, newest first");
+
   await stop();
   fs.rmSync(dataDir, { recursive: true, force: true });
   console.log("\n✔ PORTAL API PASS — profiles, bulk actions, CoC, availability, events, SSO and the bot door hold their gates");

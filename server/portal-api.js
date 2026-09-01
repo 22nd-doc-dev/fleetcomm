@@ -374,7 +374,10 @@ module.exports = function createPortalApi(deps) {
            arrives with sign-in, so accounts wear their server name */
         const member = await discordGuildMember(discordToken);
         let acc = db.accounts[who.id];
-        if (!acc) acc = db.accounts[who.id] = { discordName: who.username, role: "pending", createdAt: Date.now() };
+        if (!acc) {
+          acc = db.accounts[who.id] = { discordName: who.username, role: "pending", createdAt: Date.now() };
+          try { deps.audit(who.username, who.id, "sign-in", "new account via Discord OAuth - pending clearance"); } catch (e) {}
+        }
         if (acc.role === "revoked") throw new Error("access revoked by COMMAND");
         acc.discordName = (member && member.nick) || who.username;
         if (member && Array.isArray(member.roles)) acc.guildRoles = member.roles;
@@ -434,10 +437,11 @@ module.exports = function createPortalApi(deps) {
     /* everything below needs an operator session or the bot secret */
     const actor = actorOf(req);
     const need = (ok, code, msg) => { if (!ok) { send(res, code, { ok: false, error: msg }); return true; } return false; };
-    if (!/^\/api\/(catalog|personnel|coc|availability|events|sso|activity|loa|roster|squadrons|record|export|bot|cam-viewers|me\/permissions)/.test(p)) return false;
+    if (!/^\/api\/(catalog|personnel|coc|availability|events|sso|activity|loa|roster|squadrons|record|export|bot|cam-viewers|audit|me\/permissions)/.test(p)) return false;
     if (need(actor, 401, "unauthorized")) return true;
     /* pending accounts can see nothing but their own approval state */
     if (need(actor.bot || actor.member, 403, "awaiting COMMAND approval")) return true;
+    const audit = (action, detail) => { try { deps.audit(actor.name, actor.id, action, detail); } catch (e) {} };
 
     let m;
 
@@ -558,6 +562,14 @@ module.exports = function createPortalApi(deps) {
       return true;
     }
 
+    /* -- the audit ledger: admin eyes only, read-only - no clear exists -- */
+    if (p === "/api/audit" && req.method === "GET") {
+      if (need(isAdmin(actor), 403, "management access required")) return true;
+      const limit = Math.min(500, Math.max(1, Number(url.searchParams.get("limit")) || 200));
+      send(res, 200, { ok: true, entries: deps.auditTail(limit) });
+      return true;
+    }
+
     if (p === "/api/catalog" && req.method === "GET") { send(res, 200, { ok: true, catalog: pdb.catalog }); return true; }
     if (p === "/api/catalog" && req.method === "POST") {
       if (need(isAdmin(actor), 403, "management access required")) return true;
@@ -572,6 +584,7 @@ module.exports = function createPortalApi(deps) {
         }
         persist("catalog");
       });
+      audit("catalog", "edited: " + ["ranks", "awards", "certs", "apps"].filter(k => Array.isArray(b[k])).join(", "));
       send(res, 200, { ok: true, catalog: pdb.catalog });
       return true;
     }
@@ -655,6 +668,8 @@ module.exports = function createPortalApi(deps) {
         enqueue("announce", { kind: act.type, by, items: shout.slice(0, 50) });
         if (act.type === "rank") for (const s of shout) enqueueRoles(s.discordId);
       }
+      audit("bulk " + act.type, ids.length + " selected, " +
+        Object.values(results).filter(x => x.ok).length + " applied");
       send(res, 200, { ok: true, results });
       return true;
     }
@@ -691,6 +706,7 @@ module.exports = function createPortalApi(deps) {
         }
       }
       await serializeMutation(async () => { pdb.coc.nodes = clean; persist("coc"); });
+      audit("chain", "published " + clean.length + " billets");
       send(res, 200, { ok: true, nodes: clean });
       return true;
     }
@@ -748,6 +764,7 @@ module.exports = function createPortalApi(deps) {
           .filter(sid => squadronOf(sid)),
         by: actor.name, rsvp: {} };
       persist("events");
+      audit("event", "posted: " + pdb.events[id].title);
       enqueue("event", { eventId: id });
       send(res, 200, { ok: true, id });
       return true;
@@ -755,6 +772,7 @@ module.exports = function createPortalApi(deps) {
     if ((m = /^\/api\/events\/([a-f0-9]{16})\/delete$/.exec(p)) && req.method === "POST") {
       if (need(isAdmin(actor), 403, "management access required")) return true;
       if (need(pdb.events[m[1]], 404, "no such event")) return true;
+      audit("event", "struck: " + pdb.events[m[1]].title);
       delete pdb.events[m[1]];
       persist("events");
       send(res, 200, { ok: true });
@@ -774,6 +792,7 @@ module.exports = function createPortalApi(deps) {
       if (need(isAdmin(actor), 403, "management access required")) return true;
       if (need(pdb.events[m[1]], 404, "no such event")) return true;
       enqueue("remind-now", { eventId: m[1] });
+      audit("event", "reminder sounded: " + pdb.events[m[1]].title);
       send(res, 200, { ok: true });
       return true;
     }
@@ -870,6 +889,7 @@ module.exports = function createPortalApi(deps) {
       if (b.hullId !== undefined) ship.hullId = String(b.hullId).slice(0, 20);
       if (b.status !== undefined) ship.status = b.status;
       if (b.notes !== undefined) ship.notes = String(b.notes).slice(0, 1000);
+      audit("ship", ship.name + " - particulars updated");
       persist("roster");
       send(res, 200, { ok: true, ship });
       return true;
@@ -908,6 +928,7 @@ module.exports = function createPortalApi(deps) {
       }
       if (need(stations <= 400, 400, "over 400 stations — trim the plan")) return true;
       await serializeMutation(async () => { pdb.roster.ships = clean; persist("roster"); });
+      audit("structure", clean.length + " ships saved");
       send(res, 200, { ok: true, ships: clean });
       return true;
     }
@@ -938,6 +959,7 @@ module.exports = function createPortalApi(deps) {
         seen.add(sq.id);
       }
       await serializeMutation(async () => { pdb.squadrons.squadrons = clean; persist("squadrons"); });
+      audit("structure", clean.length + " squadrons saved");
       send(res, 200, { ok: true, squadrons: clean });
       return true;
     }
@@ -955,6 +977,7 @@ module.exports = function createPortalApi(deps) {
         logEntry(recFor(member), actor.name, "squadron", "Detached from " + sq.name);
         enqueue("announce", { kind: "assignment", by: actor.name,
           items: [{ discordId: member, name: displayName(member), text: "Detached from " + sq.name }] });
+        audit("assignment", displayName(member) + " detached from " + sq.name);
       } else {
         const billet = String(b.billet).slice(0, 60);
         if (existing) existing.billet = billet;
@@ -963,6 +986,7 @@ module.exports = function createPortalApi(deps) {
           "Assigned to " + sq.name + " — " + billet);
         enqueue("announce", { kind: "assignment", by: actor.name,
           items: [{ discordId: member, name: displayName(member), text: "Assigned to " + sq.name + " — " + billet }] });
+        audit("assignment", displayName(member) + " -> " + sq.name + " (" + billet + ")");
       }
       enqueueRoles(member);
       persist("squadrons"); persist("personnel");
@@ -977,6 +1001,7 @@ module.exports = function createPortalApi(deps) {
       if (b.name !== undefined) sq.name = String(b.name).slice(0, 60);
       if (b.designation !== undefined) sq.designation = String(b.designation).slice(0, 100);
       if (b.role !== undefined) sq.role = String(b.role).slice(0, 200);
+      audit("squadron", sq.name + " - properties updated");
       persist("squadrons");
       send(res, 200, { ok: true, squadron: sq });
       return true;
@@ -1012,6 +1037,8 @@ module.exports = function createPortalApi(deps) {
       entry.state = m[2] === "approve" ? "approved" : "rejected";
       entry[m[2] === "approve" ? "approvedBy" : "rejectedBy"] = actor.name;
       if (b.note) entry.note = String(b.note).slice(0, 200);
+      audit("record", (m[2] === "approve" ? "approved " : "rejected ") +
+        ((db.accounts[owner] && (db.accounts[owner].callsign || db.accounts[owner].discordName)) || owner) + " entry");
       persist("personnel");
       send(res, 200, { ok: true, entry });
       return true;
@@ -1057,6 +1084,8 @@ module.exports = function createPortalApi(deps) {
         }
         target.itAdmin = b.itAdmin;
       }
+      audit("keys", (target.callsign || target.discordName) + ": itAdmin=" + !!target.itAdmin +
+        ", " + (target.scopes || []).length + " purview(s)");
       deps.persist();
       send(res, 200, { ok: true, profile: profile(m[1]) });
       return true;
@@ -1094,6 +1123,7 @@ module.exports = function createPortalApi(deps) {
         rec.rank = String(b.rank);
       }
       logEntry(rec, actor.name, "note", "Record created manually (pre-Discord import)");
+      audit("muster", "manual add: " + callsign);
       deps.persist(); persist("personnel");
       send(res, 200, { ok: true, profile: profile(id) });
       return true;
