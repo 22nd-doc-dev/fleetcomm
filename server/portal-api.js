@@ -1134,6 +1134,18 @@ module.exports = function createPortalApi(deps) {
        UPDATED, never duplicated, and the import note is written once. Rank
        null means genuinely unknown and stays an honest "—" rather than a
        defaulted Starman Recruit; on-leave members arrive on leave. ── */
+    /* the legacy roster bundle: on a live server it lives in the data dir,
+       OUTSIDE the web root — 143 names, handles and timezones are not for
+       anonymous download. Admins fetch it here; the dev rig falls back to
+       the bundled static file. */
+    if (p === "/api/personnel/import/bundle" && req.method === "GET") {
+      if (need(isAdmin(actor), 403, "management access required")) return true;
+      let bundle = null;
+      try { bundle = deps.load("legacy-roster.json", null); } catch (e) { bundle = null; }
+      if (need(bundle && Array.isArray(bundle.members), 404, "no legacy roster bundle in this server's data dir")) return true;
+      send(res, 200, { ok: true, bundle });
+      return true;
+    }
     if (p === "/api/personnel/import" && req.method === "POST") {
       if (need(isAdmin(actor), 403, "management access required")) return true;
       const b = await body(req);
