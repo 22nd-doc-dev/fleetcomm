@@ -1,0 +1,197 @@
+"use strict";
+/* Portal personnel API — profiles, bulk actions, CoC, availability, events,
+ * SSO launch codes, the Discord-bot door, and CORS. Runs the real service
+ * (MOCK_DISCORD) exactly like accounts-security-test. */
+const assert = require("assert");
+const fs = require("fs");
+const http = require("http");
+const os = require("os");
+const path = require("path");
+const { spawn } = require("child_process");
+
+const port = 9500 + Math.floor(Math.random() * 300);
+const base = "http://127.0.0.1:" + port;
+const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "fleetcomm-portal-api-"));
+let service;
+let passed = 0;
+const ok = (cond, name) => { assert(cond, name); console.log("  ✓ " + name + " " + ++passed); };
+
+function api(method, pathname, body, token, headers) {
+  return new Promise((resolve, reject) => {
+    const data = body ? JSON.stringify(body) : null;
+    const req = http.request(base + pathname, { method, headers: Object.assign(
+      { "Content-Type": "application/json" },
+      token ? { Authorization: token.startsWith("Bot ") ? token : "Bearer " + token } : {},
+      headers || {}) }, res => {
+      let text = ""; res.on("data", chunk => text += chunk);
+      res.on("end", () => resolve({ status: res.statusCode, headers: res.headers,
+        body: (() => { try { return JSON.parse(text); } catch (e) { return {}; } })() }));
+    });
+    req.on("error", reject); if (data) req.write(data); req.end();
+  });
+}
+function start() {
+  service = spawn(process.execPath, [path.join(__dirname, "..", "server", "accounts-service.js")], {
+    env: Object.assign({}, process.env, { MOCK_DISCORD: "1", HOST: "127.0.0.1", PORT: String(port),
+      DATA_DIR: dataDir, RELAY_PASSWORD: "relay-test", BOOTSTRAP_TOKEN: "boot-test", ACL_SYNC_DISABLED: "1",
+      BOT_API_TOKEN: "bot-secret-test", PORTAL_ORIGIN: "https://22d.space", SSO_CODE_TTL_MS: "150" }),
+    stdio: "ignore"
+  });
+  return new Promise((resolve, reject) => {
+    const deadline = Date.now() + 5000;
+    const poll = () => api("GET", "/api/health").then(resolve, error => {
+      if (Date.now() >= deadline) reject(error); else setTimeout(poll, 50);
+    });
+    poll();
+  });
+}
+function stop() {
+  if (!service) return Promise.resolve();
+  return new Promise(resolve => { service.once("exit", resolve); service.kill(); setTimeout(resolve, 1000); });
+}
+const pause = ms => new Promise(r => setTimeout(r, ms));
+
+(async () => {
+  await start();
+
+  /* identities: doc claims COMMAND, oak arrives pending */
+  let r = await api("POST", "/api/login", { mockId: "1001", mockName: "Doc", bootstrapToken: "boot-test" });
+  const doc = r.body.token;
+  ok(r.status === 200 && r.body.account.role === "command", "bootstrap claims COMMAND");
+  r = await api("POST", "/api/login", { mockId: "2002", mockName: "Oak" });
+  const oak = r.body.token;
+  ok(r.status === 200 && r.body.account.role === "pending", "second sign-in lands pending");
+
+  /* a pending account sees no personnel data at all */
+  r = await api("GET", "/api/personnel", null, oak);
+  ok(r.status === 403, "pending accounts are locked out of the portal");
+  r = await api("POST", "/api/accounts/2002/role", { role: "member" }, doc);
+  ok(r.status === 200 && r.body.account.role === "member", "COMMAND approves oak to member");
+
+  /* catalog seeded from the fleet's real ladder and decorations */
+  r = await api("GET", "/api/catalog", null, oak);
+  ok(r.body.catalog.ranks.length === 26 && r.body.catalog.ranks[0].abbr === "SR" &&
+     r.body.catalog.ranks[25].abbr === "GADM", "rank ladder seeds junior-to-senior, 26 deep");
+  ok(r.body.catalog.awards.length === 8 && r.body.catalog.certs.length === 12 &&
+     r.body.catalog.apps.length === 3, "awards, certifications and apps seed");
+
+  /* profiles */
+  r = await api("GET", "/api/personnel/me", null, oak);
+  ok(r.body.profile.rank.abbr === "SR" && r.body.profile.callsign === null, "a fresh member starts as Starman Recruit");
+  r = await api("GET", "/api/personnel/1001", null, oak);
+  ok(r.status === 200 && r.body.profile.role === "command", "any member can read any profile");
+
+  /* ── the bulk door: one action, many people ── */
+  r = await api("POST", "/api/personnel/bulk",
+    { ids: ["1001", "2002"], action: { type: "award", awardId: "navigators-star", citation: "Charting the long dark" } }, doc);
+  ok(r.body.results["1001"].ok && r.body.results["2002"].ok, "bulk award lands on several members at once");
+  r = await api("POST", "/api/personnel/bulk",
+    { ids: ["2002", "9999"], action: { type: "cert", certId: "hospital-corpsman" } }, doc);
+  ok(r.body.results["2002"].ok && r.body.results["9999"].ok === false, "bulk reports per-member results");
+  r = await api("POST", "/api/personnel/bulk",
+    { ids: ["2002"], action: { type: "cert", certId: "hospital-corpsman" } }, doc);
+  r = await api("GET", "/api/personnel/2002", null, doc);
+  ok(r.body.profile.certs.length === 1, "re-certifying is idempotent");
+  ok(r.body.profile.awards.length === 1 && r.body.profile.awards[0].citation === "Charting the long dark",
+     "award carries its citation");
+
+  /* rank moves: relative steps and absolute sets, junior-to-senior math */
+  await api("POST", "/api/personnel/bulk", { ids: ["2002"], action: { type: "rank", step: 1 } }, doc);
+  r = await api("GET", "/api/personnel/2002", null, doc);
+  ok(r.body.profile.rank.abbr === "SM", "step +1 promotes SR to SM");
+  await api("POST", "/api/personnel/bulk", { ids: ["2002"], action: { type: "rank", rank: "LT" } }, doc);
+  await api("POST", "/api/personnel/bulk", { ids: ["2002"], action: { type: "rank", step: -1 } }, doc);
+  r = await api("GET", "/api/personnel/2002", null, doc);
+  ok(r.body.profile.rank.abbr === "LTJG", "absolute set then step -1 reduces LT to LTJG");
+  ok(r.body.profile.record.some(e => e.kind === "rank" && /Promoted SR/.test(e.text)) &&
+     r.body.profile.record.some(e => e.kind === "rank" && /Reduced LT/.test(e.text)),
+     "every rank move writes the service record");
+  r = await api("POST", "/api/personnel/bulk", { ids: ["2002"], action: { type: "rank", rank: "NOPE" } }, doc);
+  ok(r.body.results["2002"].ok === false, "an unknown rank is refused per-member");
+  r = await api("POST", "/api/personnel/bulk", { ids: ["2002"], action: { type: "note", text: "x" } }, oak);
+  ok(r.status === 403, "members cannot reach the bulk door");
+
+  /* ── chain of command ── */
+  const nodes = [
+    { id: "co", title: "Commanding Officer", assignee: "1001", parent: null },
+    { id: "xo", title: "Executive Officer", assignee: "2002", parent: "co" },
+    { id: "medical", title: "Medical Officer", assignee: null, parent: "xo" }
+  ];
+  r = await api("POST", "/api/coc", { nodes }, doc);
+  ok(r.status === 200, "COMMAND publishes the chain of command");
+  r = await api("GET", "/api/coc", null, oak);
+  ok(r.body.nodes.length === 3 && r.body.nodes[1].assignee === "2002", "members read the published chain");
+  r = await api("POST", "/api/coc", { nodes: [{ id: "a", title: "A", parent: "b" }, { id: "b", title: "B", parent: "a" }] }, doc);
+  ok(r.status === 400, "a cyclic chain is refused");
+  r = await api("POST", "/api/coc", { nodes: [{ id: "a", title: "A", parent: "ghost" }] }, doc);
+  ok(r.status === 400, "a billet under a missing parent is refused");
+  r = await api("POST", "/api/coc", { nodes }, oak);
+  ok(r.status === 403, "members cannot edit the chain");
+
+  /* ── availability: painted days, own only; COMMAND sees the fleet ── */
+  r = await api("POST", "/api/availability", { days: { "2026-09-05": "y", "2026-09-06": "loa", "2026-09-07": "zz", "bad-key": "y" } }, oak);
+  ok(r.body.days["2026-09-05"] === "y" && r.body.days["2026-09-06"] === "loa" &&
+     !r.body.days["2026-09-07"] && !r.body.days["bad-key"], "day paint saves; junk codes and keys are dropped");
+  r = await api("POST", "/api/availability", { days: { "2026-09-05": null } }, oak);
+  ok(!r.body.days["2026-09-05"], "painting a day empty clears it");
+  r = await api("GET", "/api/availability/all", null, oak);
+  ok(r.status === 403, "the fleet-wide view is COMMAND only");
+  r = await api("GET", "/api/availability/all", null, doc);
+  ok(r.body.availability["2002"].days["2026-09-06"] === "loa", "COMMAND sees every member's paint");
+
+  /* ── events ── */
+  r = await api("POST", "/api/events", { title: "OPERATION LONG WATCH", at: Date.now() + 86400000, tier: "FLEET OP", brief: "All hands." }, doc);
+  const eventId = r.body.id;
+  ok(r.status === 200 && /^[a-f0-9]{16}$/.test(eventId), "COMMAND schedules an event");
+  r = await api("POST", "/api/events/" + eventId + "/rsvp", { answer: "going" }, oak);
+  ok(r.body.rsvp["2002"] === "going", "members RSVP");
+  r = await api("POST", "/api/events", { title: "x", at: Date.now() }, oak);
+  ok(r.status === 403, "members cannot schedule events");
+
+  /* ── SSO: one-time launch codes become real sessions for the 22nd's apps ── */
+  r = await api("POST", "/api/sso/grant", { app: "corpsman" }, oak);
+  const code = r.body.code;
+  ok(r.status === 200 && /^sso-/.test(code), "a member mints a launch code");
+  r = await api("POST", "/api/sso/redeem", { code });
+  const appToken = r.body.token;
+  ok(r.status === 200 && r.body.identity.discordId === "2002" && r.body.app === "corpsman",
+     "the app redeems the code for the member's identity");
+  r = await api("GET", "/api/personnel/me", null, appToken);
+  ok(r.status === 200 && r.body.profile.discordId === "2002", "the redeemed session speaks the full API");
+  r = await api("POST", "/api/sso/redeem", { code });
+  ok(r.status === 403, "a launch code is single-use");
+  r = await api("POST", "/api/sso/grant", { app: "corpsman" }, oak);
+  await pause(300);   /* SSO_CODE_TTL_MS=150 in this run */
+  r = await api("POST", "/api/sso/redeem", { code: r.body.code });
+  ok(r.status === 403, "a stale launch code expires");
+
+  /* ── the Discord bot door ── */
+  r = await api("POST", "/api/personnel/bulk",
+    { ids: ["2002"], action: { type: "note", text: "Checked in via Discord" }, onBehalf: "Oak" }, "Bot bot-secret-test");
+  ok(r.body.results["2002"].ok, "the bot writes with its shared secret");
+  r = await api("GET", "/api/personnel/2002", null, doc);
+  const botEntry = r.body.profile.record.find(e => /Checked in via Discord/.test(e.text));
+  ok(botEntry && /FLEET DISCORD BOT \(for Oak\)/.test(botEntry.by), "bot entries are attributed to the bot and who it relayed");
+  r = await api("GET", "/api/activity?since=0", null, "Bot bot-secret-test");
+  ok(r.status === 200 && r.body.feed.length > 0 && r.body.lastSeen.some(x => x.discordId === "2002"),
+     "the bot reads the activity feed and last-seen roster");
+  r = await api("POST", "/api/personnel/bulk", { ids: ["2002"], action: { type: "note", text: "x" } }, "Bot wrong-secret");
+  ok(r.status === 401, "a wrong bot secret is rejected");
+
+  /* ── CORS: only the configured portal origin is allowed ── */
+  r = await api("OPTIONS", "/api/personnel", null, null, { Origin: "https://22d.space" });
+  ok(r.status === 204 && r.headers["access-control-allow-origin"] === "https://22d.space",
+     "the portal origin passes preflight");
+  r = await api("GET", "/api/catalog", null, oak, { Origin: "https://evil.example" });
+  ok(!r.headers["access-control-allow-origin"], "other origins get no CORS grant");
+  r = await api("GET", "/api/oauth/config");
+  ok(r.body.mock === true && r.body.configured === false, "oauth config reports mock mode honestly");
+
+  /* the personnel layer never leaks through the old routes */
+  r = await api("GET", "/api/accounts", null, oak);
+  ok(r.status === 403, "the existing COMMAND-only account list is still COMMAND-only");
+
+  await stop();
+  fs.rmSync(dataDir, { recursive: true, force: true });
+  console.log("\n✔ PORTAL API PASS — profiles, bulk actions, CoC, availability, events, SSO and the bot door hold their gates");
+})().catch(async e => { console.error("✘ FAIL:", e); await stop(); fs.rmSync(dataDir, { recursive: true, force: true }); process.exit(1); });

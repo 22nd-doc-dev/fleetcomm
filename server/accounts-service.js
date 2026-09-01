@@ -307,14 +307,25 @@ function send(res, code, obj) {
   res.end(s);
 }
 
+/* ── the portal personnel layer (profiles, awards, CoC, availability, SSO, bot) ── */
+let createPortalApi;
+try { createPortalApi = require("./portal-api"); }
+catch (error) { createPortalApi = require("../server/portal-api"); }
+const portal = createPortalApi({ load, save, record, send, body, auth, serializeMutation,
+  db, MOCK, SESSION_TTL_MS, verifyDiscord, requireGuildMember, persist });
+
 /* ── routes ── */
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, "http://x");
     const p = url.pathname;
+    /* CORS first (the portal may live on another origin), then the portal's
+       own routes; everything the portal doesn't claim falls through unchanged */
+    if (portal.cors(req, res)) return;
+    if (await portal.handle(req, res, url)) return;
     if (p === "/api/health" && req.method === "GET") return send(res, 200, { ok: true, service: "fleetcomm-accounts" });
     if (p === "/api/status" && req.method === "GET")
-      return send(res, 200, { ok: true, initialized: hasCommand() });
+      return send(res, 200, { ok: true, initialized: hasCommand(), mock: MOCK });
 
     if (p === "/api/login" && req.method === "POST") {
       const b = await body(req);
