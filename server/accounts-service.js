@@ -400,6 +400,13 @@ const server = http.createServer(async (req, res) => {
       if (Date.now() - (a.acc.lastSeen || 0) > 60000) { a.acc.lastSeen = Date.now(); persist(); }
       return send(res, 200, { ok: true, account: pub(a.acc, a.id), relay: relayFor(a.acc) });
     }
+    /* sign out: the presenting session dies server-side, not just in the
+       browser — a shared machine can't resurrect it from a saved token */
+    if (p === "/api/logout" && req.method === "POST") {
+      const tok = (/^Bearer (.+)$/.exec(req.headers.authorization || "") || [])[1];
+      if (tok && db.sessions[tok]) { delete db.sessions[tok]; persist(); }
+      return send(res, 200, { ok: true });
+    }
     if (p === "/api/callsign" && req.method === "POST") {
       const b = await body(req);
       const cs = String(b.callsign || "").trim().toUpperCase().replace(/[^ A-Z0-9_.\-'"()[\]]+/g, "").slice(0, 40);
