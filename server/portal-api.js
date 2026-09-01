@@ -38,7 +38,9 @@ module.exports = function createPortalApi(deps) {
     catalog: record(load("catalog.json", {}), "catalog.json"),           // {ranks[], awards[], certs[], apps[]}
     coc: record(load("coc.json", {}), "coc.json"),                       // {nodes[]}
     availability: record(load("availability.json", {}), "availability.json"), // id -> {days:{date:code}}
-    events: record(load("events.json", {}), "events.json")               // id -> {title, at, tier, brief, by, rsvp{}}
+    events: record(load("events.json", {}), "events.json"),              // id -> {title, at, tier, brief, by, rsvp{}}
+    loa: record(load("loa.json", {}), "loa.json"),                       // id -> {active:{start,reason}|null, history[]}
+    roster: record(load("roster.json", {}), "roster.json")               // {ships:[{id,name,hull,departments:[{name,stations:[{id,title,assignee}]}]}]}
   };
   const persist = (name) => save(name + ".json", pdb[name]);
 
@@ -78,6 +80,35 @@ module.exports = function createPortalApi(deps) {
       { id: "gunners-map", name: "Gunner's Map", url: "" }
     ];
     persist("catalog");
+  }
+
+  /* the ships of the line, seeded once with their crewable stations — COMMAND
+     reshapes the plan wholesale from the portal afterwards */
+  if (!Array.isArray(pdb.roster.ships) || !pdb.roster.ships.length) {
+    const dept = (name, ...titles) => ({ name, stations: titles.map(t => ({
+      id: (name + "-" + t).toLowerCase().replace(/[^a-z0-9]+/g, "-"), title: t, assignee: null })) });
+    pdb.roster.ships = [
+      { id: "tiber", name: "UEES Tiber", hull: "FF-217", departments: [
+        dept("Bridge", "Commanding Officer", "Executive Officer", "Helmsman", "Operations Officer"),
+        dept("Flight Deck", "Air Boss", "Deck Chief", "Pilot 1", "Pilot 2"),
+        dept("Engineering", "Chief Engineer", "Engineer 1", "Engineer 2"),
+        dept("Gunnery", "Gunnery Chief", "Gunner 1", "Gunner 2")
+      ] },
+      { id: "beowulf", name: "UEES Beowulf", hull: "PCG-685", departments: [
+        dept("Bridge", "Commanding Officer", "Helmsman"),
+        dept("Gunnery", "Gunner 1", "Gunner 2"),
+        dept("Engineering", "Engineer")
+      ] }
+    ];
+    /* seeded station ids must be unique across ships */
+    for (const ship of pdb.roster.ships) for (const d of ship.departments)
+      for (const st of d.stations) st.id = ship.id + "-" + st.id;
+    persist("roster");
+  }
+  function stationOf(stationId) {
+    for (const ship of pdb.roster.ships) for (const d of ship.departments)
+      for (const st of d.stations) if (st.id === stationId) return { ship, dept: d, st };
+    return null;
   }
 
   const rankIdx = (abbr) => pdb.catalog.ranks.findIndex(r => r.abbr === abbr);
@@ -237,7 +268,7 @@ module.exports = function createPortalApi(deps) {
     /* everything below needs an operator session or the bot secret */
     const actor = actorOf(req);
     const need = (ok, code, msg) => { if (!ok) { send(res, code, { ok: false, error: msg }); return true; } return false; };
-    if (!/^\/api\/(catalog|personnel|coc|availability|events|sso|activity)/.test(p)) return false;
+    if (!/^\/api\/(catalog|personnel|coc|availability|events|sso|activity|loa|roster)/.test(p)) return false;
     if (need(actor, 401, "unauthorized")) return true;
     /* pending accounts can see nothing but their own approval state */
     if (need(actor.bot || actor.member, 403, "awaiting COMMAND approval")) return true;
@@ -422,6 +453,131 @@ module.exports = function createPortalApi(deps) {
       pdb.events[m[1]].rsvp[actor.id] = b.answer;
       persist("events");
       send(res, 200, { ok: true, rsvp: pdb.events[m[1]].rsvp });
+      return true;
+    }
+
+    /* ── leave of absence: one active leave per member, history on the record ── */
+    if (p === "/api/loa/me" && req.method === "GET" && !actor.bot) {
+      const mine = pdb.loa[actor.id] || {};
+      send(res, 200, { ok: true, active: mine.active || null, history: (mine.history || []).slice(0, 24) });
+      return true;
+    }
+    if (p === "/api/loa/start" && req.method === "POST" && !actor.bot) {
+      const b = await body(req);
+      const mine = pdb.loa[actor.id] || (pdb.loa[actor.id] = { active: null, history: [] });
+      if (need(!mine.active, 400, "already on leave — end the current LOA first")) return true;
+      mine.active = { start: Date.now(), reason: String(b.reason || "").slice(0, 200) };
+      logEntry(recFor(actor.id), actor.name, "loa",
+        "Began leave of absence" + (mine.active.reason ? " — " + mine.active.reason : ""));
+      persist("loa"); persist("personnel");
+      send(res, 200, { ok: true, active: mine.active });
+      return true;
+    }
+    if (p === "/api/loa/end" && req.method === "POST" && !actor.bot) {
+      const mine = pdb.loa[actor.id];
+      if (need(mine && mine.active, 400, "not on leave")) return true;
+      mine.history.unshift({ start: mine.active.start, end: Date.now(), reason: mine.active.reason });
+      mine.history = mine.history.slice(0, 24);
+      mine.active = null;
+      logEntry(recFor(actor.id), actor.name, "loa", "Returned from leave of absence");
+      persist("loa"); persist("personnel");
+      send(res, 200, { ok: true });
+      return true;
+    }
+    if (p === "/api/loa" && req.method === "GET") {
+      if (need(actor.command, 403, "COMMAND role required")) return true;
+      const active = [];
+      for (const [id, l] of Object.entries(pdb.loa)) {
+        const acc = db.accounts[id];
+        if (l.active && acc) active.push({ discordId: id, callsign: acc.callsign || acc.discordName,
+          start: l.active.start, reason: l.active.reason });
+      }
+      active.sort((a, b2) => a.start - b2.start);
+      send(res, 200, { ok: true, active });
+      return true;
+    }
+
+    /* ── crew roster: ships' stations, claimable. One station per member per
+       ship — you can serve on two ships, not stand two watches on one. ── */
+    if (p === "/api/roster" && req.method === "GET") {
+      send(res, 200, { ok: true, ships: pdb.roster.ships });
+      return true;
+    }
+    if (p === "/api/roster/claim" && req.method === "POST" && !actor.bot) {
+      const b = await body(req);
+      const hit = stationOf(String(b.stationId || ""));
+      if (need(hit, 404, "no such station")) return true;
+      if (need(!hit.st.assignee, 400, "station is already crewed")) return true;
+      const already = hit.ship.departments.some(d => d.stations.some(s => s.assignee === actor.id));
+      if (need(!already, 400, "you already hold a station aboard " + hit.ship.name + " — release it first")) return true;
+      await serializeMutation(async () => {
+        if (hit.st.assignee) throw Object.assign(new Error("station is already crewed"), { statusCode: 400 });
+        hit.st.assignee = actor.id;
+        logEntry(recFor(actor.id), actor.name, "station", "Took station: " + hit.st.title + ", " + hit.ship.name);
+        persist("roster"); persist("personnel");
+      });
+      send(res, 200, { ok: true });
+      return true;
+    }
+    if (p === "/api/roster/release" && req.method === "POST") {
+      const b = await body(req);
+      const hit = stationOf(String(b.stationId || ""));
+      if (need(hit, 404, "no such station")) return true;
+      if (need(hit.st.assignee, 400, "station is already vacant")) return true;
+      if (need(actor.command || hit.st.assignee === actor.id, 403, "not your station")) return true;
+      const holder = hit.st.assignee;
+      hit.st.assignee = null;
+      logEntry(recFor(holder), actor.name, "station", "Stood down from station: " + hit.st.title + ", " + hit.ship.name);
+      persist("roster"); persist("personnel");
+      send(res, 200, { ok: true });
+      return true;
+    }
+    if (p === "/api/roster/assign" && req.method === "POST") {
+      if (need(actor.command, 403, "COMMAND role required")) return true;
+      const b = await body(req);
+      const hit = stationOf(String(b.stationId || ""));
+      if (need(hit, 404, "no such station")) return true;
+      const member = b.memberId ? String(b.memberId) : null;
+      if (need(!member || db.accounts[member], 404, "no such member")) return true;
+      hit.st.assignee = member;
+      if (member) logEntry(recFor(member), actor.name, "station",
+        "Assigned to station: " + hit.st.title + ", " + hit.ship.name);
+      persist("roster"); persist("personnel");
+      send(res, 200, { ok: true });
+      return true;
+    }
+    if (p === "/api/roster/plan" && req.method === "POST") {
+      if (need(actor.command, 403, "COMMAND role required")) return true;
+      const b = await body(req);
+      const ships = Array.isArray(b.ships) ? b.ships.slice(0, 12) : null;
+      if (need(ships, 400, "ships[] required")) return true;
+      const seen = new Set();
+      let stations = 0;
+      const clean = ships.map(ship => ({
+        id: String(ship.id || "").slice(0, 40),
+        name: String(ship.name || "").slice(0, 80),
+        hull: String(ship.hull || "").slice(0, 20),
+        departments: (Array.isArray(ship.departments) ? ship.departments.slice(0, 20) : []).map(d => ({
+          name: String(d.name || "").slice(0, 60),
+          stations: (Array.isArray(d.stations) ? d.stations.slice(0, 40) : []).map(st => {
+            stations++;
+            return { id: String(st.id || "").slice(0, 80), title: String(st.title || "").slice(0, 80),
+              /* unknown assignees are cleared, not trusted */
+              assignee: st.assignee && db.accounts[String(st.assignee)] ? String(st.assignee) : null };
+          })
+        }))
+      }));
+      for (const ship of clean) {
+        if (need(ship.id && ship.name, 400, "every ship needs id + name")) return true;
+        for (const d of ship.departments) for (const st of d.stations) {
+          if (need(st.id && st.title, 400, "every station needs id + title")) return true;
+          if (need(!seen.has(st.id), 400, "duplicate station id: " + st.id)) return true;
+          seen.add(st.id);
+        }
+      }
+      if (need(stations <= 400, 400, "over 400 stations — trim the plan")) return true;
+      await serializeMutation(async () => { pdb.roster.ships = clean; persist("roster"); });
+      send(res, 200, { ok: true, ships: clean });
       return true;
     }
 

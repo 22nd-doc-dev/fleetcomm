@@ -148,6 +148,57 @@ const pause = ms => new Promise(r => setTimeout(r, ms));
   r = await api("POST", "/api/events", { title: "x", at: Date.now() }, oak);
   ok(r.status === 403, "members cannot schedule events");
 
+  /* ── leave of absence ── */
+  r = await api("POST", "/api/loa/start", { reason: "Fleet week at grandma's" }, oak);
+  ok(r.status === 200 && r.body.active.reason === "Fleet week at grandma's", "a member starts leave");
+  r = await api("POST", "/api/loa/start", {}, oak);
+  ok(r.status === 400, "a second leave is refused while one is active");
+  r = await api("GET", "/api/loa", null, doc);
+  ok(r.body.active.length === 1 && r.body.active[0].callsign, "COMMAND sees the all-hands leave board");
+  r = await api("GET", "/api/loa", null, oak);
+  ok(r.status === 403, "the all-hands board is COMMAND only");
+  r = await api("POST", "/api/loa/end", {}, oak);
+  r = await api("GET", "/api/loa/me", null, oak);
+  ok(r.body.active === null && r.body.history.length === 1 && r.body.history[0].end > r.body.history[0].start,
+    "ending leave moves it to history");
+  r = await api("GET", "/api/personnel/2002", null, doc);
+  ok(r.body.profile.record.filter(e => e.kind === "loa").length === 2,
+    "both leave transitions land on the service record");
+
+  /* ── crew roster: claimable ship stations ── */
+  r = await api("GET", "/api/roster", null, oak);
+  const ships = r.body.ships;
+  ok(ships.length === 2 && ships[0].hull === "FF-217" &&
+     ships.flatMap(s => s.departments).flatMap(d => d.stations).length >= 15,
+     "the ships of the line seed with their stations");
+  const helm = ships[0].departments[0].stations.find(s => s.title === "Helmsman");
+  r = await api("POST", "/api/roster/claim", { stationId: helm.id }, oak);
+  ok(r.status === 200, "a member claims a vacant station");
+  r = await api("POST", "/api/roster/claim", { stationId: helm.id }, doc);
+  ok(r.status === 400, "a crewed station cannot be claimed");
+  const ops = ships[0].departments[0].stations.find(s => s.title === "Operations Officer");
+  r = await api("POST", "/api/roster/claim", { stationId: ops.id }, oak);
+  ok(r.status === 400 && /already hold a station/.test(r.body.error), "one station per member per ship");
+  const beowulfHelm = ships[1].departments[0].stations.find(s => s.title === "Helmsman");
+  r = await api("POST", "/api/roster/claim", { stationId: beowulfHelm.id }, oak);
+  ok(r.status === 200, "…but serving on a second ship is allowed");
+  r = await api("POST", "/api/roster/release", { stationId: helm.id }, doc);
+  ok(r.status === 200, "COMMAND can release anyone's station");
+  r = await api("POST", "/api/roster/release", { stationId: beowulfHelm.id }, oak);
+  ok(r.status === 200, "a holder stands down their own station");
+  r = await api("POST", "/api/roster/assign", { stationId: helm.id, memberId: "2002" }, doc);
+  ok(r.status === 200, "COMMAND assigns a station directly");
+  r = await api("POST", "/api/roster/assign", { stationId: helm.id, memberId: "9999" }, doc);
+  ok(r.status === 404, "assigning an unknown member is refused");
+  r = await api("POST", "/api/roster/plan", { ships: [{ id: "x", name: "X", departments: [
+    { name: "A", stations: [{ id: "dup", title: "T1" }, { id: "dup", title: "T2" }] }] }] }, doc);
+  ok(r.status === 400 && /duplicate station/.test(r.body.error), "a plan with duplicate station ids is refused");
+  r = await api("POST", "/api/roster/plan", { ships: [] }, oak);
+  ok(r.status === 403, "members cannot replace the plan");
+  r = await api("GET", "/api/personnel/2002", null, doc);
+  ok(r.body.profile.record.some(e => e.kind === "station" && /Took station: Helmsman, UEES Tiber/.test(e.text)),
+    "station claims land on the service record");
+
   /* ── SSO: one-time launch codes become real sessions for the 22nd's apps ── */
   r = await api("POST", "/api/sso/grant", { app: "corpsman" }, oak);
   const code = r.body.code;
