@@ -417,6 +417,49 @@ const pause = ms => new Promise(r => setTimeout(r, ms));
      "hidden ranks stay off the public ladder while visible ones all print");
   await api("POST", "/api/catalog", { ranks: pubLadder }, doc);
 
+  /* ── the fleet bot's door: outbox, RSVP relay, muster, role plan ── */
+  r = await api("GET", "/api/bot/outbox", null, oak);
+  ok(r.status === 403, "member sessions cannot open the bot door");
+  for (let guard = 0; guard < 40; guard++) {           /* drain the backlog first */
+    r = await api("GET", "/api/bot/outbox", null, "Bot bot-secret-test");
+    if (!r.body.jobs.length) break;
+    for (const j of r.body.jobs) await api("POST", "/api/bot/outbox/ack", { id: j.id }, "Bot bot-secret-test");
+  }
+  r = await api("POST", "/api/events", { title: "Bot Door Op", at: Date.now() + 3600e3,
+    endAt: Date.now() + 2 * 3600e3, location: "Microtech", uniform: "Standard loadout",
+    attention: ["desron-38", "not-a-squadron"] }, doc);
+  ok(r.status === 200, "an op posts with end time, location, uniform and attention");
+  const botEvId = r.body.id;
+  r = await api("GET", "/api/bot/outbox", null, "Bot bot-secret-test");
+  const evJob = r.body.jobs.find(j => j.type === "event" && j.eventId === botEvId);
+  ok(!!evJob, "posting an op lands an event job in the outbox");
+  r = await api("POST", "/api/bot/outbox/ack", { id: evJob.id,
+    result: { channelId: "c1", messageId: "m1" } }, "Bot bot-secret-test");
+  ok(r.status === 200, "the bot acks the job with its posted message");
+  r = await api("POST", "/api/bot/rsvp", { eventId: botEvId, discordId: "424242", answer: "going" }, "Bot bot-secret-test");
+  ok(r.status === 403, "a stranger's button click bounces — not on the rolls");
+  r = await api("POST", "/api/bot/rsvp", { eventId: botEvId, discordId: "2002", answer: "going" }, "Bot bot-secret-test");
+  ok(r.status === 200, "a member's button click lands on the ledger");
+  r = await api("GET", "/api/bot/event/" + botEvId, null, "Bot bot-secret-test");
+  ok(r.body.event.counts.going === 1 && r.body.event.discordMsg.messageId === "m1" &&
+     r.body.event.lists.going.length === 1 && r.body.event.attention.join() === "DESRON-38",
+     "the bot reads counts, names, attention and its own message id back");
+  r = await api("POST", "/api/events/" + botEvId + "/rsvp", { answer: "maybe" }, oak);
+  ok(r.status === 200, "a website RSVP still lands");
+  r = await api("GET", "/api/bot/outbox", null, "Bot bot-secret-test");
+  ok(r.body.jobs.some(j => j.type === "event-update" && j.eventId === botEvId),
+     "a website RSVP queues a Discord card refresh");
+  r = await api("POST", "/api/bot/muster", { members: [
+    { id: "2002", username: "oak-global", nick: "LSM Oak Morcroft", roles: ["r1", "r2"] },
+    { id: "555555", username: "not-aboard", nick: null, roles: [] }] }, "Bot bot-secret-test");
+  ok(r.status === 200 && r.body.linked === 1, "the guild muster links Discord members to the rolls");
+  r = await api("GET", "/api/personnel/2002", null, doc);
+  ok(r.body.profile.discordName === "LSM Oak Morcroft", "muster nicknames land on the account");
+  r = await api("GET", "/api/bot/roleplan", null, "Bot bot-secret-test");
+  const oakPlan = r.body.plan.find(x => x.discordId === "2002");
+  ok(oakPlan && oakPlan.roles.length >= 1 && r.body.managed.includes("DESRON-38"),
+     "the role plan names each member's due roles inside a managed namespace");
+
   await stop();
   fs.rmSync(dataDir, { recursive: true, force: true });
   console.log("\n✔ PORTAL API PASS — profiles, bulk actions, CoC, availability, events, SSO and the bot door hold their gates");

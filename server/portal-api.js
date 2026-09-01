@@ -41,10 +41,37 @@ module.exports = function createPortalApi(deps) {
     events: record(load("events.json", {}), "events.json"),              // id -> {title, at, tier, brief, by, rsvp{}}
     loa: record(load("loa.json", {}), "loa.json"),                       // id -> {active:{start,reason}|null, history[]}
     roster: record(load("roster.json", {}), "roster.json"),              // {ships:[{id,name,classification,hullId,status,notes,departments:[...]}]}
-    squadrons: record(load("squadrons.json", {}), "squadrons.json")      // {squadrons:[{id,name,designation,role,members:[{discordId,billet}]}]}
+    squadrons: record(load("squadrons.json", {}), "squadrons.json"),     // {squadrons:[{id,name,designation,role,members:[{discordId,billet}]}]}
+    discord: record(load("discord.json", {}), "discord.json")            // {config{}, outbox[], muster{}}
   };
   const persist = (name) => save(name + ".json", pdb[name]);
   const SHIP_STATUS = ["active", "reserve", "refit", "lost", "decommissioned"];
+
+  /* ── the Discord mirror: config Command edits in-site, and an outbox of
+     jobs the fleet bot drains through the bot door. Jobs survive restarts. ── */
+  if (!pdb.discord.config || typeof pdb.discord.config !== "object") pdb.discord.config = {
+    channels: { events: "events", reminders: "event-reminders",
+      announce: "advancements", assignments: "assignment-orders" },
+    remindHours: [24, 1], syncRoles: true, createRoles: false };
+  if (!Array.isArray(pdb.discord.outbox)) pdb.discord.outbox = [];
+  function enqueue(type, data) {
+    pdb.discord.outbox.push(Object.assign(
+      { id: crypto.randomBytes(6).toString("hex"), type, at: Date.now() }, data));
+    if (pdb.discord.outbox.length > 500) pdb.discord.outbox.splice(0, pdb.discord.outbox.length - 500);
+    persist("discord");
+  }
+  /* schedule a role re-sync for one member, at most once per queue */
+  function enqueueRoles(discordId) {
+    if (String(discordId).startsWith("m-")) return;   /* manual members have no Discord side */
+    if (!pdb.discord.outbox.some(j => j.type === "roles" && j.discordId === discordId))
+      enqueue("roles", { discordId });
+  }
+  /* how the fleet says a name: rated prefix or rank abbr, then callsign */
+  function displayName(id) {
+    const acc = db.accounts[id]; const rec = pdb.personnel[id] || {};
+    const rk = rec.rating || (rec.rank && rec.rank !== "—" ? rec.rank : "");
+    return ((rk ? rk + " " : "") + ((acc && (acc.callsign || acc.discordName)) || id)).trim();
+  }
 
   /* the fleet's ladder, junior to senior, so a promotion is always index+1 */
   if (!Array.isArray(pdb.catalog.ranks) || !pdb.catalog.ranks.length) {
@@ -407,12 +434,117 @@ module.exports = function createPortalApi(deps) {
     /* everything below needs an operator session or the bot secret */
     const actor = actorOf(req);
     const need = (ok, code, msg) => { if (!ok) { send(res, code, { ok: false, error: msg }); return true; } return false; };
-    if (!/^\/api\/(catalog|personnel|coc|availability|events|sso|activity|loa|roster|squadrons|record|export|me\/permissions)/.test(p)) return false;
+    if (!/^\/api\/(catalog|personnel|coc|availability|events|sso|activity|loa|roster|squadrons|record|export|bot|me\/permissions)/.test(p)) return false;
     if (need(actor, 401, "unauthorized")) return true;
     /* pending accounts can see nothing but their own approval state */
     if (need(actor.bot || actor.member, 403, "awaiting COMMAND approval")) return true;
 
     let m;
+
+    /* ── the fleet bot's door: outbox drain, RSVP relay, muster, role plan.
+       Shared-secret auth only (actor.bot) — a member session never opens it. ── */
+    if (p.startsWith("/api/bot/")) {
+      if (need(actor.bot, 403, "fleet-bot credentials required")) return true;
+      if (p === "/api/bot/config" && req.method === "GET") {
+        send(res, 200, { ok: true, config: pdb.discord.config,
+          squadrons: pdb.squadrons.squadrons.map(s => ({ id: s.id, name: s.name })),
+          ranks: pdb.catalog.ranks.map(r => ({ abbr: r.abbr, name: r.name, grade: r.grade })) });
+        return true;
+      }
+      if (p === "/api/bot/outbox" && req.method === "GET") {
+        send(res, 200, { ok: true, jobs: pdb.discord.outbox.slice(0, 20) });
+        return true;
+      }
+      if (p === "/api/bot/outbox/ack" && req.method === "POST") {
+        const b = await body(req);
+        const job = pdb.discord.outbox.find(j => j.id === String(b.id || ""));
+        if (need(job, 404, "no such job")) return true;
+        pdb.discord.outbox = pdb.discord.outbox.filter(j => j !== job);
+        if (job.type === "event" && b.result && b.result.messageId && pdb.events[job.eventId]) {
+          pdb.events[job.eventId].discordMsg = {
+            channelId: String(b.result.channelId), messageId: String(b.result.messageId) };
+          persist("events");
+        }
+        persist("discord");
+        send(res, 200, { ok: true });
+        return true;
+      }
+      if ((m = /^\/api\/bot\/event\/([a-f0-9]{16})$/.exec(p)) && req.method === "GET") {
+        const ev = pdb.events[m[1]];
+        if (need(ev, 404, "no such event")) return true;
+        const lists = { going: [], maybe: [], no: [] };
+        for (const [id2, ans] of Object.entries(ev.rsvp || {}))
+          if (lists[ans]) lists[ans].push(displayName(id2));
+        send(res, 200, { ok: true, event: {
+          id: m[1], title: ev.title, at: ev.at, endAt: ev.endAt || null, tier: ev.tier,
+          brief: ev.brief, location: ev.location || "", uniform: ev.uniform || "",
+          attention: (ev.attention || []).map(sid => (squadronOf(sid) || {}).name).filter(Boolean),
+          discordMsg: ev.discordMsg || null, reminded: ev.reminded || {},
+          counts: { going: lists.going.length, maybe: lists.maybe.length, no: lists.no.length },
+          lists } });
+        return true;
+      }
+      if (p === "/api/bot/rsvp" && req.method === "POST") {
+        const b = await body(req);
+        const ev = pdb.events[String(b.eventId || "")];
+        if (need(ev, 404, "no such event")) return true;
+        const who = String(b.discordId || "");
+        const acc = db.accounts[who];
+        if (need(acc && ["member", "command"].includes(acc.role), 403,
+          "not on the fleet rolls — sign in at the portal first")) return true;
+        if (need(["going", "maybe", "no"].includes(b.answer), 400, "answer must be going|maybe|no")) return true;
+        ev.rsvp[who] = b.answer;
+        persist("events");
+        send(res, 200, { ok: true });
+        return true;
+      }
+      if (p === "/api/bot/reminded" && req.method === "POST") {
+        const b = await body(req);
+        const ev = pdb.events[String(b.eventId || "")];
+        if (need(ev, 404, "no such event")) return true;
+        (ev.reminded = ev.reminded || {})[String(b.tag || "").slice(0, 20)] = true;
+        persist("events");
+        send(res, 200, { ok: true });
+        return true;
+      }
+      if (p === "/api/bot/muster" && req.method === "POST") {
+        const b = await body(req);
+        const members = Array.isArray(b.members) ? b.members.slice(0, 2000) : null;
+        if (need(members, 400, "members[] required")) return true;
+        let linked = 0;
+        for (const mm of members) {
+          const acc = db.accounts[String(mm.id || "")];
+          if (!acc) continue;
+          acc.discordName = String(mm.nick || mm.username || acc.discordName).slice(0, 80);
+          acc.guildRoles = Array.isArray(mm.roles) ? mm.roles.map(String).slice(0, 100) : [];
+          linked++;
+        }
+        pdb.discord.muster = { at: Date.now(), count: members.length, linked };
+        persist("discord");
+        deps.persist();
+        send(res, 200, { ok: true, linked });
+        return true;
+      }
+      if (p === "/api/bot/roleplan" && req.method === "GET") {
+        const plan = [];
+        for (const [id2, acc] of Object.entries(db.accounts)) {
+          if (acc.manual || !["member", "command"].includes(acc.role)) continue;
+          const rec = pdb.personnel[id2] || {};
+          const roles = [];
+          if (rec.rank && rec.rank !== "—") roles.push(rec.rank);
+          for (const sq of pdb.squadrons.squadrons)
+            if (sq.members.some(x => x.discordId === id2)) roles.push(sq.name);
+          plan.push({ discordId: id2, roles });
+        }
+        send(res, 200, { ok: true, plan,
+          managed: pdb.catalog.ranks.map(r => r.abbr)
+            .concat(pdb.squadrons.squadrons.map(s => s.name)) });
+        return true;
+      }
+      send(res, 404, { ok: false, error: "unknown bot route" });
+      return true;
+    }
+
     if (p === "/api/catalog" && req.method === "GET") { send(res, 200, { ok: true, catalog: pdb.catalog }); return true; }
     if (p === "/api/catalog" && req.method === "POST") {
       if (need(isAdmin(actor), 403, "management access required")) return true;
@@ -461,6 +593,7 @@ module.exports = function createPortalApi(deps) {
       const act = b.action && typeof b.action === "object" ? b.action : {};
       if (need(ids.length, 400, "ids[] is empty")) return true;
       const by = actor.name + (actor.bot && b.onBehalf ? " (for " + String(b.onBehalf).slice(0, 60) + ")" : "");
+      const shout = [];   /* what the fleet bot announces on Discord */
       const results = await serializeMutation(async () => {
         const out = {};
         for (const id of ids) {
@@ -472,20 +605,29 @@ module.exports = function createPortalApi(deps) {
               if (!award) throw new Error("unknown award");
               rec.awards.push({ awardId: award.id, at: Date.now(), by, citation: String(act.citation || "").slice(0, 400) });
               logEntry(rec, by, "award", "Awarded " + award.name + (act.citation ? " — " + act.citation : ""));
+              shout.push({ discordId: id, name: displayName(id), award: award.name,
+                citation: String(act.citation || "").slice(0, 400) });
             } else if (act.type === "cert") {
               const cert = pdb.catalog.certs.find(x => x.id === act.certId);
               if (!cert) throw new Error("unknown certification");
               if (!rec.certs.some(c => c.certId === cert.id)) {
                 rec.certs.push({ certId: cert.id, at: Date.now(), by });
                 logEntry(rec, by, "cert", "Certified: " + cert.name);
+                shout.push({ discordId: id, name: displayName(id), cert: cert.name });
               }
             } else if (act.type === "rank") {
               const from = rec.rank;
               let idx = act.rank != null ? rankIdx(String(act.rank)) : rankIdx(rec.rank) + Number(act.step || 0);
               if (idx < 0 || idx >= pdb.catalog.ranks.length) throw new Error("no such rank");
               rec.rank = pdb.catalog.ranks[idx].abbr;
-              if (rec.rank !== from) logEntry(rec, by, "rank",
-                (rankIdx(rec.rank) > rankIdx(from) ? "Promoted " : "Reduced ") + from + " → " + rec.rank);
+              if (rec.rank !== from) {
+                logEntry(rec, by, "rank",
+                  (rankIdx(rec.rank) > rankIdx(from) ? "Promoted " : "Reduced ") + from + " → " + rec.rank);
+                const fromRank = pdb.catalog.ranks.find(r => r.abbr === from);
+                shout.push({ discordId: id, name: displayName(id),
+                  fromRank: fromRank ? fromRank.name : from, toRank: pdb.catalog.ranks[idx].name,
+                  promoted: rankIdx(rec.rank) > rankIdx(from) });
+              }
             } else if (act.type === "note") {
               if (!String(act.text || "").trim()) throw new Error("empty note");
               logEntry(rec, by, "note", act.text);
@@ -496,6 +638,10 @@ module.exports = function createPortalApi(deps) {
         persist("personnel");
         return out;
       });
+      if (shout.length && ["rank", "award", "cert"].includes(act.type)) {
+        enqueue("announce", { kind: act.type, by, items: shout.slice(0, 50) });
+        if (act.type === "rank") for (const s of shout) enqueueRoles(s.discordId);
+      }
       send(res, 200, { ok: true, results });
       return true;
     }
@@ -579,10 +725,17 @@ module.exports = function createPortalApi(deps) {
       const at = Number(b.at);
       if (need(String(b.title || "").trim() && Number.isFinite(at), 400, "title + at (ms) required")) return true;
       const id = crypto.randomBytes(8).toString("hex");
+      const endAt = Number(b.endAt);
       pdb.events[id] = { title: String(b.title).slice(0, 120), at,
+        endAt: Number.isFinite(endAt) && endAt > at ? endAt : null,
         tier: String(b.tier || "OPERATION").slice(0, 40), brief: String(b.brief || "").slice(0, 2000),
+        location: String(b.location || "").slice(0, 120),
+        uniform: String(b.uniform || "").slice(0, 120),
+        attention: (Array.isArray(b.attention) ? b.attention.map(String).slice(0, 12) : [])
+          .filter(sid => squadronOf(sid)),
         by: actor.name, rsvp: {} };
       persist("events");
+      enqueue("event", { eventId: id });
       send(res, 200, { ok: true, id });
       return true;
     }
@@ -600,6 +753,10 @@ module.exports = function createPortalApi(deps) {
       if (need(["going", "maybe", "no"].includes(b.answer), 400, "answer must be going|maybe|no")) return true;
       pdb.events[m[1]].rsvp[actor.id] = b.answer;
       persist("events");
+      /* the Discord card follows website RSVPs too — one refresh per drain */
+      if (pdb.events[m[1]].discordMsg &&
+          !pdb.discord.outbox.some(j => j.type === "event-update" && j.eventId === m[1]))
+        enqueue("event-update", { eventId: m[1] });
       send(res, 200, { ok: true, rsvp: pdb.events[m[1]].rsvp });
       return true;
     }
@@ -766,13 +923,18 @@ module.exports = function createPortalApi(deps) {
         if (need(existing, 400, "not a member of " + sq.name)) return true;
         sq.members = sq.members.filter(mm => mm.discordId !== member);
         logEntry(recFor(member), actor.name, "squadron", "Detached from " + sq.name);
+        enqueue("announce", { kind: "assignment", by: actor.name,
+          items: [{ discordId: member, name: displayName(member), text: "Detached from " + sq.name }] });
       } else {
         const billet = String(b.billet).slice(0, 60);
         if (existing) existing.billet = billet;
         else sq.members.push({ discordId: member, billet });
         logEntry(recFor(member), actor.name, "squadron",
           "Assigned to " + sq.name + " — " + billet);
+        enqueue("announce", { kind: "assignment", by: actor.name,
+          items: [{ discordId: member, name: displayName(member), text: "Assigned to " + sq.name + " — " + billet }] });
       }
+      enqueueRoles(member);
       persist("squadrons"); persist("personnel");
       send(res, 200, { ok: true, squadron: sq });
       return true;
