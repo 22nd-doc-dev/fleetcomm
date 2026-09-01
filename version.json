@@ -1,4 +1,4 @@
 {
-  "version": "1.0.1",
-  "notes": "FleetComm 1.0.1 — command punch list + helmet cam. (1.1.0 is staged; its release publishes shortly.)"
+  "version": "1.1.0",
+  "notes": "FleetComm 1.1 — the new channel plan. The board now carries the fleet's real structure: COMMAND NET and a dedicated EMERGENCY NET on 121.500 guard, four ships of the line — UEES Tiber, UEENS Minerva, UEES Olympia, UEES Warrior — each with department nets wearing their tags as gold badges (CMD Bridge, TAC Tactical, DC Damage Control, SEC Security, ENG Engineering, MED Medical, LOG Logistics, ATC Deck), plus 51st SKR Marines (Reaper-1/-2), IF-55 Wardogs (Alpha/Bravo Squadron) and MG-212. New in SYS: Truncate net names — flip it on and tagged nets shrink to badge + frequency for a narrow channel column; full names stay the default, and hovering any row always shows the complete name. The old channels remain on the relay during the transition and will be retired once the fleet is on 1.1; per-net volume/pan settings reset for the re-frequencied nets."
 }
