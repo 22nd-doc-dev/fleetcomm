@@ -273,6 +273,31 @@ module.exports = function createPortalApi(deps) {
     });
   }
 
+  /* the guild's member object for the signing-in user (guilds.members.read):
+     {nick, roles[]} — resolves null rather than failing the sign-in when the
+     guild isn't configured or Discord declines */
+  const OAUTH_GUILD = String(process.env.DISCORD_GUILD_ID || "").trim();
+  function discordGuildMember(token) {
+    if (!OAUTH_GUILD) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      const req = https.get("https://discord.com/api/users/@me/guilds/" + OAUTH_GUILD + "/member",
+        { headers: { Authorization: "Bearer " + token, "User-Agent": "22EF-Portal" }, timeout: 10000 },
+        (res) => {
+          let d = ""; res.on("data", c => { d += c; if (d.length > 65536) req.destroy(new Error("member response too large")); });
+          res.on("end", () => {
+            if (res.statusCode !== 200) return resolve(null);
+            try {
+              const m = JSON.parse(d);
+              resolve({ nick: m.nick ? String(m.nick).slice(0, 80) : null,
+                roles: Array.isArray(m.roles) ? m.roles.map(String).slice(0, 100) : [] });
+            } catch (e) { resolve(null); }
+          });
+        });
+      req.on("error", () => resolve(null));
+      req.on("timeout", () => { req.destroy(); resolve(null); });
+    });
+  }
+
   const CODES = new Set(["y", "m", "n", "loa"]);
   const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -292,14 +317,23 @@ module.exports = function createPortalApi(deps) {
       const state = crypto.randomBytes(16).toString("hex");
       oauthStates.set(state, Date.now() + 600000);
       for (const [s, exp] of oauthStates) if (exp <= Date.now()) oauthStates.delete(s);
+      /* prompt=none sails returning members through; a scope change makes
+         Discord bounce consent_required, and the callback retries with ?force=1 */
       const q = querystring.stringify({ client_id: OAUTH.id, redirect_uri: OAUTH.redirect,
-        response_type: "code", scope: "identify guilds", state, prompt: "none" });
+        response_type: "code", scope: "identify guilds guilds.members.read", state,
+        prompt: url.searchParams.get("force") ? "consent" : "none" });
       res.writeHead(302, { Location: "https://discord.com/oauth2/authorize?" + q, "Cache-Control": "no-store" });
       res.end();
       return true;
     }
     if (p === "/api/oauth/callback" && req.method === "GET") {
       try {
+        /* a consent bounce (new scopes since last authorize) retries visibly */
+        if (url.searchParams.get("error") === "consent_required") {
+          res.writeHead(302, { Location: "/api/oauth/start?force=1", "Cache-Control": "no-store" });
+          res.end();
+          return true;
+        }
         const state = String(url.searchParams.get("state") || "");
         if (!oauthStates.has(state) || oauthStates.get(state) <= Date.now())
           throw new Error("sign-in expired — try again");
@@ -309,10 +343,15 @@ module.exports = function createPortalApi(deps) {
            the routes; mint the session the same way it does instead */
         const who = await deps.verifyDiscord({ discordToken });
         await deps.requireGuildMember(discordToken);
+        /* the fleet guild's own view of this member — nickname and roles —
+           arrives with sign-in, so accounts wear their server name */
+        const member = await discordGuildMember(discordToken);
         let acc = db.accounts[who.id];
         if (!acc) acc = db.accounts[who.id] = { discordName: who.username, role: "pending", createdAt: Date.now() };
         if (acc.role === "revoked") throw new Error("access revoked by COMMAND");
-        acc.discordName = who.username; acc.lastSeen = Date.now();
+        acc.discordName = (member && member.nick) || who.username;
+        if (member && Array.isArray(member.roles)) acc.guildRoles = member.roles;
+        acc.lastSeen = Date.now();
         const token = crypto.randomBytes(24).toString("hex");
         db.sessions[token] = { discordId: who.id, createdAt: Date.now(), expiresAt: Date.now() + SESSION_TTL_MS };
         deps.persist();
