@@ -458,13 +458,22 @@ const server = http.createServer(async (req, res) => {
       saveSounds();
       return send(res, 200, { ok: true });
     }
-    if ((m = /^\/api\/accounts\/(\d+)\/role$/.exec(p)) && req.method === "POST") {
+    /* manual (pre-Discord) member ids are m-<hex>, so the id segment is wider
+       than a Discord snowflake */
+    if ((m = /^\/api\/accounts\/([A-Za-z0-9-]{1,40})\/role$/.exec(p)) && req.method === "POST") {
       const b = await body(req);
       if (!["pending", "member", "command", "revoked"].includes(b.role)) return send(res, 400, { ok: false, error: "bad role" });
       if (m[1] === a.id && b.role !== "command") return send(res, 400, { ok: false, error: "cannot demote yourself" });
       const updated = await serializeMutation(async () => {
         const target = db.accounts[m[1]];
         if (!target) throw Object.assign(new Error("no such account"), { statusCode: 404 });
+        /* the fleet must never lock itself out: refuse to remove the last
+           administrator (COMMAND role or itAdmin flag) standing */
+        if (target.role === "command" && b.role !== "command") {
+          const admins = Object.entries(db.accounts).filter(([id, acc]) =>
+            (acc.role === "command" && id !== m[1]) || acc.itAdmin === true).length;
+          if (!admins) throw Object.assign(new Error("cannot remove the fleet's last administrator"), { statusCode: 400 });
+        }
         const previousRole = target.role;
         const removedSessions = {};
         target.role = b.role;

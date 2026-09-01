@@ -40,9 +40,11 @@ module.exports = function createPortalApi(deps) {
     availability: record(load("availability.json", {}), "availability.json"), // id -> {days:{date:code}}
     events: record(load("events.json", {}), "events.json"),              // id -> {title, at, tier, brief, by, rsvp{}}
     loa: record(load("loa.json", {}), "loa.json"),                       // id -> {active:{start,reason}|null, history[]}
-    roster: record(load("roster.json", {}), "roster.json")               // {ships:[{id,name,hull,departments:[{name,stations:[{id,title,assignee}]}]}]}
+    roster: record(load("roster.json", {}), "roster.json"),              // {ships:[{id,name,classification,hullId,status,notes,departments:[...]}]}
+    squadrons: record(load("squadrons.json", {}), "squadrons.json")      // {squadrons:[{id,name,designation,role,members:[{discordId,billet}]}]}
   };
   const persist = (name) => save(name + ".json", pdb[name]);
+  const SHIP_STATUS = ["active", "reserve", "refit", "lost", "decommissioned"];
 
   /* the fleet's ladder, junior to senior, so a promotion is always index+1 */
   if (!Array.isArray(pdb.catalog.ranks) || !pdb.catalog.ranks.length) {
@@ -88,13 +90,15 @@ module.exports = function createPortalApi(deps) {
     const dept = (name, ...titles) => ({ name, stations: titles.map(t => ({
       id: (name + "-" + t).toLowerCase().replace(/[^a-z0-9]+/g, "-"), title: t, assignee: null })) });
     pdb.roster.ships = [
-      { id: "tiber", name: "UEES Tiber", hull: "FF-217", departments: [
+      { id: "tiber", name: "UEES Tiber", hullId: "FF-217", classification: "Frigate",
+        status: "active", notes: "", departments: [
         dept("Bridge", "Commanding Officer", "Executive Officer", "Helmsman", "Operations Officer"),
         dept("Flight Deck", "Air Boss", "Deck Chief", "Pilot 1", "Pilot 2"),
         dept("Engineering", "Chief Engineer", "Engineer 1", "Engineer 2"),
         dept("Gunnery", "Gunnery Chief", "Gunner 1", "Gunner 2")
       ] },
-      { id: "beowulf", name: "UEES Beowulf", hull: "PCG-685", departments: [
+      { id: "beowulf", name: "UEES Beowulf", hullId: "PCG-685", classification: "Corvette Gunship",
+        status: "active", notes: "", departments: [
         dept("Bridge", "Commanding Officer", "Helmsman"),
         dept("Gunnery", "Gunner 1", "Gunner 2"),
         dept("Engineering", "Engineer")
@@ -105,6 +109,30 @@ module.exports = function createPortalApi(deps) {
       for (const st of d.stations) st.id = ship.id + "-" + st.id;
     persist("roster");
   }
+  /* v1 rosters carried `hull` and no status — carry them forward, once */
+  {
+    let migrated = false;
+    for (const ship of pdb.roster.ships) {
+      if (ship.hull && !ship.hullId) { ship.hullId = ship.hull; delete ship.hull; migrated = true; }
+      if (!SHIP_STATUS.includes(ship.status)) { ship.status = "active"; migrated = true; }
+      if (typeof ship.classification !== "string") { ship.classification = ""; migrated = true; }
+      if (typeof ship.notes !== "string") { ship.notes = ""; migrated = true; }
+    }
+    if (migrated) persist("roster");
+  }
+  /* the fleet's squadrons, parallel to the ships of the line */
+  if (!Array.isArray(pdb.squadrons.squadrons) || !pdb.squadrons.squadrons.length) {
+    pdb.squadrons.squadrons = [
+      { id: "desron-38", name: "DESRON-38", designation: "Destroyer Squadron 38", role: "Capital ships and heavies — the weight behind the fleet's word", members: [] },
+      { id: "if-55", name: "IF-55", designation: "Interceptor Flight 55", role: "The screen — intercepting threats before they reach the line", members: [] },
+      { id: "logron-88", name: "LOGRON-88", designation: "Logistics Squadron 88", role: "Keeps the train running behind the line", members: [] },
+      { id: "mg-212", name: "MG-212", designation: "Marine Group 212", role: "Puts boots exactly where the plan needs them", members: [] },
+      { id: "51sr", name: "51SR", designation: "51st Shock Regiment", role: "Clears the complex and exploits it", members: [] },
+      { id: "paladins", name: "Paladins", designation: "Fighter Wing", role: "Air superiority over the objective", members: [] }
+    ];
+    persist("squadrons");
+  }
+  function squadronOf(id) { return pdb.squadrons.squadrons.find(s => s.id === id) || null; }
   function stationOf(stationId) {
     for (const ship of pdb.roster.ships) for (const d of ship.departments)
       for (const st of d.stations) if (st.id === stationId) return { ship, dept: d, st };
@@ -129,10 +157,53 @@ module.exports = function createPortalApi(deps) {
     const rec = recFor(id);
     return {
       discordId: id, discordName: acc.discordName, callsign: acc.callsign || null,
-      role: acc.role, lastSeen: acc.lastSeen || null, joinedAt: acc.createdAt || null,
+      role: acc.role, manual: acc.manual === true, itAdmin: acc.itAdmin === true,
+      scopes: Array.isArray(acc.scopes) ? acc.scopes : [],
+      lastSeen: acc.lastSeen || null, joinedAt: acc.createdAt || null,
       rank: rankByAbbr(rec.rank) || { grade: "?", name: rec.rank, abbr: rec.rank },
       awards: rec.awards, certs: rec.certs, record: rec.record
     };
+  }
+
+  /* ── permissions ──
+     Three tiers, server-enforced: ADMIN (COMMAND role, the itAdmin flag, or
+     the bot) manages everything; SCOPED managers hold entries like
+     "ship:tiber" / "squadron:logron-88" / "rate:hospital-corpsman" granting
+     assignment in that unit and record-approval for its members (a rate scope
+     also grants bulk-certifying that rating); EVERYONE submits their own
+     record entries and reads the fleet. The itAdmin flag exists precisely so
+     no single account is a point of failure. */
+  const isAdmin = (actor) => actor.bot || actor.command || !!(actor.acc && actor.acc.itAdmin);
+  const actorScopes = (actor) => (actor.acc && Array.isArray(actor.acc.scopes)) ? actor.acc.scopes : [];
+  const hasScope = (actor, s) => actorScopes(actor).includes(s);
+  const canManageShip = (actor, shipId) => isAdmin(actor) || hasScope(actor, "ship:" + shipId);
+  const canManageSquadron = (actor, id) => isAdmin(actor) || hasScope(actor, "squadron:" + id);
+  const rateScopeCerts = (actor) => actorScopes(actor).filter(s => s.startsWith("rate:")).map(s => s.slice(5));
+  function memberUnits(id) {
+    const ships = pdb.roster.ships.filter(sh =>
+      sh.departments.some(d => d.stations.some(st => st.assignee === id))).map(sh => sh.id);
+    const squadrons = pdb.squadrons.squadrons.filter(sq =>
+      sq.members.some(mm => mm.discordId === id)).map(sq => sq.id);
+    const certs = recFor(id).certs.map(c => c.certId);
+    return { ships, squadrons, certs };
+  }
+  function canApproveFor(actor, memberId) {
+    if (isAdmin(actor)) return true;
+    const u = memberUnits(memberId);
+    return u.ships.some(s => hasScope(actor, "ship:" + s)) ||
+      u.squadrons.some(s => hasScope(actor, "squadron:" + s)) ||
+      u.certs.some(c => hasScope(actor, "rate:" + c));
+  }
+  /* record visibility: pending entries exist only for their owner and their
+     approvers; rejected entries only for their owner. System entries carry no
+     state and are public. Always returns a copy — never the stored arrays. */
+  function redactProfile(pr, actor) {
+    const owner = !actor.bot && actor.id === pr.discordId;
+    const approver = owner || canApproveFor(actor, pr.discordId);
+    return Object.assign({}, pr, { record: pr.record.filter(e =>
+      !e.state || e.state === "approved" ||
+      (e.state === "pending" && approver) ||
+      (e.state === "rejected" && owner)) });
   }
 
   /* ── who is asking: an operator's session, or the fleet's Discord bot ──
@@ -268,7 +339,7 @@ module.exports = function createPortalApi(deps) {
     /* everything below needs an operator session or the bot secret */
     const actor = actorOf(req);
     const need = (ok, code, msg) => { if (!ok) { send(res, code, { ok: false, error: msg }); return true; } return false; };
-    if (!/^\/api\/(catalog|personnel|coc|availability|events|sso|activity|loa|roster)/.test(p)) return false;
+    if (!/^\/api\/(catalog|personnel|coc|availability|events|sso|activity|loa|roster|squadrons|record|export|me\/permissions)/.test(p)) return false;
     if (need(actor, 401, "unauthorized")) return true;
     /* pending accounts can see nothing but their own approval state */
     if (need(actor.bot || actor.member, 403, "awaiting COMMAND approval")) return true;
@@ -276,7 +347,7 @@ module.exports = function createPortalApi(deps) {
     let m;
     if (p === "/api/catalog" && req.method === "GET") { send(res, 200, { ok: true, catalog: pdb.catalog }); return true; }
     if (p === "/api/catalog" && req.method === "POST") {
-      if (need(actor.command, 403, "COMMAND role required")) return true;
+      if (need(isAdmin(actor), 403, "management access required")) return true;
       const b = await body(req);
       await serializeMutation(async () => {
         for (const key of ["ranks", "awards", "certs", "apps"]) {
@@ -294,6 +365,7 @@ module.exports = function createPortalApi(deps) {
 
     if (p === "/api/personnel" && req.method === "GET") {
       const roster = Object.keys(db.accounts).map(profile).filter(Boolean)
+        .map(pr => redactProfile(pr, actor))
         .sort((a, b2) => rankIdx(b2.rank.abbr) - rankIdx(a.rank.abbr));
       send(res, 200, { ok: true, roster });
       return true;
@@ -302,17 +374,21 @@ module.exports = function createPortalApi(deps) {
       send(res, 200, { ok: true, profile: profile(actor.id) });
       return true;
     }
-    if ((m = /^\/api\/personnel\/(\d+)$/.exec(p)) && req.method === "GET") {
+    if ((m = /^\/api\/personnel\/([A-Za-z0-9-]{1,40})$/.exec(p)) && req.method === "GET") {
       const pr = profile(m[1]);
       if (need(pr, 404, "no such member")) return true;
-      send(res, 200, { ok: true, profile: pr });
+      send(res, 200, { ok: true, profile: redactProfile(pr, actor) });
       return true;
     }
 
-    /* ── the one-click, many-people door: awards, certs, rank moves, notes ── */
+    /* ── the one-click, many-people door: awards, certs, rank moves, notes.
+       Admins do anything; a rate:<certId> scope grants certifying exactly
+       that rating and nothing else. ── */
     if (p === "/api/personnel/bulk" && req.method === "POST") {
-      if (need(actor.command, 403, "COMMAND role required")) return true;
       const b = await body(req);
+      const scopedCert = b.action && b.action.type === "cert" &&
+        rateScopeCerts(actor).includes(String(b.action.certId || ""));
+      if (need(isAdmin(actor) || scopedCert, 403, "management access required")) return true;
       const ids = Array.isArray(b.ids) ? b.ids.map(String).slice(0, 200) : [];
       const act = b.action && typeof b.action === "object" ? b.action : {};
       if (need(ids.length, 400, "ids[] is empty")) return true;
@@ -362,7 +438,7 @@ module.exports = function createPortalApi(deps) {
       return true;
     }
     if (p === "/api/coc" && req.method === "POST") {
-      if (need(actor.command, 403, "COMMAND role required")) return true;
+      if (need(isAdmin(actor), 403, "management access required")) return true;
       const b = await body(req);
       const nodes = Array.isArray(b.nodes) ? b.nodes.slice(0, 200) : null;
       if (need(nodes, 400, "nodes[] required")) return true;
@@ -408,7 +484,7 @@ module.exports = function createPortalApi(deps) {
       return true;
     }
     if (p === "/api/availability/all" && req.method === "GET") {
-      if (need(actor.command, 403, "COMMAND role required")) return true;
+      if (need(isAdmin(actor), 403, "management access required")) return true;
       const all = {};
       for (const [id, a2] of Object.entries(pdb.availability)) {
         const acc = db.accounts[id];
@@ -426,7 +502,7 @@ module.exports = function createPortalApi(deps) {
       return true;
     }
     if (p === "/api/events" && req.method === "POST") {
-      if (need(actor.command, 403, "COMMAND role required")) return true;
+      if (need(isAdmin(actor), 403, "management access required")) return true;
       const b = await body(req);
       const at = Number(b.at);
       if (need(String(b.title || "").trim() && Number.isFinite(at), 400, "title + at (ms) required")) return true;
@@ -439,7 +515,7 @@ module.exports = function createPortalApi(deps) {
       return true;
     }
     if ((m = /^\/api\/events\/([a-f0-9]{16})\/delete$/.exec(p)) && req.method === "POST") {
-      if (need(actor.command, 403, "COMMAND role required")) return true;
+      if (need(isAdmin(actor), 403, "management access required")) return true;
       if (need(pdb.events[m[1]], 404, "no such event")) return true;
       delete pdb.events[m[1]];
       persist("events");
@@ -485,7 +561,7 @@ module.exports = function createPortalApi(deps) {
       return true;
     }
     if (p === "/api/loa" && req.method === "GET") {
-      if (need(actor.command, 403, "COMMAND role required")) return true;
+      if (need(isAdmin(actor), 403, "management access required")) return true;
       const active = [];
       for (const [id, l] of Object.entries(pdb.loa)) {
         const acc = db.accounts[id];
@@ -497,57 +573,50 @@ module.exports = function createPortalApi(deps) {
       return true;
     }
 
-    /* ── crew roster: ships' stations, claimable. One station per member per
-       ship — you can serve on two ships, not stand two watches on one. ── */
+    /* ── crew roster v2: ASSIGNMENT-ONLY (no self-claims — billets are given,
+       not taken), any number of stations per member, per-ship editing rights
+       via ship:<id> scopes. ── */
     if (p === "/api/roster" && req.method === "GET") {
       send(res, 200, { ok: true, ships: pdb.roster.ships });
       return true;
     }
-    if (p === "/api/roster/claim" && req.method === "POST" && !actor.bot) {
-      const b = await body(req);
-      const hit = stationOf(String(b.stationId || ""));
-      if (need(hit, 404, "no such station")) return true;
-      if (need(!hit.st.assignee, 400, "station is already crewed")) return true;
-      const already = hit.ship.departments.some(d => d.stations.some(s => s.assignee === actor.id));
-      if (need(!already, 400, "you already hold a station aboard " + hit.ship.name + " — release it first")) return true;
-      await serializeMutation(async () => {
-        if (hit.st.assignee) throw Object.assign(new Error("station is already crewed"), { statusCode: 400 });
-        hit.st.assignee = actor.id;
-        logEntry(recFor(actor.id), actor.name, "station", "Took station: " + hit.st.title + ", " + hit.ship.name);
-        persist("roster"); persist("personnel");
-      });
-      send(res, 200, { ok: true });
-      return true;
-    }
-    if (p === "/api/roster/release" && req.method === "POST") {
-      const b = await body(req);
-      const hit = stationOf(String(b.stationId || ""));
-      if (need(hit, 404, "no such station")) return true;
-      if (need(hit.st.assignee, 400, "station is already vacant")) return true;
-      if (need(actor.command || hit.st.assignee === actor.id, 403, "not your station")) return true;
-      const holder = hit.st.assignee;
-      hit.st.assignee = null;
-      logEntry(recFor(holder), actor.name, "station", "Stood down from station: " + hit.st.title + ", " + hit.ship.name);
-      persist("roster"); persist("personnel");
-      send(res, 200, { ok: true });
-      return true;
-    }
     if (p === "/api/roster/assign" && req.method === "POST") {
-      if (need(actor.command, 403, "COMMAND role required")) return true;
       const b = await body(req);
       const hit = stationOf(String(b.stationId || ""));
       if (need(hit, 404, "no such station")) return true;
+      if (need(canManageShip(actor, hit.ship.id), 403, "no roster authority for " + hit.ship.name)) return true;
       const member = b.memberId ? String(b.memberId) : null;
       if (need(!member || db.accounts[member], 404, "no such member")) return true;
+      const previous = hit.st.assignee;
       hit.st.assignee = member;
-      if (member) logEntry(recFor(member), actor.name, "station",
+      if (previous && previous !== member) logEntry(recFor(previous), actor.name, "station",
+        "Relieved of station: " + hit.st.title + ", " + hit.ship.name);
+      if (member && previous !== member) logEntry(recFor(member), actor.name, "station",
         "Assigned to station: " + hit.st.title + ", " + hit.ship.name);
       persist("roster"); persist("personnel");
       send(res, 200, { ok: true });
       return true;
     }
+    /* per-ship properties — individually editable so two editors don't
+       clobber each other through wholesale /plan */
+    if (p === "/api/roster/ship" && req.method === "POST") {
+      const b = await body(req);
+      const ship = pdb.roster.ships.find(s => s.id === String(b.id || ""));
+      if (need(ship, 404, "no such ship")) return true;
+      if (need(canManageShip(actor, ship.id), 403, "no roster authority for " + ship.name)) return true;
+      if (b.status !== undefined && need(SHIP_STATUS.includes(b.status),
+        400, "status must be one of: " + SHIP_STATUS.join(", "))) return true;
+      if (b.name !== undefined) ship.name = String(b.name).slice(0, 80);
+      if (b.classification !== undefined) ship.classification = String(b.classification).slice(0, 60);
+      if (b.hullId !== undefined) ship.hullId = String(b.hullId).slice(0, 20);
+      if (b.status !== undefined) ship.status = b.status;
+      if (b.notes !== undefined) ship.notes = String(b.notes).slice(0, 1000);
+      persist("roster");
+      send(res, 200, { ok: true, ship });
+      return true;
+    }
     if (p === "/api/roster/plan" && req.method === "POST") {
-      if (need(actor.command, 403, "COMMAND role required")) return true;
+      if (need(isAdmin(actor), 403, "management access required")) return true;
       const b = await body(req);
       const ships = Array.isArray(b.ships) ? b.ships.slice(0, 12) : null;
       if (need(ships, 400, "ships[] required")) return true;
@@ -556,7 +625,10 @@ module.exports = function createPortalApi(deps) {
       const clean = ships.map(ship => ({
         id: String(ship.id || "").slice(0, 40),
         name: String(ship.name || "").slice(0, 80),
-        hull: String(ship.hull || "").slice(0, 20),
+        hullId: String(ship.hullId || ship.hull || "").slice(0, 20),
+        classification: String(ship.classification || "").slice(0, 60),
+        status: SHIP_STATUS.includes(ship.status) ? ship.status : "active",
+        notes: String(ship.notes || "").slice(0, 1000),
         departments: (Array.isArray(ship.departments) ? ship.departments.slice(0, 20) : []).map(d => ({
           name: String(d.name || "").slice(0, 60),
           stations: (Array.isArray(d.stations) ? d.stations.slice(0, 40) : []).map(st => {
@@ -581,6 +653,204 @@ module.exports = function createPortalApi(deps) {
       return true;
     }
 
+    /* ── squadrons: first-class units parallel to the ships ── */
+    if (p === "/api/squadrons" && req.method === "GET") {
+      send(res, 200, { ok: true, squadrons: pdb.squadrons.squadrons });
+      return true;
+    }
+    if (p === "/api/squadrons/plan" && req.method === "POST") {
+      if (need(isAdmin(actor), 403, "management access required")) return true;
+      const b = await body(req);
+      const list = Array.isArray(b.squadrons) ? b.squadrons.slice(0, 24) : null;
+      if (need(list, 400, "squadrons[] required")) return true;
+      const seen = new Set();
+      const clean = list.map(sq => ({
+        id: String(sq.id || "").slice(0, 40),
+        name: String(sq.name || "").slice(0, 60),
+        designation: String(sq.designation || "").slice(0, 100),
+        role: String(sq.role || "").slice(0, 200),
+        members: (Array.isArray(sq.members) ? sq.members.slice(0, 200) : [])
+          .map(mm => ({ discordId: String(mm.discordId || ""), billet: String(mm.billet || "").slice(0, 60) }))
+          .filter(mm => db.accounts[mm.discordId])
+      }));
+      for (const sq of clean) {
+        if (need(sq.id && sq.name, 400, "every squadron needs id + name")) return true;
+        if (need(!seen.has(sq.id), 400, "duplicate squadron id: " + sq.id)) return true;
+        seen.add(sq.id);
+      }
+      await serializeMutation(async () => { pdb.squadrons.squadrons = clean; persist("squadrons"); });
+      send(res, 200, { ok: true, squadrons: clean });
+      return true;
+    }
+    if ((m = /^\/api\/squadrons\/([a-z0-9-]{1,40})\/assign$/.exec(p)) && req.method === "POST") {
+      const sq = squadronOf(m[1]);
+      if (need(sq, 404, "no such squadron")) return true;
+      if (need(canManageSquadron(actor, sq.id), 403, "no authority over " + sq.name)) return true;
+      const b = await body(req);
+      const member = String(b.memberId || "");
+      if (need(db.accounts[member], 404, "no such member")) return true;
+      const existing = sq.members.find(mm => mm.discordId === member);
+      if (b.billet === null || b.billet === undefined || b.billet === "") {
+        if (need(existing, 400, "not a member of " + sq.name)) return true;
+        sq.members = sq.members.filter(mm => mm.discordId !== member);
+        logEntry(recFor(member), actor.name, "squadron", "Detached from " + sq.name);
+      } else {
+        const billet = String(b.billet).slice(0, 60);
+        if (existing) existing.billet = billet;
+        else sq.members.push({ discordId: member, billet });
+        logEntry(recFor(member), actor.name, "squadron",
+          "Assigned to " + sq.name + " — " + billet);
+      }
+      persist("squadrons"); persist("personnel");
+      send(res, 200, { ok: true, squadron: sq });
+      return true;
+    }
+    if ((m = /^\/api\/squadrons\/([a-z0-9-]{1,40})$/.exec(p)) && req.method === "POST") {
+      const sq = squadronOf(m[1]);
+      if (need(sq, 404, "no such squadron")) return true;
+      if (need(canManageSquadron(actor, sq.id), 403, "no authority over " + sq.name)) return true;
+      const b = await body(req);
+      if (b.name !== undefined) sq.name = String(b.name).slice(0, 60);
+      if (b.designation !== undefined) sq.designation = String(b.designation).slice(0, 100);
+      if (b.role !== undefined) sq.role = String(b.role).slice(0, 200);
+      persist("squadrons");
+      send(res, 200, { ok: true, squadron: sq });
+      return true;
+    }
+
+    /* ── self-submitted record entries: pending until someone with authority
+       over that member approves — visible meanwhile only to owner and
+       approvers ── */
+    if (p === "/api/personnel/me/record" && req.method === "POST" && !actor.bot) {
+      const b = await body(req);
+      const text = String(b.text || "").trim().slice(0, 400);
+      if (need(text, 400, "empty entry")) return true;
+      const at = Number.isFinite(Number(b.at)) ? Number(b.at) : Date.now();
+      const entry = { id: crypto.randomBytes(6).toString("hex"), at,
+        by: actor.name, kind: String(b.kind || "note").toLowerCase().replace(/[^a-z0-9-]+/g, "-").slice(0, 24) || "note",
+        text, state: "pending" };
+      recFor(actor.id).record.push(entry);
+      persist("personnel");
+      send(res, 200, { ok: true, entry });
+      return true;
+    }
+    if ((m = /^\/api\/record\/([a-f0-9]{12})\/(approve|reject)$/.exec(p)) && req.method === "POST" && !actor.bot) {
+      const b = await body(req);
+      let owner = null, entry = null;
+      for (const [id, rec] of Object.entries(pdb.personnel)) {
+        const e = rec.record.find(x => x.id === m[1] && x.state === "pending");
+        if (e) { owner = id; entry = e; break; }
+      }
+      if (need(entry, 404, "no such pending entry")) return true;
+      if (need(canApproveFor(actor, owner), 403, "no approval authority for this member")) return true;
+      /* nobody clears their own paperwork — unless they hold admin anyway */
+      if (need(owner !== actor.id || isAdmin(actor), 403, "cannot approve your own entry")) return true;
+      entry.state = m[2] === "approve" ? "approved" : "rejected";
+      entry[m[2] === "approve" ? "approvedBy" : "rejectedBy"] = actor.name;
+      if (b.note) entry.note = String(b.note).slice(0, 200);
+      persist("personnel");
+      send(res, 200, { ok: true, entry });
+      return true;
+    }
+    if (p === "/api/record/pending" && req.method === "GET" && !actor.bot) {
+      const queue = [];
+      for (const [id, rec] of Object.entries(pdb.personnel)) {
+        if (id === actor.id && !isAdmin(actor)) continue;
+        if (!canApproveFor(actor, id)) continue;
+        const acc = db.accounts[id];
+        if (!acc) continue;
+        for (const e of rec.record) if (e.state === "pending")
+          queue.push({ discordId: id, callsign: acc.callsign || acc.discordName, entry: e });
+      }
+      queue.sort((a, b2) => a.entry.at - b2.entry.at);
+      send(res, 200, { ok: true, queue });
+      return true;
+    }
+
+    /* ── scoped authority + the itAdmin flag (no single point of failure) ── */
+    if ((m = /^\/api\/personnel\/([A-Za-z0-9-]{1,40})\/scopes$/.exec(p)) && req.method === "POST") {
+      if (need(isAdmin(actor), 403, "management access required")) return true;
+      const target = db.accounts[m[1]];
+      if (need(target, 404, "no such member")) return true;
+      const b = await body(req);
+      if (Array.isArray(b.scopes)) {
+        const clean = b.scopes.slice(0, 40).map(String);
+        for (const s of clean) {
+          const mm = /^(ship|squadron|rate):([a-z0-9-]{1,40})$/.exec(s);
+          if (need(mm, 400, "bad scope: " + s.slice(0, 60))) return true;
+          const exists = mm[1] === "ship" ? pdb.roster.ships.some(x => x.id === mm[2])
+            : mm[1] === "squadron" ? !!squadronOf(mm[2])
+            : pdb.catalog.certs.some(x => x.id === mm[2]);
+          if (need(exists, 400, "scope names nothing that exists: " + s)) return true;
+        }
+        target.scopes = clean;
+      }
+      if (typeof b.itAdmin === "boolean") {
+        if (b.itAdmin === false && target.itAdmin === true) {
+          const admins = Object.entries(db.accounts).filter(([id, acc]) =>
+            acc.role === "command" || (acc.itAdmin === true && id !== m[1])).length;
+          if (need(admins, 400, "cannot remove the fleet's last administrator")) return true;
+        }
+        target.itAdmin = b.itAdmin;
+      }
+      deps.persist();
+      send(res, 200, { ok: true, profile: profile(m[1]) });
+      return true;
+    }
+    if (p === "/api/me/permissions" && req.method === "GET" && !actor.bot) {
+      const admin = isAdmin(actor);
+      const scopes = actorScopes(actor);
+      send(res, 200, { ok: true, admin, itAdmin: !!(actor.acc && actor.acc.itAdmin),
+        command: !!actor.command, scopes,
+        canApprove: admin || scopes.length > 0,
+        manage: {
+          ships: admin ? "*" : scopes.filter(s => s.startsWith("ship:")).map(s => s.slice(5)),
+          squadrons: admin ? "*" : scopes.filter(s => s.startsWith("squadron:")).map(s => s.slice(9)),
+          certs: admin ? "*" : rateScopeCerts(actor)
+        } });
+      return true;
+    }
+
+    /* ── manual members: record shells for the crew that predates the Discord
+       tie-in. They can never sign in (no session, no relay token, so the ACL
+       sync never grants them the relay) — pure personnel records, flagged for
+       a future Discord merge. ── */
+    if (p === "/api/personnel/add" && req.method === "POST") {
+      if (need(isAdmin(actor), 403, "management access required")) return true;
+      const b = await body(req);
+      const callsign = String(b.callsign || "").trim().toUpperCase()
+        .replace(/[^ A-Z0-9_.\-'"()[\]]+/g, "").slice(0, 40);
+      if (need(callsign, 400, "callsign required")) return true;
+      const id = "m-" + crypto.randomBytes(5).toString("hex");
+      db.accounts[id] = { discordName: String(b.discordName || callsign).slice(0, 80),
+        callsign, role: "member", manual: true, createdAt: Date.now() };
+      const rec = recFor(id);
+      if (b.rank !== undefined) {
+        if (need(rankIdx(String(b.rank)) >= 0, 400, "no such rank")) { delete db.accounts[id]; return true; }
+        rec.rank = String(b.rank);
+      }
+      logEntry(rec, actor.name, "note", "Record created manually (pre-Discord import)");
+      deps.persist(); persist("personnel");
+      send(res, 200, { ok: true, profile: profile(id) });
+      return true;
+    }
+
+    /* ── one-file fleet backup (humans with admin only — no secrets inside) ── */
+    if (p === "/api/export" && req.method === "GET" && !actor.bot) {
+      if (need(isAdmin(actor), 403, "management access required")) return true;
+      const accounts = {};
+      for (const [id, acc] of Object.entries(db.accounts)) accounts[id] = {
+        discordName: acc.discordName, callsign: acc.callsign || null, role: acc.role,
+        manual: acc.manual === true, itAdmin: acc.itAdmin === true,
+        scopes: Array.isArray(acc.scopes) ? acc.scopes : [],
+        createdAt: acc.createdAt || null, lastSeen: acc.lastSeen || null };
+      send(res, 200, { ok: true, exportedAt: Date.now(), accounts,
+        personnel: pdb.personnel, catalog: pdb.catalog, coc: pdb.coc,
+        availability: pdb.availability, events: pdb.events, loa: pdb.loa,
+        roster: pdb.roster, squadrons: pdb.squadrons });
+      return true;
+    }
+
     /* ── SSO grant: the portal asks for a launch code, hands it to the app ── */
     if (p === "/api/sso/grant" && req.method === "POST" && !actor.bot) {
       const b = await body(req);
@@ -590,7 +860,7 @@ module.exports = function createPortalApi(deps) {
 
     /* ── activity feed: the bot's window into the service record ── */
     if (p === "/api/activity" && req.method === "GET") {
-      if (need(actor.command, 403, "COMMAND role required")) return true;
+      if (need(isAdmin(actor), 403, "management access required")) return true;
       const since = Number(url.searchParams.get("since") || 0);
       const feed = [];
       for (const [id, rec] of Object.entries(pdb.personnel)) {
@@ -606,7 +876,11 @@ module.exports = function createPortalApi(deps) {
       return true;
     }
 
-    return false;
+    /* the portal namespace is OURS: an unmatched path here is a 404, never a
+       fall-through into the host's legacy routing (whose COMMAND gate would
+       turn a removed portal route into a misleading 403) */
+    send(res, 404, { ok: false, error: "no such route" });
+    return true;
   }
 
   return { handle, cors };

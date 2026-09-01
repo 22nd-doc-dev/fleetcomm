@@ -165,39 +165,145 @@ const pause = ms => new Promise(r => setTimeout(r, ms));
   ok(r.body.profile.record.filter(e => e.kind === "loa").length === 2,
     "both leave transitions land on the service record");
 
-  /* ── crew roster: claimable ship stations ── */
+  /* ── crew roster v2: assignment-only, multi-billet, richer ships ── */
   r = await api("GET", "/api/roster", null, oak);
   const ships = r.body.ships;
-  ok(ships.length === 2 && ships[0].hull === "FF-217" &&
+  ok(ships.length === 2 && ships[0].hullId === "FF-217" && ships[0].status === "active" &&
+     ships[0].classification === "Frigate" &&
      ships.flatMap(s => s.departments).flatMap(d => d.stations).length >= 15,
-     "the ships of the line seed with their stations");
+     "the ships of the line seed with stations, hull ids, class and status");
   const helm = ships[0].departments[0].stations.find(s => s.title === "Helmsman");
-  r = await api("POST", "/api/roster/claim", { stationId: helm.id }, oak);
-  ok(r.status === 200, "a member claims a vacant station");
-  r = await api("POST", "/api/roster/claim", { stationId: helm.id }, doc);
-  ok(r.status === 400, "a crewed station cannot be claimed");
   const ops = ships[0].departments[0].stations.find(s => s.title === "Operations Officer");
-  r = await api("POST", "/api/roster/claim", { stationId: ops.id }, oak);
-  ok(r.status === 400 && /already hold a station/.test(r.body.error), "one station per member per ship");
-  const beowulfHelm = ships[1].departments[0].stations.find(s => s.title === "Helmsman");
-  r = await api("POST", "/api/roster/claim", { stationId: beowulfHelm.id }, oak);
-  ok(r.status === 200, "…but serving on a second ship is allowed");
-  r = await api("POST", "/api/roster/release", { stationId: helm.id }, doc);
-  ok(r.status === 200, "COMMAND can release anyone's station");
-  r = await api("POST", "/api/roster/release", { stationId: beowulfHelm.id }, oak);
-  ok(r.status === 200, "a holder stands down their own station");
+  r = await api("POST", "/api/roster/claim", { stationId: helm.id }, oak);
+  ok(r.status === 404, "the claim door is gone — billets are assigned, not taken");
   r = await api("POST", "/api/roster/assign", { stationId: helm.id, memberId: "2002" }, doc);
-  ok(r.status === 200, "COMMAND assigns a station directly");
+  r = await api("POST", "/api/roster/assign", { stationId: ops.id, memberId: "2002" }, doc);
+  ok(r.status === 200, "one member may hold several stations on one ship");
+  r = await api("POST", "/api/roster/assign", { stationId: helm.id, memberId: "1001" }, doc);
+  r = await api("GET", "/api/personnel/2002", null, doc);
+  ok(r.body.profile.record.some(e => /Relieved of station: Helmsman/.test(e.text)) &&
+     r.body.profile.record.some(e => /Assigned to station: Helmsman/.test(e.text)),
+    "assignment and relief both land on the service record");
   r = await api("POST", "/api/roster/assign", { stationId: helm.id, memberId: "9999" }, doc);
   ok(r.status === 404, "assigning an unknown member is refused");
+  r = await api("POST", "/api/roster/assign", { stationId: helm.id, memberId: null }, doc);
+  ok(r.status === 200, "a station can be cleared to vacant");
+  r = await api("POST", "/api/roster/ship", { id: "beowulf", status: "refit", notes: "Yard period, three weeks" }, doc);
+  ok(r.status === 200 && r.body.ship.status === "refit", "ship properties are individually editable");
+  r = await api("POST", "/api/roster/ship", { id: "beowulf", status: "sunk" }, doc);
+  ok(r.status === 400, "an unknown ship status is refused");
+  r = await api("POST", "/api/roster/ship", { id: "beowulf", status: "active" }, oak);
+  ok(r.status === 403, "ship edits need roster authority");
   r = await api("POST", "/api/roster/plan", { ships: [{ id: "x", name: "X", departments: [
     { name: "A", stations: [{ id: "dup", title: "T1" }, { id: "dup", title: "T2" }] }] }] }, doc);
   ok(r.status === 400 && /duplicate station/.test(r.body.error), "a plan with duplicate station ids is refused");
-  r = await api("POST", "/api/roster/plan", { ships: [] }, oak);
-  ok(r.status === 403, "members cannot replace the plan");
+
+  /* ── squadrons ── */
+  r = await api("GET", "/api/squadrons", null, oak);
+  ok(r.body.squadrons.length === 6 && r.body.squadrons.some(s => s.id === "logron-88"),
+    "the six squadrons seed");
+  r = await api("POST", "/api/squadrons/logron-88/assign", { memberId: "2002", billet: "Quartermaster" }, doc);
+  ok(r.status === 200 && r.body.squadron.members.length === 1, "an admin assigns a squadron billet");
   r = await api("GET", "/api/personnel/2002", null, doc);
-  ok(r.body.profile.record.some(e => e.kind === "station" && /Took station: Helmsman, UEES Tiber/.test(e.text)),
-    "station claims land on the service record");
+  ok(r.body.profile.record.some(e => /Assigned to LOGRON-88 — Quartermaster/.test(e.text)),
+    "squadron assignment lands on the service record");
+  r = await api("POST", "/api/squadrons/logron-88/assign", { memberId: "1001", billet: "CO" }, oak);
+  ok(r.status === 403, "members without scope cannot assign squadron billets");
+  r = await api("POST", "/api/squadrons/plan", { squadrons: [{ id: "a", name: "A" }, { id: "a", name: "B" }] }, doc);
+  ok(r.status === 400 && /duplicate squadron/.test(r.body.error), "duplicate squadron ids are refused");
+
+  /* ── scoped authority ── */
+  r = await api("POST", "/api/personnel/2002/scopes",
+    { scopes: ["ship:beowulf", "squadron:logron-88", "rate:hospital-corpsman"] }, doc);
+  ok(r.status === 200 && r.body.profile.scopes.length === 3, "an admin grants scoped authority");
+  r = await api("POST", "/api/personnel/2002/scopes", { scopes: ["ship:titanic"] }, doc);
+  ok(r.status === 400, "a scope naming nothing that exists is refused");
+  r = await api("GET", "/api/me/permissions", null, oak);
+  ok(r.body.admin === false && r.body.manage.ships.join() === "beowulf" &&
+     r.body.manage.squadrons.join() === "logron-88" && r.body.canApprove === true,
+    "the permissions blob mirrors the scopes");
+  const bHelm = ships[1].departments[0].stations.find(s => s.title === "Helmsman");
+  r = await api("POST", "/api/roster/assign", { stationId: bHelm.id, memberId: "2002" }, oak);
+  ok(r.status === 200, "a ship scope grants assignment on that ship");
+  r = await api("POST", "/api/roster/assign", { stationId: ops.id, memberId: "2002" }, oak);
+  ok(r.status === 403, "…and nothing on other ships");
+  r = await api("POST", "/api/squadrons/logron-88", { role: "Tonnage talks" }, oak);
+  ok(r.status === 200, "a squadron scope edits that squadron's properties");
+  r = await api("POST", "/api/personnel/bulk", { ids: ["1001"], action: { type: "cert", certId: "hospital-corpsman" } }, oak);
+  ok(r.status === 200 && r.body.results["1001"].ok, "a rate scope grants certifying exactly that rating");
+  r = await api("POST", "/api/personnel/bulk", { ids: ["1001"], action: { type: "award", awardId: "lifesaver-cross" } }, oak);
+  ok(r.status === 403, "…and no other bulk power");
+
+  /* ── self-submitted record entries + approval ── */
+  let mal = await api("POST", "/api/login", { mockId: "3003", mockName: "Mallory" });
+  await api("POST", "/api/accounts/3003/role", { role: "member" }, doc);
+  mal = (await api("POST", "/api/login", { mockId: "3003", mockName: "Mallory" })).body.token;
+  r = await api("POST", "/api/personnel/me/record", { kind: "ops", text: "Flew lead on the Nyx convoy escort" }, mal);
+  const entryId = r.body.entry.id;
+  ok(r.status === 200 && r.body.entry.state === "pending", "a member submits their own record entry");
+  r = await api("GET", "/api/personnel/me", null, mal);
+  ok(r.body.profile.record.some(e => e.id === entryId && e.state === "pending"), "the owner sees their pending entry");
+  r = await api("GET", "/api/personnel/3003", null, oak);
+  ok(!r.body.profile.record.some(e => e.id === entryId),
+    "a bystander does not see pending entries");
+  r = await api("POST", "/api/record/" + entryId + "/approve", {}, mal);
+  ok(r.status === 403, "nobody approves their own entry");
+  r = await api("GET", "/api/record/pending", null, doc);
+  ok(r.body.queue.some(q => q.entry.id === entryId), "approvers see the pending queue");
+  r = await api("POST", "/api/record/" + entryId + "/approve", {}, doc);
+  ok(r.status === 200 && r.body.entry.state === "approved" && r.body.entry.approvedBy,
+    "approval publishes the entry with the approver's name");
+  r = await api("GET", "/api/personnel/3003", null, oak);
+  ok(r.body.profile.record.some(e => e.id === entryId && e.state === "approved"),
+    "an approved entry is public");
+  r = await api("POST", "/api/personnel/me/record", { text: "I single-handedly won the war" }, mal);
+  const rejId = r.body.entry.id;
+  await api("POST", "/api/record/" + rejId + "/reject", { note: "See me" }, doc);
+  r = await api("GET", "/api/personnel/3003", null, oak);
+  ok(!r.body.profile.record.some(e => e.id === rejId), "a rejected entry is owner-only");
+  r = await api("GET", "/api/personnel/me", null, mal);
+  ok(r.body.profile.record.some(e => e.id === rejId && e.state === "rejected" && e.note === "See me"),
+    "the owner sees the rejection and its note");
+  /* scoped approval: oak manages beowulf; put mallory aboard, oak approves */
+  await api("POST", "/api/roster/assign", { stationId: bHelm.id, memberId: "3003" }, doc);
+  r = await api("POST", "/api/personnel/me/record", { kind: "training", text: "Helm quals complete" }, mal);
+  const scopedId = r.body.entry.id;
+  r = await api("GET", "/api/record/pending", null, oak);
+  ok(r.body.queue.some(q => q.entry.id === scopedId), "a ship scope surfaces its crew's pending entries");
+  r = await api("POST", "/api/record/" + scopedId + "/approve", {}, oak);
+  ok(r.status === 200, "a scoped manager approves their crew");
+
+  /* ── manual members (pre-Discord import) ── */
+  r = await api("POST", "/api/personnel/add", { callsign: "OLD SALT", rank: "CPO" }, doc);
+  const manualId = r.body.profile.discordId;
+  ok(r.status === 200 && /^m-/.test(manualId) && r.body.profile.manual === true &&
+     r.body.profile.rank.abbr === "CPO", "a manual member record is created with rank");
+  r = await api("GET", "/api/personnel/" + manualId, null, oak);
+  ok(r.status === 200 && r.body.profile.callsign === "OLD SALT", "manual records read like any profile");
+  r = await api("POST", "/api/personnel/add", { callsign: "X", rank: "NOPE" }, doc);
+  ok(r.status === 400, "a manual add with an unknown rank is refused whole");
+  r = await api("POST", "/api/personnel/add", { callsign: "Y" }, mal);
+  ok(r.status === 403, "manual adds need management access");
+
+  /* ── itAdmin + export ── */
+  r = await api("POST", "/api/personnel/2002/scopes", { itAdmin: true }, doc);
+  ok(r.status === 200 && r.body.profile.itAdmin === true, "an admin grants the itAdmin flag");
+  r = await api("POST", "/api/personnel/add", { callsign: "VIA-IT" }, oak);
+  ok(r.status === 200, "itAdmin carries full management access");
+  r = await api("POST", "/api/personnel/2002/scopes", { itAdmin: false }, oak);
+  ok(r.status === 200, "itAdmin can be revoked while COMMAND remains");
+  r = await api("GET", "/api/export", null, doc);
+  ok(r.status === 200 && r.body.roster.ships.length === 2 && r.body.squadrons.squadrons.length === 6 &&
+     r.body.accounts["1001"] && !JSON.stringify(r.body.accounts).includes("relayToken"),
+    "the export carries the whole fleet state and no secrets");
+  r = await api("GET", "/api/export", null, mal);
+  ok(r.status === 403, "the export is admin-only");
+
+  /* ── catalog apps carry extra fields through untouched ── */
+  await api("POST", "/api/catalog", { apps: [{ id: "fleetcomm", name: "FleetComm", url: "", hidden: true, order: 2 }] }, doc);
+  r = await api("GET", "/api/catalog", null, oak);
+  ok(r.body.catalog.apps[0].hidden === true && r.body.catalog.apps[0].order === 2,
+    "unknown app fields survive a catalog write");
 
   /* ── SSO: one-time launch codes become real sessions for the 22nd's apps ── */
   r = await api("POST", "/api/sso/grant", { app: "corpsman" }, oak);
