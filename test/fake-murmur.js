@@ -64,6 +64,22 @@ function banCheck() {                       /* true = drop this connection */
   return false;
 }
 
+/* ── optional demo crew (FAKEMURMUR_CREW=1) ──
+ * Phantom operators standing watch across the org tree, so screenshots and
+ * demo runs show a living deck instead of one lonely rig. Sessions live in
+ * a high range that ++session can never reach; announced to every client at
+ * Authenticate, so rosters, ATC and chat-name resolution all see them. */
+const CREW = process.env.FAKEMURMUR_CREW ? [
+  ["TIBER ACTUAL", "UEES TIBER"], ["BOSUN", "BRIDGE"], ["HELM", "BRIDGE"],
+  ["WRENCH 2", "ENGINEERING"], ["DECKHAND 5", "FLIGHT DECK"],
+  ["REAPER LEAD", "ALPHA SQDN"], ["REAPER 2", "ALPHA SQDN"],
+  ["SAWBONES", "MEDICAL"], ["QUARTERMASTER", "LOGISTICS"],
+  ["GUNNY", "51ST SHOCK REGIMENT"], ["CAG", "COMMAND NET"],
+].map(([name, chan], i) => {
+  const c = channels.find(x => x.name === chan);
+  return c ? { session: 9000 + i, name, channelId: c.id } : null;
+}).filter(Boolean) : [];
+
 let session = 0;
 const clients = new Set();
 (async () => {
@@ -93,6 +109,7 @@ const clients = new Set();
             for (const c of channels) s.write(frame(MSG.ChannelState, "ChannelState",
               Object.assign({ channelId: c.id, name: c.name }, c.parent == null ? {} : { parent: c.parent })));
             for (const c of clients) s.write(frame(MSG.UserState, "UserState", { session: c.session, name: c.name, channelId: 0 }));
+            for (const p of CREW) s.write(frame(MSG.UserState, "UserState", p));
             s.write(frame(MSG.ServerSync, "ServerSync", { session: me.session, welcomeText: "fake" }));
             if (muteAfter > 0) setTimeout(() => { me.muted = true; }, muteAfter);
           } else if (type === MSG.Ping) {
@@ -111,6 +128,19 @@ const clients = new Set();
   });
   /* the ban drops raw TCP before the TLS handshake, exactly like murmur */
   server.on("connection", (raw) => { if (banCheck()) raw.destroy(); });
+  /* crew radio traffic, timed to land after the demo rig has staged the ship
+     (rig stages at ~24s, main screenshot fires at ~28s) */
+  if (CREW.length) {
+    const tiber = channels.find(x => x.name === "UEES TIBER");
+    const say = (who, text) => {
+      const p = CREW.find(c => c.name === who);
+      if (!p || !tiber) return;
+      for (const c of clients) c.s.write(frame(MSG.TextMessage, "TextMessage",
+        { actor: p.session, channelId: [tiber.id], message: text }));
+    };
+    setTimeout(() => say("TIBER ACTUAL", "All stations TIBER, radio check by division, over."), 25000);
+    setTimeout(() => say("BOSUN", "Bridge copies, 5 by 5."), 26500);
+  }
   /* FAKEMURMUR_PORT=0 asks the OS for a free port — the ready line always
      names the real one, so parallel test runs never fight over a socket */
   const port = Number(process.env.FAKEMURMUR_PORT || 64738);

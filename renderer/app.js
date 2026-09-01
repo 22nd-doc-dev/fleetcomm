@@ -2236,11 +2236,17 @@ $("netAccess").addEventListener("change", async (e) => {
 
 /* headless CI hook */
 if (bridge.autotestHost) {
+  /* FLEETCOMM_DEMO swaps rig-speak for in-character strings in screenshot
+     runs; every check reads the same variables, so nothing is exempted */
+  const DEMO = !!bridge.demoMode;
+  const DEMO_CS = DEMO ? "TIBER DOC 1" : "AUTOTEST-RIG";
+  const DEMO_CHECKIN = DEMO ? "radio check, all stations report in" : "autotest checking in";
+  const DEMO_BOARD = DEMO ? "TIBER copies — nominal on all nets, over" : "board chat check";
   setTimeout(() => {
     store.set("hostOverride", bridge.autotestHost);
     $("hostrow").style.display = "flex";
     $("hostIn").value = bridge.autotestHost;
-    $("csIn").value = "AUTOTEST-RIG";
+    $("csIn").value = DEMO_CS;
     $("connectBtn").click();
     setTimeout(async () => {
       /* nobody is auto-tuned any more, so the rig tunes a few itself before the
@@ -2254,7 +2260,7 @@ if (bridge.autotestHost) {
       const tuned = nets.filter(n => n.tuned);
       selectedI = nets.findIndex(n => n.tuned);
       console.log("[AUTOTEST] connected=" + connected + " tuned=" + tuned.length + " selected=" + (sel() ? sel().cfg.name : "-"));
-      if (tuned.length) { $("chatIn").disabled = false; $("chatIn").value = "autotest checking in"; sendChat(); }
+      if (tuned.length) { $("chatIn").disabled = false; $("chatIn").value = DEMO_CHECKIN; sendChat(); }
       const view = await ipcRenderer.invoke("atc-view");
       console.log("[AUTOTEST] atc-channels=" + view.length + " chatlen=" + (sel() ? sel().chat.length : 0));
       ipcRenderer.send("ov-toggle");
@@ -2526,9 +2532,9 @@ if (bridge.autotestHost) {
     $("chatFeed2").style.height = "200px"; store.set("commsChatH", 200);
     L("comms-chat-resizable", getComputedStyle($("chatFeed2")).height === "200px");
     if (sel() && sel().tuned && sel().mon) {
-      $("chatIn2").disabled = false; $("chatIn2").value = "board chat check"; sendChatFrom($("chatIn2"));
-      L("comms-chat-mirrors", $("chatFeed2").textContent.indexOf("board chat check") >= 0 &&
-        $("chatFeed").textContent.indexOf("board chat check") >= 0);
+      $("chatIn2").disabled = false; $("chatIn2").value = DEMO_BOARD; sendChatFrom($("chatIn2"));
+      L("comms-chat-mirrors", $("chatFeed2").textContent.indexOf(DEMO_BOARD) >= 0 &&
+        $("chatFeed").textContent.indexOf(DEMO_BOARD) >= 0);
     } else L("comms-chat-mirrors", "skip — no tuned net");
     const sbCmdWas = cmdToken;
     cmdToken = "autotest-token"; renderSoundLib();

@@ -38,6 +38,9 @@ contextBridge.exposeInMainWorld("fleetcomm", {
   config,
   version,
   autotestHost: process.env.FLEETCOMM_AUTOTEST || "",
+  /* demo dressing for screenshot runs: in-character callsign and traffic
+     instead of rig-speak. Only changes strings, never behavior. */
+  demoMode: !!process.env.FLEETCOMM_DEMO,
   ipc: {
     send(channel, data) {
       if (!SEND.has(channel)) throw new Error("blocked IPC channel: " + channel);
