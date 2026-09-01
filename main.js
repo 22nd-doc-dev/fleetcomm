@@ -185,7 +185,10 @@ ipcMain.handle("check-updates", () => checkUpdates());
 ipcMain.handle("autotest-shot", async (e, suffix) => {
   if (!process.env.FLEETCOMM_AUTOTEST || !process.env.FLEETCOMM_SHOT || !win) return { ok: false };
   try {
-    const img = await win.webContents.capturePage();
+    /* "overlay" captures the in-game overlay window — its pixels matter as
+       much as the board's and no other check ever looks at them */
+    const src = suffix === "overlay" && overlay && !overlay.isDestroyed() ? overlay : win;
+    const img = await src.webContents.capturePage();
     const p = process.env.FLEETCOMM_SHOT.replace(/\.png$/i, "") + "-" +
       String(suffix).replace(/[^a-z0-9-]/gi, "").slice(0, 24) + ".png";
     fs.writeFileSync(p, img.toPNG());
