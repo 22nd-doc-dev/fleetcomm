@@ -66,8 +66,11 @@ function frames(n) {
   for (const f of frames(8)) { elsewhere.txFrame(oIdx, f, false, false); await wait(20); }
   await wait(500);
 
-  const fromBridge = heard.filter(c => c === "BRIDGE").length;
-  const fromDeck = heard.filter(c => c === "DECK").length;
+  /* count by the CONFIG names so a channel-plan rename can never silently
+     zero these again (the 2026-09-01 lesson: audio flowed as TIBER BRIDGE
+     while this counted a name that no longer existed) */
+  const fromBridge = heard.filter(c => c === bridge.name).length;
+  const fromDeck = heard.filter(c => c === deck.name).length;
   const fromOutside = heard.filter(c => c === outside.name).length;
   console.log("2) LSN ALL heard → BRIDGE:" + fromBridge + " DECK:" + fromDeck + " outside-the-ship:" + fromOutside);
   assert(fromBridge > 0, "LSN ALL must hear BRIDGE without tuning it");
