@@ -10,4 +10,5 @@ dist/
 .DS_Store
 fc_parts*/
 FleetComm-v*.zip
+fleetcomm-transfer/
 .fleetcomm-secrets.txt
