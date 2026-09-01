@@ -15,38 +15,10 @@
       "monitor": true
     },
     {
-      "name": "MEDICAL",
-      "freq": "282.800",
+      "name": "EMERGENCY NET",
+      "freq": "121.500",
       "enc": false,
       "defaultKey": "F2",
-      "monitor": true
-    },
-    {
-      "name": "ALPHA SQDN",
-      "freq": "243.400",
-      "enc": false,
-      "defaultKey": "F3",
-      "monitor": true
-    },
-    {
-      "name": "BRAVO SQDN",
-      "freq": "251.200",
-      "enc": false,
-      "defaultKey": "",
-      "monitor": false
-    },
-    {
-      "name": "ATC / DECK",
-      "freq": "118.250",
-      "enc": false,
-      "defaultKey": "",
-      "monitor": false
-    },
-    {
-      "name": "LOGISTICS",
-      "freq": "134.100",
-      "enc": false,
-      "defaultKey": "",
       "monitor": true
     },
     {
@@ -55,47 +27,16 @@
       "enc": false,
       "defaultKey": "",
       "monitor": false,
+      "ship": true,
       "subnets": [
-        {
-          "name": "BRIDGE",
-          "freq": "265.100",
-          "enc": false
-        },
-        {
-          "name": "FLIGHT DECK",
-          "freq": "265.200",
-          "enc": false
-        },
-        {
-          "name": "ENGINEERING",
-          "freq": "265.300",
-          "enc": false
-        },
-        {
-          "name": "DECK",
-          "freq": "265.400",
-          "enc": false
-        },
-        {
-          "name": "SECURITY",
-          "freq": "265.500",
-          "enc": false
-        }
-      ],
-      "ship": true
-    },
-    {
-      "name": "51ST SHOCK REGIMENT",
-      "freq": "271.000",
-      "enc": false,
-      "defaultKey": "",
-      "monitor": false,
-      "subnets": [
-        {
-          "name": "REAPER 1",
-          "freq": "271.100",
-          "enc": false
-        }
+        { "name": "TIBER BRIDGE", "display": "BRIDGE", "tag": "CMD", "freq": "265.100", "enc": false },
+        { "name": "TIBER TACTICAL", "display": "TACTICAL", "tag": "TAC", "freq": "265.200", "enc": false },
+        { "name": "TIBER DAMAGE CONTROL", "display": "DAMAGE CONTROL", "tag": "DC", "freq": "265.300", "enc": false },
+        { "name": "TIBER SECURITY", "display": "SECURITY", "tag": "SEC", "freq": "265.400", "enc": false },
+        { "name": "TIBER ENGINEERING", "display": "ENGINEERING", "tag": "ENG", "freq": "265.500", "enc": false },
+        { "name": "TIBER MEDICAL", "display": "MEDICAL", "tag": "MED", "freq": "265.600", "enc": false },
+        { "name": "TIBER LOGISTICS", "display": "LOGISTICS", "tag": "LOG", "freq": "265.700", "enc": false },
+        { "name": "TIBER DECK", "display": "DECK", "tag": "ATC", "freq": "265.800", "enc": false }
       ]
     },
     {
@@ -106,22 +47,79 @@
       "monitor": false,
       "ship": true,
       "subnets": [
-        {
-          "name": "MINERVA BRIDGE",
-          "freq": "268.100",
-          "enc": false
-        },
-        {
-          "name": "MINERVA DECK",
-          "freq": "268.200",
-          "enc": false
-        },
-        {
-          "name": "MINERVA ENGINEERING",
-          "freq": "268.300",
-          "enc": false
-        }
+        { "name": "MINERVA BRIDGE", "display": "BRIDGE", "tag": "CMD", "freq": "268.100", "enc": false },
+        { "name": "MINERVA TACTICAL", "display": "TACTICAL", "tag": "TAC", "freq": "268.200", "enc": false },
+        { "name": "MINERVA DAMAGE CONTROL", "display": "DAMAGE CONTROL", "tag": "DC", "freq": "268.300", "enc": false },
+        { "name": "MINERVA SECURITY", "display": "SECURITY", "tag": "SEC", "freq": "268.400", "enc": false },
+        { "name": "MINERVA ENGINEERING", "display": "ENGINEERING", "tag": "ENG", "freq": "268.500", "enc": false },
+        { "name": "MINERVA MEDICAL", "display": "MEDICAL", "tag": "MED", "freq": "268.600", "enc": false },
+        { "name": "MINERVA LOGISTICS", "display": "LOGISTICS", "tag": "LOG", "freq": "268.700", "enc": false },
+        { "name": "MINERVA DECK", "display": "DECK", "tag": "ATC", "freq": "268.800", "enc": false }
       ]
+    },
+    {
+      "name": "UEES OLYMPIA",
+      "freq": "274.000",
+      "enc": false,
+      "defaultKey": "",
+      "monitor": false,
+      "ship": true,
+      "subnets": [
+        { "name": "OLYMPIA BRIDGE", "display": "BRIDGE", "tag": "CMD", "freq": "274.100", "enc": false },
+        { "name": "OLYMPIA TACTICAL", "display": "TACTICAL", "tag": "TAC", "freq": "274.200", "enc": false },
+        { "name": "OLYMPIA DAMAGE CONTROL", "display": "DAMAGE CONTROL", "tag": "DC", "freq": "274.300", "enc": false },
+        { "name": "OLYMPIA SECURITY", "display": "SECURITY", "tag": "SEC", "freq": "274.400", "enc": false },
+        { "name": "OLYMPIA ENGINEERING", "display": "ENGINEERING", "tag": "ENG", "freq": "274.500", "enc": false },
+        { "name": "OLYMPIA MEDICAL", "display": "MEDICAL", "tag": "MED", "freq": "274.600", "enc": false },
+        { "name": "OLYMPIA LOGISTICS", "display": "LOGISTICS", "tag": "LOG", "freq": "274.700", "enc": false }
+      ]
+    },
+    {
+      "name": "UEES WARRIOR",
+      "freq": "277.000",
+      "enc": false,
+      "defaultKey": "",
+      "monitor": false,
+      "ship": true,
+      "subnets": [
+        { "name": "WARRIOR BRIDGE", "display": "BRIDGE", "tag": "CMD", "freq": "277.100", "enc": false },
+        { "name": "WARRIOR TACTICAL", "display": "TACTICAL", "tag": "TAC", "freq": "277.200", "enc": false },
+        { "name": "WARRIOR DAMAGE CONTROL", "display": "DAMAGE CONTROL", "tag": "DC", "freq": "277.300", "enc": false },
+        { "name": "WARRIOR SECURITY", "display": "SECURITY", "tag": "SEC", "freq": "277.400", "enc": false },
+        { "name": "WARRIOR ENGINEERING", "display": "ENGINEERING", "tag": "ENG", "freq": "277.500", "enc": false },
+        { "name": "WARRIOR MEDICAL", "display": "MEDICAL", "tag": "MED", "freq": "277.600", "enc": false },
+        { "name": "WARRIOR LOGISTICS", "display": "LOGISTICS", "tag": "LOG", "freq": "277.700", "enc": false },
+        { "name": "WARRIOR DECK", "display": "DECK", "tag": "ATC", "freq": "277.800", "enc": false }
+      ]
+    },
+    {
+      "name": "51ST SKR MARINES",
+      "freq": "300.000",
+      "enc": false,
+      "defaultKey": "",
+      "monitor": false,
+      "subnets": [
+        { "name": "REAPER-1", "freq": "300.100", "enc": false },
+        { "name": "REAPER-2", "freq": "300.200", "enc": false }
+      ]
+    },
+    {
+      "name": "IF-55 WARDOGS",
+      "freq": "310.000",
+      "enc": false,
+      "defaultKey": "",
+      "monitor": false,
+      "subnets": [
+        { "name": "ALPHA SQUADRON", "freq": "310.100", "enc": false },
+        { "name": "BRAVO SQUADRON", "freq": "310.200", "enc": false }
+      ]
+    },
+    {
+      "name": "MG-212",
+      "freq": "320.000",
+      "enc": false,
+      "defaultKey": "",
+      "monitor": false
     }
   ],
   "updates": {

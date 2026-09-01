@@ -256,6 +256,14 @@
   .nestcount.live{color:var(--grn);border-color:var(--grn)}
   .shipbadge{font-family:var(--font-mono);font-size:.64rem;font-weight:500;letter-spacing:.14em;
     color:var(--holo);border:1px solid color-mix(in srgb, var(--holo) 55%, transparent);padding:1px 6px}
+  /* the channel plan's bracket-tags, worn as badges. The one FILLED gold
+     element on the board — they're meant to pop */
+  .tagbadge{flex:0 0 auto;font-family:var(--font-mono);font-size:.64rem;font-weight:600;
+    letter-spacing:.1em;background:var(--holo);color:#16222C;padding:1px 6px}
+  /* truncated board: tagged nets stand on their badge (full name stays in the
+     row tooltip); untagged nets always keep their name */
+  [data-nettrunc] .net.hastag .nt b.nm{display:none}
+  [data-nettrunc] .net.hastag .nmwrap{min-width:0;flex:0 1 auto}
   /* selection — the cursor is gold, with registration ticks at the corners:
      the single most identifying card treatment in the language */
   .net.sel{border-color:var(--holo);background:var(--holo-tint);
@@ -955,6 +963,7 @@
       <div class="miniheading">DISPLAY</div>
       <div class="togrow"><div class="tl"><b>Prose typeface</b><span>The manual's serif, or a plain system face if serif reads slower for you — data and labels stay mono either way</span></div>
         <select class="orgsel" id="sfontsel"><option value="legible">Manual serif</option><option value="system">System sans</option></select></div>
+      <div class="togrow"><div class="tl"><b>Truncate net names</b><span>Tagged ship nets show just their tag, for a narrow channel column — full names are the default; hover a row for the complete name</span></div><button class="switch" id="snametrunc"></button></div>
       <div class="togrow"><div class="tl"><b>Text size</b><span>Scales the whole board — Ctrl + and Ctrl - also work</span></div>
         <div id="scalerow"><button class="btn" id="scaledn" title="Smaller">A−</button>
           <span class="num" id="scaleval">100%</span>

@@ -70,11 +70,11 @@ function banCheck() {                       /* true = drop this connection */
  * a high range that ++session can never reach; announced to every client at
  * Authenticate, so rosters, ATC and chat-name resolution all see them. */
 const CREW = process.env.FAKEMURMUR_CREW ? [
-  ["TIBER ACTUAL", "UEES TIBER"], ["BOSUN", "BRIDGE"], ["HELM", "BRIDGE"],
-  ["WRENCH 2", "ENGINEERING"], ["DECKHAND 5", "FLIGHT DECK"],
-  ["REAPER LEAD", "ALPHA SQDN"], ["REAPER 2", "ALPHA SQDN"],
-  ["SAWBONES", "MEDICAL"], ["QUARTERMASTER", "LOGISTICS"],
-  ["GUNNY", "51ST SHOCK REGIMENT"], ["CAG", "COMMAND NET"],
+  ["TIBER ACTUAL", "UEES TIBER"], ["BOSUN", "TIBER BRIDGE"], ["HELM", "TIBER BRIDGE"],
+  ["WRENCH 2", "TIBER ENGINEERING"], ["DECKHAND 5", "TIBER DECK"],
+  ["REAPER LEAD", "REAPER-1"], ["REAPER 2", "REAPER-2"],
+  ["SAWBONES", "TIBER MEDICAL"], ["QUARTERMASTER", "TIBER LOGISTICS"],
+  ["GUNNY", "51ST SKR MARINES"], ["CAG", "COMMAND NET"],
 ].map(([name, chan], i) => {
   const c = channels.find(x => x.name === chan);
   return c ? { session: 9000 + i, name, channelId: c.id } : null;

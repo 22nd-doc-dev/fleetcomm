@@ -18,9 +18,9 @@ const cfg = require("../config/22nd-package.json");
 const HOST = "127.0.0.1", PORT = 64738;
 const tiber = cfg.nets.find(n => n.name === "UEES TIBER");
 const subnets = tiber.subnets.map(s => s.name);
-const bridge = tiber.subnets.find(s => s.name === "BRIDGE");
-const deck = tiber.subnets.find(s => s.name === "DECK");
-const outside = cfg.nets.find(n => n.name === "MEDICAL");
+const bridge = tiber.subnets.find(s => s.name === "TIBER BRIDGE");
+const deck = tiber.subnets.find(s => s.name === "TIBER DECK");
+const outside = cfg.nets.find(n => n.name === "EMERGENCY NET");
 const wait = (ms) => new Promise(r => setTimeout(r, ms));
 
 function frames(n) {

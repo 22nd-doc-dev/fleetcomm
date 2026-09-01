@@ -86,6 +86,15 @@ function applyScale() {
   store.set("uiScale", uiScale);
 }
 function bumpScale(d) { uiScale = Math.round((uiScale + d) * 20) / 20; applyScale(); }
+/* tagged nets can drop their name and stand on the badge alone — for a narrow
+   channel column. Full names are the default; the truncated board keeps the
+   full wire name in each row's tooltip. */
+let nameTrunc = store.get("nameTrunc", false);
+function applyNameTrunc() {
+  document.documentElement.toggleAttribute("data-nettrunc", !!nameTrunc);
+  const el = $("snametrunc"); if (el) el.classList.toggle("on", !!nameTrunc);
+  store.set("nameTrunc", nameTrunc);
+}
 let myCallsigns = store.get("callsigns", []);
 let callsign = store.get("callsign", "");
 let cmdToken = store.get("cmdToken", "");
@@ -778,7 +787,7 @@ function renderNets() {
     const anyKidTuned = kids.some(k => k.tuned);
     const d = document.createElement("div");
     d.style.setProperty("--lvl", row.depth);
-    d.className = "net" + (row.depth ? " sub" : "") + (par ? " parent" : "") +
+    d.className = "net" + (n.cfg.tag ? " hastag" : "") + (row.depth ? " sub" : "") + (par ? " parent" : "") +
       (par && anyKidTuned ? " hasnest" : "") + (par && n.bcast ? " bcast" : "") +
       (i === selectedI ? " sel" : "") + (n.tuned ? "" : " untuned") +
       (n.tx ? " tx-live" : (n.speaking.size ? " rx-live" : ""));
@@ -795,7 +804,11 @@ function renderNets() {
     let h = '<div class="nt" data-sel>' +
       (par ? '<button class="chev" data-chev title="collapse / expand nest">' + (collapsed[n.cfg.name] ? "▸" : "▾") + '</button>' : "") +
       '<span class="grip" data-grip title="Drag to reorder">⠿</span>' +
-      '<span class="nmwrap" title="' + escAttr(n.cfg.name) + '"><b class="nm">' + esc(n.cfg.name) +
+      /* the bracket-tag from the channel plan, worn as a badge; the row title
+         keeps the full wire name so truncated boards still tell you where
+         you are on hover */
+      (n.cfg.tag ? '<span class="tagbadge">' + esc(n.cfg.tag) + "</span>" : "") +
+      '<span class="nmwrap" title="' + escAttr(n.cfg.name) + '"><b class="nm">' + esc(n.cfg.display || n.cfg.name) +
       (n.cfg.enc ? ' <span class="enc">⚿</span>' : "") + '</b>' +
       '<span class="fq num">' + esc(n.cfg.freq) + '</span></span>' +
       /* present on every row, shown by CSS only while the row is tx-live —
@@ -1072,7 +1085,8 @@ function sendOv() {
     const now = Date.now();
     let who = null;
     for (const [sess, until] of n.speaking) if (until > now) { who = n.roster.get(sess) || "?"; break; }
-    return { name: n.cfg.name, freq: n.cfg.freq, who, tx: n.tx, active: nets[selectedI] === n, mon: n.mon, me: callsign };
+    return { name: (n.cfg.tag ? n.cfg.tag + " · " : "") + (n.cfg.display || n.cfg.name),
+      freq: n.cfg.freq, who, tx: n.tx, active: nets[selectedI] === n, mon: n.mon, me: callsign };
   }));
 }
 
@@ -2072,6 +2086,7 @@ $("acctEpReset").addEventListener("click", async function () {
   toast("Back to the address this build shipped with.");
 });
 $("sfontsel").addEventListener("change", function () { uiFont = this.value; applyFont(); });
+$("snametrunc").addEventListener("click", () => { nameTrunc = !nameTrunc; applyNameTrunc(); });
 $("scaleup").addEventListener("click", () => bumpScale(0.1));
 $("scaledn").addEventListener("click", () => bumpScale(-0.1));
 $("scalereset").addEventListener("click", () => { uiScale = 1; applyScale(); });
@@ -2328,7 +2343,7 @@ try {
 $("sfx").classList.toggle("on", fx);
 $("sautoupd").classList.toggle("on", autoUpdate);
 renderFxDial();
-applyFont(); applyScale(); applyTheme(); refreshAcctEp(); listAudioDevices(); renderGate(); renderCsList(); renderMasterBinds(); renderMic(); renderNets(); refreshSounds();
+applyFont(); applyScale(); applyNameTrunc(); applyTheme(); refreshAcctEp(); listAudioDevices(); renderGate(); renderCsList(); renderMasterBinds(); renderMic(); renderNets(); refreshSounds();
 $("startupFail").style.display = "none";
 $("signDiscord").style.display = discordMode ? "block" : "none";
 $("signLegacy").style.display = discordMode ? "none" : "block";
@@ -2933,7 +2948,9 @@ if (bridge.autotestHost) {
     })());
     L("soundboard-always-shipwide", /shipwide\s*\|\|/.test(String(playClipOnNet)));
     {
-      const n = nets.find(x => !x.tuned) || nets[0];
+      /* a ship row shows group controls, never the denied banner — stage the
+         denial on a plain net (the old channel plan handed us one by luck) */
+      const n = nets.find(x => !x.tuned && !x.cfg.ship) || nets[0];
       const was = n.denied;
       n.denied = "you don't have access to " + n.cfg.name; renderNets();
       const card = netlist.querySelector('[data-i="' + nets.indexOf(n) + '"]');
@@ -3178,6 +3195,25 @@ if (bridge.autotestHost) {
     const ds = document.getElementById("docstrip");
     L("docstrip-overflow-at-720", Math.max(0, ds.scrollWidth - ds.clientWidth));
     document.body.style.width = "";
+
+    /* the channel plan's tag badges, and the truncate option they enable */
+    L("tag-badges-rendered", document.querySelectorAll("#netlist .tagbadge").length >= 8);
+    const taggedCard = netlist.querySelector(".net.hastag");
+    const taggedNet = taggedCard && nets[+taggedCard.dataset.i];
+    L("tag-display-name", taggedCard &&
+      taggedCard.querySelector("b.nm").textContent === (taggedNet.cfg.display || taggedNet.cfg.name) &&
+      taggedCard.querySelector(".nmwrap").title === taggedNet.cfg.name);
+    if (taggedCard) {
+      const nmOf = () => getComputedStyle(netlist.querySelector(".net.hastag b.nm")).display;
+      $("snametrunc").click();
+      L("trunc-hides-tagged-names", nameTrunc === true && nmOf() === "none" && store.get("nameTrunc") === true);
+      L("trunc-spares-untagged", (function () {
+        const plain = netlist.querySelector(".net:not(.hastag) b.nm");
+        return !plain || getComputedStyle(plain).display !== "none";
+      })());
+      $("snametrunc").click();
+      L("trunc-off-restores", nameTrunc === false && nmOf() !== "none");
+    }
 
     /* soundboard: COMMAND-gated, and visible on a ship net */
     const shipIdx = nets.findIndex(n => n.cfg.ship);

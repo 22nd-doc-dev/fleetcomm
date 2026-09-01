@@ -7,8 +7,8 @@ const { RadioStack } = require("../src/radio-stack");
 const cfg = require("../config/22nd-package.json");
 
 const tiber = cfg.nets.find(n => n.name === "UEES TIBER");
-const bridge = tiber.subnets.find(s => s.name === "BRIDGE");
-const deck = tiber.subnets.find(s => s.name === "DECK");
+const bridge = tiber.subnets.find(s => s.name === "TIBER BRIDGE");
+const deck = tiber.subnets.find(s => s.name === "TIBER DECK");
 
 (async () => {
   const capt = new RadioStack({ host: "127.0.0.1", port: 64738, callsign: "CAPT-NEST" });
@@ -19,7 +19,7 @@ const deck = tiber.subnets.find(s => s.name === "DECK");
   const pIdx = await capt.tune(tiber);           // parent
   const bIdx = await onBridge.tune(bridge);      // subnet
   const dIdx = await onDeck.tune(deck);          // subnet
-  const oIdx = await outsider.tune(cfg.nets[1]); // MEDICAL — outside the nest
+  const oIdx = await outsider.tune(cfg.nets[1]); // EMERGENCY NET — outside the nest
   await new Promise(r => setTimeout(r, 400));
 
   assert(capt.armBroadcast(pIdx), "broadcast target armed");
