@@ -479,6 +479,15 @@ const pause = ms => new Promise(r => setTimeout(r, ms));
   r = await api("POST", "/api/accounts/2002/role", { role: "member" }, doc);
   ok(r.status === 200, "the tier steps back down cleanly");
 
+  /* ── the form-up call: sound the reminder now ── */
+  r = await api("POST", "/api/events/" + botEvId + "/remind", {}, oak);
+  ok(r.status === 403, "sounding the reminder is COMMAND's call");
+  r = await api("POST", "/api/events/" + botEvId + "/remind", {}, doc);
+  ok(r.status === 200, "COMMAND sounds the reminder on demand");
+  r = await api("GET", "/api/bot/outbox", null, "Bot bot-secret-test");
+  ok(r.body.jobs.some(j => j.type === "remind-now" && j.eventId === botEvId),
+     "the manual reminder lands in the outbox for the bot");
+
   await stop();
   fs.rmSync(dataDir, { recursive: true, force: true });
   console.log("\n✔ PORTAL API PASS — profiles, bulk actions, CoC, availability, events, SSO and the bot door hold their gates");

@@ -769,6 +769,14 @@ module.exports = function createPortalApi(deps) {
       send(res, 200, { ok: true });
       return true;
     }
+    /* sound the reminder NOW — the form-up call, on top of the scheduled sweep */
+    if ((m = /^\/api\/events\/([a-f0-9]{16})\/remind$/.exec(p)) && req.method === "POST") {
+      if (need(isAdmin(actor), 403, "management access required")) return true;
+      if (need(pdb.events[m[1]], 404, "no such event")) return true;
+      enqueue("remind-now", { eventId: m[1] });
+      send(res, 200, { ok: true });
+      return true;
+    }
     if ((m = /^\/api\/events\/([a-f0-9]{16})\/rsvp$/.exec(p)) && req.method === "POST" && !actor.bot) {
       const b = await body(req);
       if (need(pdb.events[m[1]], 404, "no such event")) return true;

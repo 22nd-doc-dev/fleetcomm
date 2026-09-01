@@ -150,6 +150,7 @@ function eventComponents(eventId) {
       { type: 2, style: 1, label: "View Attending", emoji: { name: "👥" }, custom_id: "view:going:" + eventId },
       { type: 2, style: 1, label: "View Not Attending", emoji: { name: "👥" }, custom_id: "view:no:" + eventId },
       { type: 2, style: 1, label: "View Unsure", emoji: { name: "👥" }, custom_id: "view:maybe:" + eventId },
+      { type: 2, style: 2, label: "Remind", emoji: { name: "🔔" }, custom_id: "remind:now:" + eventId },
     ] },
   ];
 }
@@ -278,6 +279,11 @@ async function handleJob(job) {
       });
     return {};
   }
+  if (job.type === "remind-now") {
+    if (!(await postReminder(job.eventId))) { log("waiting for a reminders channel"); return "wait"; }
+    log("manual reminder sounded for event", job.eventId);
+    return {};
+  }
   if (job.type === "roles") {
     if (!state.cfg.config.syncRoles) return {};
     await syncMemberRoles(job.discordId);
@@ -317,6 +323,19 @@ async function syncMemberRoles(discordId) {
   log("roles synced for", discordId);
 }
 
+/* one reminder, wherever it was asked for */
+async function postReminder(eventId) {
+  const chan = channelFor("reminders");
+  if (!chan) return false;
+  const { event } = await papi("GET", "/api/bot/event/" + eventId);
+  const att = attentionLine(event);
+  await dapi("POST", "/channels/" + chan + "/messages", {
+    content: att.content, allowed_mentions: att.allowed,
+    embeds: [eventEmbed(event)], components: eventComponents(eventId),
+  });
+  return true;
+}
+
 /* ── reminders: ping the tagged squadrons ahead of start ── */
 let reminding = false;
 async function remindSweep() {
@@ -332,14 +351,9 @@ async function remindSweep() {
       for (const h of state.cfg.config.remindHours || []) {
         const tag = "r" + h;
         if ((ev.reminded || {})[tag] || ev.at - now > h * 3600e3) continue;
-        const { event } = await papi("GET", "/api/bot/event/" + ev.id);
-        const att = attentionLine(event);
-        await dapi("POST", "/channels/" + chan + "/messages", {
-          content: att.content, allowed_mentions: att.allowed,
-          embeds: [eventEmbed(event)], components: eventComponents(ev.id),
-        });
+        if (!(await postReminder(ev.id))) continue;
         await papi("POST", "/api/bot/reminded", { eventId: ev.id, tag });
-        log("reminder posted:", event.title, "(" + tag + ")");
+        log("reminder posted:", ev.title, "(" + tag + ")");
       }
     }
   } catch (e) { log("reminder sweep failed:", e.message); }
@@ -404,6 +418,15 @@ async function onInteraction(d) {
       if (d.message && d.message.id && (!event.discordMsg || d.message.id !== event.discordMsg.messageId))
         await dapi("PATCH", "/channels/" + d.channel_id + "/messages/" + d.message.id,
           { embeds: [eventEmbed(event)], components: eventComponents(eventId) }).catch(() => {});
+    } else if (verb === "remind") {
+      let prof = null;
+      try { prof = (await papi("GET", "/api/personnel/" + userId)).profile; } catch (e) {}
+      if (!prof || prof.role !== "command") {
+        await reply("🔔 Sounding the reminder is COMMAND's call.");
+        return;
+      }
+      if (await postReminder(eventId)) await reply("🔔 Reminder sounded — the squadrons are pinged.");
+      else await reply("No reminders channel answers — check the channel names.");
     } else if (verb === "view") {
       const { event } = await papi("GET", "/api/bot/event/" + eventId);
       const list = event.lists[answer] || [];
