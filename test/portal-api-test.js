@@ -388,6 +388,23 @@ const pause = ms => new Promise(r => setTimeout(r, ms));
   r = await api("GET", "/api/accounts", null, oak);
   ok(r.status === 403, "the existing COMMAND-only account list is still COMMAND-only");
 
+  /* ── the public registry: the front site reads it with no sign-in ── */
+  r = await api("GET", "/api/public");
+  ok(r.status === 200 && Array.isArray(r.body.ships) && Array.isArray(r.body.squadrons) &&
+     Array.isArray(r.body.ranks) && r.body.fleet.souls > 0,
+     "the public registry answers without a session");
+  ok(r.body.ships.every(s => s.departments === undefined && s.notes === undefined) &&
+     r.body.squadrons.every(s => s.members === undefined),
+     "the public registry prints structure only — no musters, stations or notes");
+  const pubLadder = (await api("GET", "/api/catalog", null, doc)).body.catalog.ranks;
+  r = await api("POST", "/api/catalog", { ranks: pubLadder.concat({ grade: "E-0", name: "Hidden Test", abbr: "HIDDEN-TEST", hidden: true }) }, doc);
+  ok(r.status === 200, "COMMAND hides a rank for the public-registry test");
+  r = await api("GET", "/api/public");
+  ok(!r.body.ranks.some(rk => rk.abbr === "HIDDEN-TEST") &&
+     pubLadder.every(rk => rk.hidden || r.body.ranks.some(p2 => p2.abbr === rk.abbr)),
+     "hidden ranks stay off the public ladder while visible ones all print");
+  await api("POST", "/api/catalog", { ranks: pubLadder }, doc);
+
   await stop();
   fs.rmSync(dataDir, { recursive: true, force: true });
   console.log("\n✔ PORTAL API PASS — profiles, bulk actions, CoC, availability, events, SSO and the bot door hold their gates");

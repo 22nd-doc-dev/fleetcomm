@@ -340,6 +340,31 @@ module.exports = function createPortalApi(deps) {
       return true;
     }
 
+    /* ── the public registry: what the front-facing site may print without a
+       sign-in. Names and structure only — no members, no musters, no notes.
+       The static pages hydrate from this so a rename in the Fleet Office is
+       live on the public site on the next load. ── */
+    if (p === "/api/public" && req.method === "GET") {
+      const aboard = Object.values(db.accounts).filter(a => a.role !== "revoked");
+      send(res, 200, {
+        ok: true,
+        fleet: { souls: aboard.length, contractors: aboard.filter(a => a.contractor).length },
+        ships: pdb.roster.ships.map(s => ({
+          id: s.id, name: s.name, classification: s.classification || "",
+          hullId: s.hullId || "", status: s.status || "active",
+        })),
+        squadrons: pdb.squadrons.squadrons.map(s => ({
+          id: s.id, name: s.name, designation: s.designation || "", role: s.role || "",
+        })),
+        ranks: (pdb.catalog.ranks || []).filter(r => !r.hidden)
+          .map(r => ({ grade: r.grade, name: r.name, abbr: r.abbr })),
+        certs: (pdb.catalog.certs || []).filter(c => !c.hidden).map(c => ({ id: c.id, name: c.name })),
+        awards: (pdb.catalog.awards || []).filter(a => !a.hidden)
+          .map(a => ({ id: a.id, name: a.name, img: a.img || "" })),
+      });
+      return true;
+    }
+
     /* everything below needs an operator session or the bot secret */
     const actor = actorOf(req);
     const need = (ok, code, msg) => { if (!ok) { send(res, code, { ok: false, error: msg }); return true; } return false; };
