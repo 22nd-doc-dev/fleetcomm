@@ -1,4 +1,4 @@
 {
-  "version": "1.1.1",
-  "notes": "FleetComm 1.1.1 — the in-game overlay now follows the Daylight watch. If you run the light theme, the overlay was drawing dark panels with dark text over your game — illegible. Fixed; both watches render the overlay correctly now. Nothing else changed."
+  "version": "1.2.0",
+  "notes": "FleetComm 1.2 — the helmet cam grows up. NEW ROLE: ELEMENT LEADER — watching the fleet's cams is now for Element Leaders and COMMAND (COMMAND grants the role); every operator can still STREAM their own cam, because who knows who will be ordered to share on the fly. Feeds now wear a field-feed look — faint scanlines and a slow refresh band, so it reads like a helmet cam and not a livestream (turn it off in SYS ▸ Helmet-cam scanlines if you want clean video) — and every feed carries a pulsing LIVE lamp with the streamer's callsign. The screen picker is fixed: tidy uniform thumbnails instead of a wall. Until your relay server takes the next update, the new role cannot be granted yet — COMMAND can watch, everyone can stream, and nothing else changes."
 }
