@@ -44,7 +44,8 @@ module.exports = function createPortalApi(deps) {
     squadrons: record(load("squadrons.json", {}), "squadrons.json"),     // {squadrons:[{id,name,designation,role,members:[{discordId,billet}]}]}
     discord: record(load("discord.json", {}), "discord.json"),           // {config{}, outbox[], muster{}}
     fleet: record(load("fleet.json", {}), "fleet.json"),                 // standing orders: aor, dutyStation, order constants
-    mast: record(load("mast.json", {}), "mast.json")                     // {cases[]} — Request Mast
+    mast: record(load("mast.json", {}), "mast.json"),                    // {cases[]} — Request Mast
+    logistics: record(load("logistics.json", {}), "logistics.json")      // {catalog[], inventory[], orders[], contributions[], claims[], blueprints[]}
   };
   const persist = (name) => save(name + ".json", pdb[name]);
   const SHIP_STATUS = ["active", "reserve", "refit", "lost", "decommissioned"];
@@ -283,6 +284,77 @@ module.exports = function createPortalApi(deps) {
     deps.persist();
     enqueueRoles(to);
   }
+  /* ── LOGISTICS: one system — requisitions, inventory, contributions,
+     reimbursements — funded by a treasury the fleet can see ── */
+  const LG = pdb.logistics;
+  for (const k of ["catalog", "inventory", "orders", "contributions", "claims", "blueprints"])
+    if (!Array.isArray(LG[k])) LG[k] = [];
+  if (!LG.blueprints.length) LG.blueprints = [
+    { id: "10-series-greatsword", name: "10-Series Greatsword Cannon", type: "Vehicle Weapon", materials: "3 materials", sources: "12 drop sources" },
+    { id: "11-series-broadsword", name: "11-Series Broadsword Cannon", type: "Vehicle Weapon", materials: "3 materials", sources: "12 drop sources" },
+    { id: "7ma-lorica", name: "7MA 'Lorica' Shield Generator", type: "Shield", materials: "3 materials", sources: "6 drop sources" },
+    { id: "fr-86", name: "FR-86 Shield Generator", type: "Shield", materials: "3 materials", sources: "8 drop sources" },
+    { id: "atlas-qd", name: "Atlas Quantum Drive", type: "Component S2", materials: "4 materials", sources: "9 drop sources" },
+  ];
+  if (!pdb.fleet.treasury) pdb.fleet.treasury = "Keleus_Harper";
+  const lgId = () => crypto.randomBytes(6).toString("hex");
+  const ORDER_STATES = ["submitted", "logistics", "command", "approved", "fulfilled", "rejected"];
+  /* Logistics approvers: anyone holding the LOGRON-88 purview, plus — by
+     standing rule — the senior officer and senior enlisted of LOGRON-88 */
+  function logronSeniors() {
+    const sq = pdb.squadrons.squadrons.find(s => /logron/i.test(s.name) || /logron/i.test(s.id));
+    if (!sq) return [];
+    const grade = (id) => { const r = rankInfo(id); const m = /^([OWE])-(\d+)/.exec(r.grade || ""); return m ? { branch: m[1], n: +m[2] } : null; };
+    const best = { O: [], E: [] };
+    for (const mm of sq.members) {
+      const g = grade(mm.discordId); if (!g) continue;
+      const key = g.branch === "O" ? "O" : g.branch === "E" ? "E" : null; if (!key) continue;
+      if (!best[key].length || g.n > best[key][0].n) best[key] = [{ id: mm.discordId, n: g.n }];
+      else if (g.n === best[key][0].n) best[key].push({ id: mm.discordId, n: g.n });
+    }
+    return best.O.concat(best.E).map(x => x.id);
+  }
+  const isLogistics = (actor) => isAdmin(actor) || hasScope(actor, "squadron:logron-88") ||
+    (!actor.bot && logronSeniors().includes(actor.id));
+  function treasuryLedger() {
+    const inflow = LG.contributions.filter(c => c.status === "verified" && c.kind === "auec").reduce((s, c) => s + (Number(c.amount) || 0), 0);
+    const paid = LG.claims.filter(c => c.status === "paid").reduce((s, c) => s + (Number(c.amount) || 0), 0);
+    const owed = LG.claims.filter(c => c.status === "approved").reduce((s, c) => s + (Number(c.amount) || 0), 0);
+    return { inflow, paid, owed, balance: inflow - paid };
+  }
+  function orderView(o) {
+    return Object.assign({}, o, { byName: displayName(o.by), fleetDate: fleetDate(o.at) });
+  }
+  /* the UEX Corp item registry (open API, no key): categories, then items
+     per category, cached for a day on disk so a restart never refetches */
+  const UEX = { cats: null, items: null, at: 0 };
+  async function uexJson(path) {
+    const res = await fetch("https://api.uexcorp.space/2.0" + path, { headers: { "User-Agent": "22EF-Portal" } });
+    const j = await res.json();
+    return Array.isArray(j.data) ? j.data : [];
+  }
+  async function uexAll() {
+    if (UEX.items && Date.now() - UEX.at < 864e5) return UEX.items;
+    try {
+      const cached = deps.load("uex-items.json", null);
+      if (cached && cached.at && Date.now() - cached.at < 864e5 && Array.isArray(cached.items)) {
+        UEX.items = cached.items; UEX.at = cached.at; return UEX.items;
+      }
+    } catch (e) {}
+    const cats = (await uexJson("/categories")).filter(c => c.type === "item");
+    const out = [];
+    for (let i = 0; i < cats.length; i += 8) {
+      const batch = cats.slice(i, i + 8);
+      const lists = await Promise.all(batch.map(c => uexJson("/items?id_category=" + c.id).catch(() => [])));
+      lists.forEach((list, k) => { for (const it of list) out.push({
+        uexId: it.id, name: it.name, category: batch[k].name, section: batch[k].section || "", company: it.company_name || "" }); });
+    }
+    UEX.items = out; UEX.at = Date.now();
+    try { deps.save("uex-items.json", { at: UEX.at, items: out }); } catch (e) {}
+    return out;
+  }
+  let uexWarm = null;
+
   /* standing changes from the accounts registry: a cleared arrival enlists */
   function onStanding(id, prev, next) {
     const aboard = ["member", "element", "command"];
@@ -669,7 +741,7 @@ module.exports = function createPortalApi(deps) {
     /* everything below needs an operator session or the bot secret */
     const actor = actorOf(req);
     const need = (ok, code, msg) => { if (!ok) { send(res, code, { ok: false, error: msg }); return true; } return false; };
-    if (!/^\/api\/(catalog|personnel|coc|availability|events|sso|activity|loa|roster|squadrons|record|export|bot|cam-viewers|audit|fleet|mast|me\/permissions)/.test(p)) return false;
+    if (!/^\/api\/(catalog|personnel|coc|availability|events|sso|activity|loa|roster|squadrons|record|export|bot|cam-viewers|audit|fleet|mast|logistics|uex|me\/permissions)/.test(p)) return false;
     if (need(actor, 401, "unauthorized")) return true;
     /* pending accounts can see nothing but their own approval state */
     if (need(actor.bot || actor.member, 403, "awaiting COMMAND approval")) return true;
@@ -811,7 +883,7 @@ module.exports = function createPortalApi(deps) {
     if (p === "/api/fleet" && req.method === "POST") {
       const b = await body(req);
       const standing = ["aor", "dutyStation"];
-      const constants = ["battlegroup", "via", "bupers", "director", "directorTitle", "commsFreq"];
+      const constants = ["battlegroup", "via", "bupers", "director", "directorTitle", "commsFreq", "treasury"];
       if (standing.some(k => b[k] !== undefined) &&
           need(isLeader(actor), 403, "only the Fleet CO (top of the published chain) or an IT Admin sets the AOR and duty station")) return true;
       if (constants.some(k => b[k] !== undefined) && need(isAdmin(actor), 403, "management access required")) return true;
@@ -939,6 +1011,209 @@ module.exports = function createPortalApi(deps) {
       audit("merge", label + " → " + displayName(to));
       send(res, 200, { ok: true, profile: profile(to) });
       return true;
+    }
+
+    /* ── UEX registry search (server-side cache; the client never calls UEX) ── */
+    if (p === "/api/uex/search" && req.method === "GET") {
+      const q = String(url.searchParams.get("q") || "").trim().toLowerCase();
+      if (need(q.length >= 2, 400, "type at least two characters")) return true;
+      let items;
+      try { items = await (uexWarm || (uexWarm = uexAll().finally(() => { uexWarm = null; }))); }
+      catch (e) { send(res, 502, { ok: false, error: "UEX is not answering right now — add the item by hand" }); return true; }
+      const hits = items.filter(it => it.name.toLowerCase().includes(q)).slice(0, 30);
+      send(res, 200, { ok: true, hits, total: items.length });
+      return true;
+    }
+
+    /* ── logistics: the whole desk in one read ── */
+    if (p === "/api/logistics" && req.method === "GET") {
+      const mine = actor.bot ? null : actor.id;
+      const lgc = isLogistics(actor), adm = isAdmin(actor);
+      send(res, 200, { ok: true,
+        you: { logistics: lgc, command: adm },
+        treasury: Object.assign({ handle: pdb.fleet.treasury }, treasuryLedger()),
+        catalog: LG.catalog,
+        inventory: LG.inventory.map(i => Object.assign({}, i, {
+          ownerName: i.owner === "fleet" ? "Fleet" : displayName(i.owner),
+          holderName: !i.holder ? "" : db.accounts[i.holder] ? displayName(i.holder) :
+            ((pdb.roster.ships.find(s => s.id === i.holder) || {}).name || i.holder) })),
+        orders: LG.orders.filter(o => adm || lgc || o.by === mine).map(orderView).reverse(),
+        contributions: LG.contributions.map(c => Object.assign({}, c, { byName: displayName(c.by), fleetDate: fleetDate(c.at) })).reverse(),
+        claims: LG.claims.filter(c => adm || lgc || c.by === mine).map(c => Object.assign({}, c, { byName: displayName(c.by), fleetDate: fleetDate(c.at) })).reverse(),
+        leaderboard: Object.entries(LG.contributions.filter(c => c.status === "verified").reduce((m, c) => {
+          m[c.by] = (m[c.by] || 0) + (c.kind === "auec" ? Number(c.amount) || 0 : 0); return m; }, {}))
+          .map(([id2, amt]) => ({ id: id2, name: displayName(id2), amount: amt })).sort((a, b2) => b2.amount - a.amount).slice(0, 10),
+        blueprints: LG.blueprints,
+        approvers: { logistics: logronSeniors().map(displayName) } });
+      return true;
+    }
+    /* catalog: fleet-defined items, or a UEX pick pinned into the fleet's list */
+    if (p === "/api/logistics/catalog" && req.method === "POST") {
+      if (need(isLogistics(actor), 403, "logistics standing required")) return true;
+      const b = await body(req);
+      const name = String(b.name || "").trim().slice(0, 100);
+      if (need(name, 400, "item name required")) return true;
+      const existing = LG.catalog.find(x => (b.uexId && x.uexId === Number(b.uexId)) || x.name.toLowerCase() === name.toLowerCase());
+      const item = existing || { id: lgId(), name, category: String(b.category || "").slice(0, 60),
+        source: b.uexId ? "uex" : "fleet", uexId: b.uexId ? Number(b.uexId) : null, unit: String(b.unit || "ea").slice(0, 16),
+        notes: String(b.notes || "").slice(0, 300), at: Date.now(), by: actor.name };
+      if (!existing) LG.catalog.push(item);
+      persist("logistics");
+      send(res, 200, { ok: true, item });
+      return true;
+    }
+    /* inventory: stock lines with an owner and a holder */
+    if (p === "/api/logistics/inventory" && req.method === "POST") {
+      if (need(isLogistics(actor), 403, "logistics standing required")) return true;
+      const b = await body(req);
+      const qty = Number(b.qty);
+      if (b.id) {
+        const line = LG.inventory.find(x => x.id === String(b.id));
+        if (need(line, 404, "no such stock line")) return true;
+        if (b.remove === true) { LG.inventory = LG.inventory.filter(x => x !== line); persist("logistics"); audit("stock", "struck: " + line.name); send(res, 200, { ok: true }); return true; }
+        if (Number.isFinite(qty)) line.qty = Math.max(0, qty);
+        for (const k of ["owner", "holder", "location", "notes"]) if (b[k] !== undefined) line[k] = String(b[k]).slice(0, 120);
+        line.updatedAt = Date.now(); line.by = actor.name;
+        persist("logistics"); audit("stock", line.name + " × " + line.qty + (line.holder ? " @ " + line.holder : ""));
+        send(res, 200, { ok: true, line }); return true;
+      }
+      const name = String(b.name || "").trim().slice(0, 100);
+      if (need(name && Number.isFinite(qty) && qty >= 0, 400, "name and quantity required")) return true;
+      const line = { id: lgId(), itemId: b.itemId ? String(b.itemId) : null, name, qty,
+        owner: b.owner && db.accounts[String(b.owner)] ? String(b.owner) : "fleet",
+        holder: String(b.holder || "").slice(0, 60), location: String(b.location || "").slice(0, 120),
+        notes: String(b.notes || "").slice(0, 300), updatedAt: Date.now(), by: actor.name };
+      LG.inventory.push(line); persist("logistics");
+      audit("stock", "added: " + name + " × " + qty);
+      send(res, 200, { ok: true, line }); return true;
+    }
+    /* requisitions: anyone aboard asks; Logistics then Command approve;
+       fulfilment issues stock or opens a reimbursement claim */
+    if (p === "/api/logistics/orders" && req.method === "POST" && !actor.bot) {
+      const b = await body(req);
+      const items = (Array.isArray(b.items) ? b.items : []).map(x => ({ itemId: x.itemId ? String(x.itemId) : null,
+        name: String(x.name || "").trim().slice(0, 100), qty: Math.max(1, Math.floor(Number(x.qty) || 1)) })).filter(x => x.name).slice(0, 30);
+      if (need(items.length, 400, "list at least one item")) return true;
+      const o = { id: lgId(), at: Date.now(), by: actor.id, items, justification: String(b.justification || "").trim().slice(0, 1000),
+        status: "submitted", approvals: {}, log: [{ at: Date.now(), by: actor.id, text: "Submitted" }] };
+      LG.orders.push(o); persist("logistics");
+      audit("requisition", "filed: " + items.map(x => x.qty + "× " + x.name).join(", "));
+      for (const id2 of logronSeniors()) enqueue("dm", { discordId: id2, text: "📦 **Requisition** filed by " + displayName(actor.id) + ": " +
+        items.map(x => x.qty + "× " + x.name).join(", ") + "\nReview it on the portal: " + (PORTAL_URL || "") + "logistics.html" });
+      send(res, 200, { ok: true, order: orderView(o) }); return true;
+    }
+    if ((m = /^\/api\/logistics\/orders\/([a-f0-9]{12})\/(approve|reject|fulfil|claim)$/.exec(p)) && req.method === "POST") {
+      const o = LG.orders.find(x => x.id === m[1]);
+      if (need(o, 404, "no such requisition")) return true;
+      const b = await body(req);
+      const note = String(b.note || "").trim().slice(0, 500);
+      const stamp = (text) => o.log.push({ at: Date.now(), by: actor.bot ? "bot" : actor.id, text });
+      if (m[2] === "approve") {
+        if (need(o.status === "submitted" || o.status === "logistics", 400, "nothing to approve at this stage")) return true;
+        if (o.status === "submitted") {
+          if (need(isLogistics(actor), 403, "logistics standing required")) return true;
+          o.approvals.logistics = { by: actor.id, at: Date.now() }; o.status = "logistics"; stamp("Approved by Logistics" + (note ? " — " + note : ""));
+        } else {
+          if (need(isAdmin(actor), 403, "COMMAND approval required")) return true;
+          o.approvals.command = { by: actor.id, at: Date.now() }; o.status = "approved"; stamp("Approved by Command" + (note ? " — " + note : ""));
+          enqueue("dm", { discordId: o.by, text: "📦 Your requisition is **approved** — Logistics will fulfil it." });
+        }
+      } else if (m[2] === "reject") {
+        if (need(isLogistics(actor) || isAdmin(actor), 403, "logistics standing required")) return true;
+        o.status = "rejected"; stamp("Rejected" + (note ? " — " + note : ""));
+        enqueue("dm", { discordId: o.by, text: "📦 Your requisition was **not approved**" + (note ? ": " + note : ".") });
+      } else if (m[2] === "fulfil") {
+        if (need(isLogistics(actor), 403, "logistics standing required")) return true;
+        if (need(o.status === "approved", 400, "approve it first")) return true;
+        /* issue from fleet stock where it exists; the holder becomes the requester */
+        for (const it of o.items) {
+          let left = it.qty;
+          for (const line of LG.inventory) {
+            if (left <= 0) break;
+            if (line.owner !== "fleet" || line.name.toLowerCase() !== it.name.toLowerCase() || line.qty <= 0) continue;
+            const take = Math.min(left, line.qty); line.qty -= take; left -= take;
+            LG.inventory.push({ id: lgId(), itemId: line.itemId, name: line.name, qty: take, owner: "fleet", holder: o.by,
+              location: "issued", notes: "Requisition " + o.id, updatedAt: Date.now(), by: actor.name });
+          }
+          it.issued = it.qty - left;
+        }
+        LG.inventory = LG.inventory.filter(l => l.qty > 0);
+        o.status = "fulfilled"; stamp("Fulfilled" + (note ? " — " + note : ""));
+        enqueue("dm", { discordId: o.by, text: "📦 Your requisition is **fulfilled** — draw it from Logistics." });
+      } else {
+        /* the requester bought it themselves: a reimbursement claim, linked */
+        if (need(o.by === actor.id, 403, "only the requester claims")) return true;
+        if (need(["approved", "fulfilled"].includes(o.status), 400, "the requisition must be approved first")) return true;
+        const amount = Math.max(0, Math.floor(Number(b.amount) || 0));
+        if (need(amount > 0, 400, "amount (aUEC) required")) return true;
+        const c = { id: lgId(), at: Date.now(), by: actor.id, amount, orderId: o.id, purpose: "Requisition " + o.id + ": " +
+          o.items.map(x => x.qty + "× " + x.name).join(", "), proof: String(b.proof || "").slice(0, 300), status: "pending", log: [] };
+        LG.claims.push(c); stamp("Reimbursement claim filed: " + amount.toLocaleString() + " aUEC");
+        o.status = "fulfilled";
+      }
+      persist("logistics");
+      audit("requisition", m[2] + ": " + o.items.map(x => x.qty + "× " + x.name).join(", "));
+      send(res, 200, { ok: true, order: orderView(o) }); return true;
+    }
+    /* contributions: aUEC or items into the fleet; Logistics verifies against proof */
+    if (p === "/api/logistics/contributions" && req.method === "POST" && !actor.bot) {
+      const b = await body(req);
+      const kind = b.kind === "items" ? "items" : "auec";
+      const amount = Math.max(0, Math.floor(Number(b.amount) || 0));
+      const items = (Array.isArray(b.items) ? b.items : []).map(x => ({ name: String(x.name || "").trim().slice(0, 100), qty: Math.max(1, Math.floor(Number(x.qty) || 1)) })).filter(x => x.name).slice(0, 30);
+      if (need(kind === "auec" ? amount > 0 : items.length > 0, 400, kind === "auec" ? "amount (aUEC) required" : "list the items")) return true;
+      const c = { id: lgId(), at: Date.now(), by: actor.id, kind, amount: kind === "auec" ? amount : 0, items,
+        proof: String(b.proof || "").slice(0, 300), status: "pending" };
+      LG.contributions.push(c); persist("logistics");
+      audit("contribution", displayName(actor.id) + ": " + (kind === "auec" ? amount.toLocaleString() + " aUEC" : items.map(x => x.qty + "× " + x.name).join(", ")));
+      send(res, 200, { ok: true, contribution: c }); return true;
+    }
+    if ((m = /^\/api\/logistics\/contributions\/([a-f0-9]{12})\/(verify|reject)$/.exec(p)) && req.method === "POST") {
+      if (need(isLogistics(actor), 403, "logistics standing required")) return true;
+      const c = LG.contributions.find(x => x.id === m[1]);
+      if (need(c && c.status === "pending", 404, "no pending contribution by that id")) return true;
+      c.status = m[2] === "verify" ? "verified" : "rejected"; c.verifiedBy = actor.name; c.verifiedAt = Date.now();
+      if (c.status === "verified" && c.kind === "items") for (const it of c.items)
+        LG.inventory.push({ id: lgId(), itemId: null, name: it.name, qty: it.qty, owner: "fleet", holder: "", location: "contributed",
+          notes: "Contributed by " + displayName(c.by), updatedAt: Date.now(), by: actor.name });
+      persist("logistics");
+      audit("contribution", m[2] + ": " + displayName(c.by));
+      enqueue("dm", { discordId: c.by, text: c.status === "verified" ? "🎖️ Your contribution to the fleet is **verified** — thank you." : "Your contribution could not be verified — see Logistics." });
+      send(res, 200, { ok: true, contribution: c }); return true;
+    }
+    /* reimbursements: claims against the treasury — Logistics approves, Command marks paid */
+    if (p === "/api/logistics/claims" && req.method === "POST" && !actor.bot) {
+      const b = await body(req);
+      const amount = Math.max(0, Math.floor(Number(b.amount) || 0));
+      if (need(amount > 0 && String(b.purpose || "").trim(), 400, "amount (aUEC) and purpose required")) return true;
+      const c = { id: lgId(), at: Date.now(), by: actor.id, amount, orderId: null, purpose: String(b.purpose).trim().slice(0, 300),
+        proof: String(b.proof || "").slice(0, 300), status: "pending", log: [] };
+      LG.claims.push(c); persist("logistics");
+      audit("reimbursement", displayName(actor.id) + " claims " + amount.toLocaleString() + " aUEC");
+      send(res, 200, { ok: true, claim: c }); return true;
+    }
+    if ((m = /^\/api\/logistics\/claims\/([a-f0-9]{12})\/(approve|reject|pay)$/.exec(p)) && req.method === "POST") {
+      const c = LG.claims.find(x => x.id === m[1]);
+      if (need(c, 404, "no such claim")) return true;
+      if (m[2] === "pay") { if (need(isAdmin(actor), 403, "COMMAND marks claims paid")) return true; if (need(c.status === "approved", 400, "approve it first")) return true; c.status = "paid"; }
+      else { if (need(isLogistics(actor), 403, "logistics standing required")) return true; if (need(c.status === "pending", 400, "already decided")) return true; c.status = m[2] === "approve" ? "approved" : "rejected"; }
+      c.log.push({ at: Date.now(), by: actor.bot ? "bot" : actor.id, text: c.status });
+      persist("logistics");
+      audit("reimbursement", c.status + ": " + displayName(c.by) + " " + c.amount.toLocaleString() + " aUEC");
+      enqueue("dm", { discordId: c.by, text: "💳 Reimbursement of **" + c.amount.toLocaleString() + " aUEC** is now **" + c.status + "**." });
+      send(res, 200, { ok: true, claim: c }); return true;
+    }
+    /* blueprints: the fleet's own library, in the shape the crew already reads */
+    if (p === "/api/logistics/blueprints" && req.method === "POST") {
+      if (need(isLogistics(actor), 403, "logistics standing required")) return true;
+      const b = await body(req);
+      const list = Array.isArray(b.blueprints) ? b.blueprints.slice(0, 2000) : null;
+      if (need(list, 400, "blueprints[] required")) return true;
+      LG.blueprints = list.map(x => ({ id: String(x.id || String(x.name || "").toLowerCase().replace(/[^a-z0-9]+/g, "-")).slice(0, 60),
+        name: String(x.name || "").slice(0, 120), type: String(x.type || "").slice(0, 60),
+        materials: String(x.materials || "").slice(0, 200), sources: String(x.sources || "").slice(0, 200) })).filter(x => x.id && x.name);
+      persist("logistics"); audit("blueprints", LG.blueprints.length + " on file");
+      send(res, 200, { ok: true, blueprints: LG.blueprints }); return true;
     }
 
     if (p === "/api/catalog" && req.method === "GET") { send(res, 200, { ok: true, catalog: pdb.catalog }); return true; }
@@ -1476,7 +1751,7 @@ module.exports = function createPortalApi(deps) {
       const admin = isAdmin(actor);
       const scopes = actorScopes(actor);
       send(res, 200, { ok: true, admin, itAdmin: !!(actor.acc && actor.acc.itAdmin),
-        command: !!actor.command, scopes,
+        command: !!actor.command, scopes, logistics: isLogistics(actor),
         canApprove: admin || scopes.length > 0,
         manage: {
           ships: admin ? "*" : scopes.filter(s => s.startsWith("ship:")).map(s => s.slice(5)),

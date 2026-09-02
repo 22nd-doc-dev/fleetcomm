@@ -569,6 +569,50 @@ const pause = ms => new Promise(r => setTimeout(r, ms));
   r = await api("GET", "/api/personnel/" + gullyId, null, doc);
   ok(r.status === 404, "the manual shell is retired after the merge");
 
+  /* ── logistics: one system — requisitions, stock, contributions, claims ── */
+  r = await api("GET", "/api/logistics", null, oak);
+  ok(r.status === 200 && r.body.treasury.handle === "Keleus_Harper" && typeof r.body.you.logistics === "boolean",
+     "everyone reads the logistics desk and their own standing on it");
+  /* Oak is the senior enlisted of LOGRON-88 → logistics approver by standing rule */
+  await api("POST", "/api/personnel/bulk", { ids: ["2002"], action: { type: "rank", rank: "PO2" } }, doc);
+  r = await api("POST", "/api/squadrons/logron-88/assign", { memberId: "2002", billet: "Quartermaster" }, doc);
+  r = await api("GET", "/api/logistics", null, oak);
+  ok(r.body.you.logistics === true && r.body.approvers.logistics.length >= 1,
+     "LOGRON-88's senior enlisted holds logistics standing automatically");
+  r = await api("POST", "/api/logistics/inventory", { name: "MedPen (Hemozal)", qty: 10, owner: "fleet", holder: "tiber", location: "sickbay" }, oak);
+  ok(r.status === 200 && r.body.line.qty === 10 && r.body.line.owner === "fleet", "logistics books fleet stock with an owner and a holder");
+  r = await api("POST", "/api/logistics/orders", { items: [{ name: "MedPen (Hemozal)", qty: 4 }], justification: "Corpsman kit" }, doc);
+  ok(r.status === 200 && r.body.order.status === "submitted", "a member files a requisition");
+  const reqId = r.body.order.id;
+  r = await api("POST", "/api/logistics/orders/" + reqId + "/approve", {}, doc);
+  ok(r.status === 200 && r.body.order.status === "logistics", "first approval is Logistics' (doc is COMMAND, which also carries it)");
+  r = await api("POST", "/api/logistics/orders/" + reqId + "/approve", {}, oak);
+  ok(r.status === 403, "the second approval is COMMAND's — Logistics cannot self-complete it");
+  r = await api("POST", "/api/logistics/orders/" + reqId + "/approve", {}, doc);
+  ok(r.status === 200 && r.body.order.status === "approved" && r.body.order.approvals.command, "COMMAND approves");
+  r = await api("POST", "/api/logistics/orders/" + reqId + "/fulfil", {}, oak);
+  ok(r.status === 200 && r.body.order.status === "fulfilled" && r.body.order.items[0].issued === 4, "fulfilment issues from fleet stock");
+  r = await api("GET", "/api/logistics", null, oak);
+  ok(r.body.inventory.some(l => l.holder === "1001" && l.qty === 4) && r.body.inventory.some(l => l.holder === "tiber" && l.qty === 6),
+     "stock moves: four to the requester, six stay aboard Tiber");
+  r = await api("POST", "/api/logistics/contributions", { kind: "auec", amount: 250000, proof: "screenshot-1" }, doc);
+  const contribId = r.body.contribution.id;
+  r = await api("POST", "/api/logistics/contributions/" + contribId + "/verify", {}, oak);
+  ok(r.status === 200 && r.body.contribution.status === "verified", "Logistics verifies a contribution");
+  r = await api("POST", "/api/logistics/claims", { amount: 100000, purpose: "Fuel for the Pyro run", proof: "receipt" }, doc);
+  const claimId = r.body.claim.id;
+  await api("POST", "/api/logistics/claims/" + claimId + "/approve", {}, oak);
+  r = await api("POST", "/api/logistics/claims/" + claimId + "/pay", {}, oak);
+  ok(r.status === 403, "only COMMAND marks a claim paid");
+  r = await api("POST", "/api/logistics/claims/" + claimId + "/pay", {}, doc);
+  ok(r.status === 200 && r.body.claim.status === "paid", "COMMAND pays the claim");
+  r = await api("GET", "/api/logistics", null, doc);
+  ok(r.body.treasury.inflow === 250000 && r.body.treasury.paid === 100000 && r.body.treasury.balance === 150000,
+     "the treasury ledger nets contributions against reimbursements");
+  ok(r.body.leaderboard[0] && r.body.leaderboard[0].amount === 250000, "verified contributions rank the leaderboard");
+  r = await api("POST", "/api/logistics/blueprints", { blueprints: [{ name: "Atlas Quantum Drive", type: "Component S2", materials: "4 materials", sources: "9 drop sources" }] }, oak);
+  ok(r.status === 200 && r.body.blueprints.length === 1 && r.body.blueprints[0].id === "atlas-quantum-drive", "logistics keeps the blueprint library");
+
   await stop();
   fs.rmSync(dataDir, { recursive: true, force: true });
   console.log("\n✔ PORTAL API PASS — profiles, bulk actions, CoC, availability, events, SSO and the bot door hold their gates");
