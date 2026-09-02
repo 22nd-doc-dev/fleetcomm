@@ -1,6 +1,6 @@
 {
   "name": "fleetcomm",
-  "version": "1.3.6",
+  "version": "1.3.7",
   "description": "FleetComm — multi-net voice radio for the 22nd Expeditionary Fleet (QLink successor). Mumble-protocol backbone, radio-rack UI.",
   "author": "Rook \"Doc\" Sabbah — 22nd Expeditionary Fleet",
   "main": "main.js",
@@ -60,7 +60,8 @@
     "artifactName": "${productName}-${version}.${ext}",
     "linux": {
       "target": [
-        "AppImage"
+        "AppImage",
+        "flatpak"
       ],
       "category": "Game",
       "icon": "build/icon.png",
@@ -73,6 +74,26 @@
         }
       }
     },
-    "npmRebuild": false
+    "npmRebuild": false,
+    "flatpak": {
+      "runtime": "org.freedesktop.Platform",
+      "runtimeVersion": "24.08",
+      "sdk": "org.freedesktop.Sdk",
+      "base": "org.electronjs.Electron2.BaseApp",
+      "baseVersion": "24.08",
+      "branch": "stable",
+      "category": "Game",
+      "synopsis": "22nd Expeditionary Fleet radio",
+      "finishArgs": [
+        "--share=ipc",
+        "--share=network",
+        "--socket=x11",
+        "--socket=wayland",
+        "--socket=pulseaudio",
+        "--device=all",
+        "--filesystem=xdg-download",
+        "--talk-name=org.freedesktop.Notifications"
+      ]
+    }
   }
 }
