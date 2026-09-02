@@ -42,10 +42,26 @@ module.exports = function createPortalApi(deps) {
     loa: record(load("loa.json", {}), "loa.json"),                       // id -> {active:{start,reason}|null, history[]}
     roster: record(load("roster.json", {}), "roster.json"),              // {ships:[{id,name,classification,hullId,status,notes,departments:[...]}]}
     squadrons: record(load("squadrons.json", {}), "squadrons.json"),     // {squadrons:[{id,name,designation,role,members:[{discordId,billet}]}]}
-    discord: record(load("discord.json", {}), "discord.json")            // {config{}, outbox[], muster{}}
+    discord: record(load("discord.json", {}), "discord.json"),           // {config{}, outbox[], muster{}}
+    fleet: record(load("fleet.json", {}), "fleet.json"),                 // standing orders: aor, dutyStation, order constants
+    mast: record(load("mast.json", {}), "mast.json")                     // {cases[]} — Request Mast
   };
   const persist = (name) => save(name + ".json", pdb[name]);
   const SHIP_STATUS = ["active", "reserve", "refit", "lost", "decommissioned"];
+  /* awards of the quarter and the standard-issue kit: Command's lists,
+     seeded with placeholders the Fleet Office edits like everything else */
+  if (!Array.isArray(pdb.catalog.aotq)) pdb.catalog.aotq = [
+    { id: "starman", name: "Starman of the Quarter", holder: "" },
+    { id: "officer", name: "Officer of the Quarter", holder: "" },
+    { id: "unit", name: "Unit of the Quarter", holder: "" },
+  ];
+  if (!Array.isArray(pdb.catalog.issue)) pdb.catalog.issue = [
+    { id: "p4-ar", name: "P4-AR Rifle", category: "Primary", notes: "Standard-issue service rifle" },
+    { id: "s-38", name: "S-38 Pistol", category: "Sidearm", notes: "Sidearm, all rates" },
+    { id: "medpen", name: "MedPen (Hemozal)", category: "Medical", notes: "Two per person, minimum" },
+    { id: "multitool", name: "Pyro RYT Multi-Tool", category: "Utility", notes: "Tractor + cutter attachments" },
+    { id: "armor", name: "ORC-mkX / Fleet Standard Armor", category: "Armor", notes: "Per department colour standard" },
+  ];
 
   /* ── the Discord mirror: config Command edits in-site, and an outbox of
      jobs the fleet bot drains through the bot door. Jobs survive restarts. ── */
@@ -53,6 +69,10 @@ module.exports = function createPortalApi(deps) {
     channels: { events: "events", reminders: "event-reminders",
       announce: "advancements", assignments: "assignment-orders" },
     remindHours: [24, 1], syncRoles: true, createRoles: false };
+  pdb.discord.config.channels = Object.assign({ events: "events", reminders: "event-reminders",
+    announce: "advancements", assignments: "assignment-orders", activity: "activity-tracker" },
+    pdb.discord.config.channels || {});
+  if (!pdb.discord.config.status) pdb.discord.config.status = { aor: "AOR:", duty: "Duty Station:" };
   if (!Array.isArray(pdb.discord.outbox)) pdb.discord.outbox = [];
   function enqueue(type, data) {
     pdb.discord.outbox.push(Object.assign(
@@ -71,6 +91,202 @@ module.exports = function createPortalApi(deps) {
     const acc = db.accounts[id]; const rec = pdb.personnel[id] || {};
     const rk = rec.rating || (rec.rank && rec.rank !== "—" ? rec.rank : "");
     return ((rk ? rk + " " : "") + ((acc && (acc.callsign || acc.discordName)) || id)).trim();
+  }
+
+  /* ── fleet standing orders: AOR, duty station, and the constants the
+     Bureau of Naval Personnel prints on every assignment order ── */
+  const FLEET_DEFAULTS = {
+    aor: "Nyx System", dutyStation: "PSS Theta", battlegroup: "Battlegroup 66",
+    via: "Destroyer Squadron 38 (DESRON-38)",
+    bupers: "Stanton Central Command / Bureau of Naval Personnel",
+    director: "Reginald MacTavish, Captain (O-6)", directorTitle: "Director, Bureau of Naval Personnel",
+    commsFreq: "1489.6611",
+  };
+  pdb.fleet = Object.assign({}, FLEET_DEFAULTS, pdb.fleet);
+  if (!Array.isArray(pdb.mast.cases)) pdb.mast.cases = [];
+  const MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+  /* the fleet's calendar: the real day, the in-universe year (+930), DDMONYYYY */
+  function fleetDate(ms) {
+    const d = new Date(Number(ms) || Date.now());
+    return String(d.getUTCDate()).padStart(2, "0") + MONTHS[d.getUTCMonth()] + (d.getUTCFullYear() + 930);
+  }
+  /* the top of the published chain — the Fleet CO — holds the fleet's
+     standing-order keys, with IT Admins as the backstop */
+  function leaderId() {
+    const nodes = Array.isArray(pdb.coc.nodes) ? pdb.coc.nodes : [];
+    const roots = nodes.filter(n => !n.parent);
+    for (const r of roots) if (r.assignee) return r.assignee;
+    for (const r of roots) { const kid = nodes.find(n => n.parent === r.id && n.assignee); if (kid) return kid.assignee; }
+    return null;
+  }
+  const isLeader = (actor) => !!actor && !actor.bot &&
+    ((leaderId() && actor.id === leaderId()) || !!(actor.acc && actor.acc.itAdmin));
+  /* the nearest leader above a member on the chain; the Fleet CO for
+     anyone not on it; null when there is nobody above */
+  function nextUp(id) {
+    const nodes = Array.isArray(pdb.coc.nodes) ? pdb.coc.nodes : [];
+    const mine = nodes.find(n => n.assignee === id);
+    if (!mine) { const top = leaderId(); return top && top !== id ? top : null; }
+    let cur = mine, guard = 0;
+    while (cur && cur.parent && guard++ < 50) {
+      cur = nodes.find(n => n.id === cur.parent);
+      if (cur && cur.assignee && cur.assignee !== id) return cur.assignee;
+    }
+    return null;
+  }
+  function chainAssignees() {
+    const seen = new Set(), out = [];
+    for (const n of (Array.isArray(pdb.coc.nodes) ? pdb.coc.nodes : []))
+      if (n.assignee && !seen.has(n.assignee) && db.accounts[n.assignee]) {
+        seen.add(n.assignee); out.push({ id: n.assignee, name: displayName(n.assignee), title: n.title });
+      }
+    return out;
+  }
+  /* every soul enlists exactly once on the record */
+  function ensureEnlisted(id, at) {
+    const rec = recFor(id);
+    if (rec.record.some(e => e.kind === "enlist")) return;
+    const when = Number(at) || Date.now();
+    rec.record.push({ at: when, by: "BUREAU OF NAVAL PERSONNEL", kind: "enlist",
+      text: "Enlisted in the 22nd Expeditionary Fleet — " + fleetDate(when) });
+    rec.record.sort((a, b2) => a.at - b2.at);
+  }
+  /* service numbers: five digits, stable per member, unique fleet-wide */
+  function serviceNo(id) {
+    const rec = recFor(id);
+    if (rec.serviceNo) return rec.serviceNo;
+    const used = new Set(Object.values(pdb.personnel).map(r => r.serviceNo).filter(Boolean));
+    let n = 10000 + (parseInt(crypto.createHash("sha1").update(String(id)).digest("hex").slice(0, 8), 16) % 90000);
+    while (used.has(String(n))) n = 10000 + ((n - 10000 + 7919) % 90000);
+    rec.serviceNo = String(n);
+    return rec.serviceNo;
+  }
+  /* ROOK "DOC" SABBAH → { full: "Rook Sabbah", short: "R. Sabbah" } */
+  function nameForms(id) {
+    const acc = db.accounts[id] || {};
+    const raw = String(acc.callsign || acc.discordName || id)
+      .replace(/["'“”‘’][^"'“”‘’]*["'“”‘’]/g, " ").replace(/\s+/g, " ").trim();
+    const words = raw.split(" ").filter(Boolean).map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
+    const full = words.join(" ") || String(id);
+    const short = words.length > 1 ? words[0].charAt(0) + ". " + words[words.length - 1] : full;
+    return { full, short };
+  }
+  function rankInfo(id) {
+    const rec = pdb.personnel[id] || {};
+    const r = pdb.catalog.ranks.find(x => x.abbr === rec.rank);
+    return r ? { name: r.name, grade: r.grade, abbr: r.abbr } : { name: "Unrated", grade: "—", abbr: rec.rank || "—" };
+  }
+  /* where a member stands today: first ship station, else squadron billet */
+  function currentBillet(id) {
+    for (const ship of pdb.roster.ships) for (const d of ship.departments || []) for (const st of d.stations || [])
+      if (st.assignee === id) return st.title + ", " + ship.name;
+    for (const sq of pdb.squadrons.squadrons) {
+      const mm = sq.members.find(x => x.discordId === id);
+      if (mm) return mm.billet + ", " + sq.name;
+    }
+    return "Unassigned";
+  }
+  function squadronLine(id) {
+    const sq = pdb.squadrons.squadrons.find(s => s.members.some(x => x.discordId === id));
+    if (!sq) return { line: pdb.fleet.via, name: (/\(([^)]+)\)\s*$/.exec(pdb.fleet.via) || [, pdb.fleet.via])[1] };
+    return { line: sq.designation ? sq.designation + " (" + sq.name + ")" : sq.name, name: sq.name };
+  }
+  /* the Bureau's assignment order, written the way the Fleet CO writes them */
+  function issueOrders(id, actor, a) {
+    const f = pdb.fleet, when = Date.now(), n = nameForms(id), rk = rankInfo(id);
+    const sq = a.squadronName ? { line: a.squadronLine || a.squadronName, name: a.squadronName } : squadronLine(id);
+    const text = [
+      "UNITED EMPIRE OF EARTH NAVY", "", "ASSIGNMENT ORDER", "",
+      "From: " + f.bupers,
+      "To: " + n.short + ", " + rk.name + " (" + rk.grade + ")",
+      "Via: 22nd Expeditionary Fleet, " + f.battlegroup + ", " + sq.line,
+      "Date: " + fleetDate(when),
+      "Subject: Assignment Orders", "",
+      "1. References", "",
+      "a. UEE Navy Personnel Assignment Manual (UEENPERSMAN)",
+      "b. UEE Navy Regulations, Section 3, Chapter 12", "",
+      "2. Orders", "",
+      "Effective immediately, you are hereby directed to report for duty under the following assignment:", "",
+      "Name / Rank: " + n.full + ", " + rk.name,
+      "Service Number: #" + serviceNo(id),
+      "Current Duty Station: " + f.dutyStation,
+      "Current Billet: " + (a.previous || "Unassigned"),
+      "Reporting Unit / Ship: " + a.unit + ", " + sq.name,
+      "Hull Number / Designator: " + (a.hull || "—"),
+      "Reporting Date-Time Group (DTG): " + fleetDate(when + 864e5) + " / 0600",
+      "Duty Title / Billet: " + a.title + (a.department ? ", " + a.department : ""), "",
+      "You will assume all duties, responsibilities, and privileges of the assigned billet in accordance with UEE Navy regulations and standing orders of the command.", "",
+      "3. Additional Instructions", "",
+      "a. Ensure personal records and transfer documentation are updated prior to departure.",
+      "b. All issued equipment, uniforms, and identification shall be accounted for and transferred in accordance with UEE Navy supply regulations.",
+      "c. Report to the Commanding Officer, " + sq.name + ".", "",
+      "4. Point of Contact", "",
+      "For administrative questions concerning these orders, contact Stanton Central Command, Bureau of Naval Personnel, at comms frequency " + f.commsFreq + ".", "",
+      "By Order of Stanton Central Command", "",
+      f.director, f.directorTitle, "UEE Navy",
+    ].join("\n");
+    const rec = recFor(id);
+    if (!Array.isArray(rec.orders)) rec.orders = [];
+    const order = { id: crypto.randomBytes(6).toString("hex"), at: when, by: actor.name, unit: a.unit, title: a.title, text };
+    rec.orders.unshift(order);
+    if (rec.orders.length > 50) rec.orders.length = 50;
+    logEntry(rec, actor.name, "orders", "Assignment orders issued: " + a.title + ", " + a.unit + " (" + fleetDate(when) + ")");
+    enqueue("orders", { discordId: id, name: displayName(id), text });
+    return order;
+  }
+  /* how alike a Discord arrival and a manual roster record look: shared
+     name tokens over the roster name's tokens, rank words and initials
+     ignored ("LT R. \"Doc\" Sabbah" vs ROOK "DOC" SABBAH → 2/3) */
+  function matchScore(arrival, manual) {
+    const rankWords = new Set(pdb.catalog.ranks.map(r => r.abbr.toLowerCase()));
+    const toks = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\s+/)
+      .filter(t => t.length > 1 && !rankWords.has(t));
+    const target = toks(manual.callsign);
+    if (!target.length) return 0;
+    let best = 0;
+    for (const cand of [arrival.discordName, arrival.callsign]) {
+      const set = new Set(toks(cand));
+      const hit = target.filter(t => set.has(t)).length;
+      const lastMatch = set.has(target[target.length - 1]) ? 0.1 : 0;
+      best = Math.max(best, hit / target.length + lastMatch);
+    }
+    return Math.min(1, best);
+  }
+  /* fold a manual roster record into a Discord-linked account: standing,
+     record, billets and musters all move; the manual shell is retired */
+  function mergeAccounts(from, to, byName) {
+    const src = db.accounts[from], dst = db.accounts[to];
+    const srcRec = recFor(from), dstRec = recFor(to);
+    if (srcRec.rank && srcRec.rank !== "—") dstRec.rank = srcRec.rank;
+    if (srcRec.rating) dstRec.rating = srcRec.rating;
+    if (srcRec.serviceNo && !dstRec.serviceNo) dstRec.serviceNo = srcRec.serviceNo;
+    dstRec.awards = (dstRec.awards || []).concat(srcRec.awards || []);
+    for (const c of srcRec.certs || []) if (!(dstRec.certs || []).some(x => x.certId === c.certId)) dstRec.certs.push(c);
+    dstRec.record = (dstRec.record || []).concat(srcRec.record || []).sort((a, b2) => a.at - b2.at);
+    dstRec.orders = (srcRec.orders || []).concat(dstRec.orders || []);
+    if (!dst.callsign && src.callsign) dst.callsign = src.callsign;
+    for (const k of ["rsiHandle", "timezone"]) if (src[k] && !dst[k]) dst[k] = src[k];
+    if (src.contractor) dst.contractor = true;
+    if (src.createdAt && (!dst.createdAt || src.createdAt < dst.createdAt)) dst.createdAt = src.createdAt;
+    if (Array.isArray(src.scopes) && src.scopes.length) dst.scopes = Array.from(new Set((dst.scopes || []).concat(src.scopes)));
+    for (const sq of pdb.squadrons.squadrons) {
+      const mine = sq.members.find(x => x.discordId === from);
+      if (mine) { if (!sq.members.some(x => x.discordId === to)) mine.discordId = to; else sq.members = sq.members.filter(x => x.discordId !== from); }
+    }
+    for (const ship of pdb.roster.ships) for (const d of ship.departments || []) for (const st of d.stations || [])
+      if (st.assignee === from) st.assignee = to;
+    for (const n of (pdb.coc.nodes || [])) if (n.assignee === from) n.assignee = to;
+    if (pdb.loa[from] && !(pdb.loa[to] && pdb.loa[to].active)) pdb.loa[to] = pdb.loa[from];
+    delete pdb.loa[from]; delete pdb.personnel[from]; delete db.accounts[from];
+    logEntry(dstRec, byName, "note", "Discord account linked to the fleet record (" + (src.callsign || from) + ")");
+    for (const s of ["personnel", "squadrons", "roster", "coc", "loa"]) persist(s);
+    deps.persist();
+    enqueueRoles(to);
+  }
+  /* standing changes from the accounts registry: a cleared arrival enlists */
+  function onStanding(id, prev, next) {
+    const aboard = ["member", "element", "command"];
+    if (aboard.includes(next) && !aboard.includes(prev)) { ensureEnlisted(id, Date.now()); persist("personnel"); }
   }
 
   /* the fleet's ladder, junior to senior, so a promotion is always index+1 */
@@ -191,7 +407,7 @@ module.exports = function createPortalApi(deps) {
       lastSeen: acc.lastSeen || null, joinedAt: acc.createdAt || null,
       rank: rankByAbbr(rec.rank) || { grade: "?", name: rec.rank, abbr: rec.rank },
       /* the rated form of the rank (BMMC, GM1, QMSC…) — display trumps ladder */
-      rating: rec.rating || null,
+      rating: rec.rating || null, serviceNo: rec.serviceNo || null, orders: rec.orders || [],
       awards: rec.awards, certs: rec.certs, record: rec.record
     };
   }
@@ -374,14 +590,29 @@ module.exports = function createPortalApi(deps) {
            arrives with sign-in, so accounts wear their server name */
         const member = await discordGuildMember(discordToken);
         let acc = db.accounts[who.id];
+        let fresh = false;
         if (!acc) {
           acc = db.accounts[who.id] = { discordName: who.username, role: "pending", createdAt: Date.now() };
+          fresh = true;
           try { deps.audit(who.username, who.id, "sign-in", "new account via Discord OAuth - pending clearance"); } catch (e) {}
         }
         if (acc.role === "revoked") throw new Error("access revoked by COMMAND");
         acc.discordName = (member && member.nick) || who.username;
         if (member && Array.isArray(member.roles)) acc.guildRoles = member.roles;
         acc.lastSeen = Date.now();
+        /* a first arrival whose server name unmistakably matches one manual
+           roster record walks straight into it: rank, record, billets and all */
+        if (fresh) {
+          const manual = Object.entries(db.accounts).filter(([, a]) => a.manual)
+            .map(([id2, a]) => ({ id: id2, score: matchScore(acc, a), callsign: a.callsign }))
+            .filter(x => x.score >= 0.67).sort((x, y) => y.score - x.score);
+          if (manual.length === 1 || (manual.length > 1 && manual[0].score - manual[1].score >= 0.3)) {
+            const rec = pdb.personnel[manual[0].id] || {};
+            mergeAccounts(manual[0].id, who.id, "BUREAU OF NAVAL PERSONNEL");
+            acc.role = "member";                       /* on the roster already — cleared aboard */
+            try { deps.audit(who.username, who.id, "merge", "arrival auto-linked to " + manual[0].callsign + " (" + (rec.rank || "—") + ")"); } catch (e) {}
+          }
+        }
         const token = crypto.randomBytes(24).toString("hex");
         db.sessions[token] = { discordId: who.id, createdAt: Date.now(), expiresAt: Date.now() + SESSION_TTL_MS };
         deps.persist();
@@ -417,7 +648,8 @@ module.exports = function createPortalApi(deps) {
       const aboard = Object.values(db.accounts).filter(a => a.role !== "revoked");
       send(res, 200, {
         ok: true,
-        fleet: { souls: aboard.length, contractors: aboard.filter(a => a.contractor).length },
+        fleet: { souls: aboard.length, contractors: aboard.filter(a => a.contractor).length,
+          aor: pdb.fleet.aor, dutyStation: pdb.fleet.dutyStation, battlegroup: pdb.fleet.battlegroup },
         ships: pdb.roster.ships.map(s => ({
           id: s.id, name: s.name, classification: s.classification || "",
           hullId: s.hullId || "", status: s.status || "active",
@@ -437,7 +669,7 @@ module.exports = function createPortalApi(deps) {
     /* everything below needs an operator session or the bot secret */
     const actor = actorOf(req);
     const need = (ok, code, msg) => { if (!ok) { send(res, code, { ok: false, error: msg }); return true; } return false; };
-    if (!/^\/api\/(catalog|personnel|coc|availability|events|sso|activity|loa|roster|squadrons|record|export|bot|cam-viewers|audit|me\/permissions)/.test(p)) return false;
+    if (!/^\/api\/(catalog|personnel|coc|availability|events|sso|activity|loa|roster|squadrons|record|export|bot|cam-viewers|audit|fleet|mast|me\/permissions)/.test(p)) return false;
     if (need(actor, 401, "unauthorized")) return true;
     /* pending accounts can see nothing but their own approval state */
     if (need(actor.bot || actor.member, 403, "awaiting COMMAND approval")) return true;
@@ -570,12 +802,151 @@ module.exports = function createPortalApi(deps) {
       return true;
     }
 
+    /* ── fleet standing orders: the Fleet CO (or IT) sets AOR + duty
+       station; management edits the order constants ── */
+    if (p === "/api/fleet" && req.method === "GET") {
+      send(res, 200, { ok: true, fleet: pdb.fleet, leader: leaderId(), youLead: isLeader(actor), fleetDate: fleetDate() });
+      return true;
+    }
+    if (p === "/api/fleet" && req.method === "POST") {
+      const b = await body(req);
+      const standing = ["aor", "dutyStation"];
+      const constants = ["battlegroup", "via", "bupers", "director", "directorTitle", "commsFreq"];
+      if (standing.some(k => b[k] !== undefined) &&
+          need(isLeader(actor), 403, "only the Fleet CO (top of the published chain) or an IT Admin sets the AOR and duty station")) return true;
+      if (constants.some(k => b[k] !== undefined) && need(isAdmin(actor), 403, "management access required")) return true;
+      const changed = [];
+      for (const k of standing.concat(constants)) if (b[k] !== undefined) {
+        const v = String(b[k]).trim().slice(0, 120);
+        if (v !== pdb.fleet[k]) { pdb.fleet[k] = v; changed.push(k + " = " + v); }
+      }
+      persist("fleet");
+      if (changed.length) audit("fleet", changed.join("; "));
+      if (b.aor !== undefined) enqueue("status", { which: "aor", value: pdb.fleet.aor });
+      if (b.dutyStation !== undefined) enqueue("status", { which: "duty", value: pdb.fleet.dutyStation });
+      send(res, 200, { ok: true, fleet: pdb.fleet });
+      return true;
+    }
+
+    /* ── after-action: who officially attended — onto every record, and
+       out to the activity tracker in the fleet's own report format ── */
+    if ((m = /^\/api\/events\/([a-f0-9]{16})\/aar$/.exec(p)) && req.method === "POST") {
+      if (need(isAdmin(actor), 403, "management access required")) return true;
+      const ev = pdb.events[m[1]];
+      if (need(ev, 404, "no such event")) return true;
+      const b = await body(req);
+      const attendees = (Array.isArray(b.attendees) ? b.attendees.map(String) : []).filter(x => db.accounts[x]).slice(0, 200);
+      if (need(attendees.length, 400, "no attendees marked")) return true;
+      const when = fleetDate(ev.at);
+      for (const id2 of attendees) {
+        const rec = recFor(id2);
+        if (!rec.record.some(e => e.kind === "event" && e.eventId === m[1]))
+          rec.record.push({ at: ev.at, by: actor.name, kind: "event", eventId: m[1],
+            text: "Attended: " + ev.title + " (" + when + ")" });
+      }
+      ev.aar = { at: Date.now(), by: actor.name, attendees, ships: String(b.ships || "").slice(0, 200),
+        synopsis: String(b.synopsis || "").slice(0, 1500) };
+      persist("events"); persist("personnel");
+      audit("aar", ev.title + " — " + attendees.length + " attended");
+      enqueue("aar", { eventId: m[1], date: when, mission: ev.title, personnel: attendees.map(displayName),
+        ships: ev.aar.ships || "N/A", synopsis: ev.aar.synopsis, reportedBy: actor.bot ? actor.name : displayName(actor.id) });
+      send(res, 200, { ok: true, aar: ev.aar });
+      return true;
+    }
+
+    /* ── Request Mast: formal requests and grievances, routed up the chain,
+       answered on the record, a Discord DM at every stage ── */
+    const mastView = (c) => Object.assign({}, c, { byName: displayName(c.by), toName: displayName(c.to),
+      log: c.log.map(l => Object.assign({}, l, { byName: displayName(l.by) })) });
+    if (p === "/api/mast" && req.method === "POST" && !actor.bot) {
+      const b = await body(req);
+      const subject = String(b.subject || "").trim().slice(0, 120), text = String(b.body || "").trim().slice(0, 2000);
+      if (need(subject && text, 400, "subject and body required")) return true;
+      const to = b.recipient ? String(b.recipient) : nextUp(actor.id);
+      if (need(to && db.accounts[to] && to !== actor.id, 400, "nobody stands above you on the published chain — pick a recipient")) return true;
+      const c = { id: crypto.randomBytes(6).toString("hex"), at: Date.now(), by: actor.id, to, subject,
+        status: "open", log: [{ at: Date.now(), by: actor.id, text }] };
+      pdb.mast.cases.push(c);
+      if (pdb.mast.cases.length > 2000) pdb.mast.cases.splice(0, pdb.mast.cases.length - 2000);
+      persist("mast");
+      audit("mast", "case filed: " + subject + " → " + displayName(to));
+      enqueue("dm", { discordId: to, text: "📨 **Request Mast** — " + displayName(actor.id) + " has filed: **" + subject +
+        "**\nAnswer it on the portal: " + (PORTAL_URL || "") + "command.html" });
+      send(res, 200, { ok: true, case: mastView(c) });
+      return true;
+    }
+    if (p === "/api/mast" && req.method === "GET" && !actor.bot) {
+      const mine = pdb.mast.cases.filter(c => c.by === actor.id).map(mastView).reverse();
+      const inbox = pdb.mast.cases.filter(c => c.to === actor.id || (isAdmin(actor) && c.status !== "resolved" && false)).map(mastView).reverse();
+      send(res, 200, { ok: true, mine, inbox, chain: chainAssignees(), nextUp: nextUp(actor.id) });
+      return true;
+    }
+    if ((m = /^\/api\/mast\/([a-f0-9]{12})\/(reply|escalate|resolve)$/.exec(p)) && req.method === "POST" && !actor.bot) {
+      const c = pdb.mast.cases.find(x => x.id === m[1]);
+      if (need(c, 404, "no such case")) return true;
+      if (need(c.by === actor.id || c.to === actor.id || isAdmin(actor), 403, "not your case")) return true;
+      const b = await body(req);
+      const text = String(b.text || "").trim().slice(0, 2000);
+      if (m[2] === "reply") {
+        if (need(text, 400, "empty reply")) return true;
+        c.log.push({ at: Date.now(), by: actor.id, text });
+        const other = c.by === actor.id ? c.to : c.by;
+        enqueue("dm", { discordId: other, text: "📨 **Request Mast** — reply on **" + c.subject + "** from " +
+          displayName(actor.id) + ":\n" + text.slice(0, 900) });
+      } else if (m[2] === "escalate") {
+        if (need(c.to === actor.id || isAdmin(actor), 403, "only the current recipient escalates")) return true;
+        const up = nextUp(c.to);
+        if (need(up && up !== c.to, 400, "nobody stands above on the chain")) return true;
+        c.log.push({ at: Date.now(), by: actor.id, text: "Escalated to " + displayName(up) + (text ? " — " + text : "") });
+        c.to = up; c.status = "escalated";
+        enqueue("dm", { discordId: up, text: "📨 **Request Mast** — escalated to you: **" + c.subject + "** (filed by " +
+          displayName(c.by) + ")\nAnswer it on the portal: " + (PORTAL_URL || "") + "command.html" });
+      } else {
+        if (need(c.to === actor.id || isAdmin(actor), 403, "only the recipient resolves")) return true;
+        c.status = "resolved";
+        c.log.push({ at: Date.now(), by: actor.id, text: "Resolved" + (text ? " — " + text : "") });
+        enqueue("dm", { discordId: c.by, text: "📨 **Request Mast** — **" + c.subject + "** resolved by " +
+          displayName(actor.id) + (text ? ":\n" + text.slice(0, 900) : "") });
+      }
+      persist("mast");
+      audit("mast", m[2] + ": " + c.subject);
+      send(res, 200, { ok: true, case: mastView(c) });
+      return true;
+    }
+
+    /* ── the Discord muster desk: arrivals beside their likely roster
+       record, one click to merge ── */
+    if (p === "/api/personnel/unmatched" && req.method === "GET") {
+      if (need(isAdmin(actor), 403, "management access required")) return true;
+      const manual = Object.entries(db.accounts).filter(([, a]) => a.manual)
+        .map(([id2, a]) => ({ id: id2, callsign: a.callsign, rank: (pdb.personnel[id2] || {}).rank || "—" }));
+      const arrivals = Object.entries(db.accounts).filter(([, a]) => !a.manual).map(([id2, a]) => ({
+        id: id2, callsign: a.callsign || null, discordName: a.discordName, role: a.role,
+        rank: (pdb.personnel[id2] || {}).rank || "—",
+        suggestions: manual.map(mm => ({ id: mm.id, callsign: mm.callsign, rank: mm.rank, score: matchScore(a, mm) }))
+          .filter(s => s.score >= 0.5).sort((x, y) => y.score - x.score).slice(0, 3) }));
+      send(res, 200, { ok: true, arrivals, manual });
+      return true;
+    }
+    if (p === "/api/personnel/merge" && req.method === "POST") {
+      if (need(isAdmin(actor), 403, "management access required")) return true;
+      const b = await body(req);
+      const from = String(b.manualId || ""), to = String(b.discordId || "");
+      if (need(db.accounts[from] && db.accounts[from].manual, 404, "manual record not found")) return true;
+      if (need(db.accounts[to] && !db.accounts[to].manual, 404, "discord account not found")) return true;
+      const label = db.accounts[from].callsign;
+      await serializeMutation(async () => { mergeAccounts(from, to, actor.name); });
+      audit("merge", label + " → " + displayName(to));
+      send(res, 200, { ok: true, profile: profile(to) });
+      return true;
+    }
+
     if (p === "/api/catalog" && req.method === "GET") { send(res, 200, { ok: true, catalog: pdb.catalog }); return true; }
     if (p === "/api/catalog" && req.method === "POST") {
       if (need(isAdmin(actor), 403, "management access required")) return true;
       const b = await body(req);
       await serializeMutation(async () => {
-        for (const key of ["ranks", "awards", "certs", "apps"]) {
+        for (const key of ["ranks", "awards", "certs", "apps", "aotq", "issue"]) {
           if (!Array.isArray(b[key])) continue;
           const list = b[key].slice(0, 200).map(x => x && typeof x === "object" ? x : null).filter(Boolean);
           if (key === "ranks" && list.some(r => !r.grade || !r.name || !r.abbr)) throw new Error("every rank needs grade+name+abbr");
@@ -651,7 +1022,9 @@ module.exports = function createPortalApi(deps) {
                   (rankIdx(rec.rank) > rankIdx(from) ? "Promoted " : "Reduced ") + from + " → " + rec.rank);
                 const fromRank = pdb.catalog.ranks.find(r => r.abbr === from);
                 shout.push({ discordId: id, name: displayName(id),
+                  nick: (db.accounts[id] && db.accounts[id].discordName) || displayName(id),
                   fromRank: fromRank ? fromRank.name : from, toRank: pdb.catalog.ranks[idx].name,
+                  toAbbr: pdb.catalog.ranks[idx].abbr,
                   promoted: rankIdx(rec.rank) > rankIdx(from) });
               }
             } else if (act.type === "note") {
@@ -866,11 +1239,18 @@ module.exports = function createPortalApi(deps) {
       const member = b.memberId ? String(b.memberId) : null;
       if (need(!member || db.accounts[member], 404, "no such member")) return true;
       const previous = hit.st.assignee;
+      const wasAt = member ? currentBillet(member) : null;
       hit.st.assignee = member;
       if (previous && previous !== member) logEntry(recFor(previous), actor.name, "station",
         "Relieved of station: " + hit.st.title + ", " + hit.ship.name);
-      if (member && previous !== member) logEntry(recFor(member), actor.name, "station",
-        "Assigned to station: " + hit.st.title + ", " + hit.ship.name);
+      if (member && previous !== member) {
+        logEntry(recFor(member), actor.name, "station",
+          "Assigned to station: " + hit.st.title + ", " + hit.ship.name);
+        issueOrders(member, actor, { unit: hit.ship.name, hull: hit.ship.hullId || "",
+          title: hit.st.title, department: hit.dept ? hit.dept.name : "", previous: wasAt });
+        enqueueRoles(member);
+      }
+      audit("billet", (member ? displayName(member) + " → " : "vacated: ") + hit.st.title + ", " + hit.ship.name);
       persist("roster"); persist("personnel");
       send(res, 200, { ok: true });
       return true;
@@ -980,12 +1360,14 @@ module.exports = function createPortalApi(deps) {
         audit("assignment", displayName(member) + " detached from " + sq.name);
       } else {
         const billet = String(b.billet).slice(0, 60);
+        const wasAt = currentBillet(member);
         if (existing) existing.billet = billet;
         else sq.members.push({ discordId: member, billet });
         logEntry(recFor(member), actor.name, "squadron",
           "Assigned to " + sq.name + " — " + billet);
-        enqueue("announce", { kind: "assignment", by: actor.name,
-          items: [{ discordId: member, name: displayName(member), text: "Assigned to " + sq.name + " — " + billet }] });
+        issueOrders(member, actor, { unit: sq.name, hull: "", title: billet, department: sq.designation || "",
+          previous: wasAt, squadronName: sq.name,
+          squadronLine: sq.designation ? sq.designation + " (" + sq.name + ")" : sq.name });
         audit("assignment", displayName(member) + " -> " + sq.name + " (" + billet + ")");
       }
       enqueueRoles(member);
@@ -1179,6 +1561,7 @@ module.exports = function createPortalApi(deps) {
           else if (created) rec.rank = "—";
           if (mm.rating != null) rec.rating = String(mm.rating).slice(0, 12);
           if (created) logEntry(rec, actor.name, "note", "Imported from the legacy fleet roster");
+          ensureEnlisted(id, acc.createdAt || Date.now());
           const l = pdb.loa[id] || (pdb.loa[id] = { active: null, history: [] });
           if (mm.loa === true && !l.active)
             l.active = { start: Number(mm.loaSince) || Date.now(), reason: "Carried over from the legacy roster" };
@@ -1244,5 +1627,5 @@ module.exports = function createPortalApi(deps) {
     return true;
   }
 
-  return { handle, cors };
+  return { handle, cors, onStanding };
 };

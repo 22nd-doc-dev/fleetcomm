@@ -128,13 +128,17 @@ function scheduleMapRefresh() { clearTimeout(mapTimer); mapTimer = setTimeout(re
 const GOLD = 0xC9A96A, GREEN = 0x5CA877, RED = 0xC0604A;
 const FOOTER = { text: "UEES Operations Command" };
 const ts = (ms, style) => "<t:" + Math.floor(ms / 1000) + ":" + style + ">";
+const MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+/* the fleet's calendar: real day, in-universe year (+930), DDMONYYYY */
+const fleetDate = (ms) => { const d = new Date(ms); return String(d.getUTCDate()).padStart(2, "0") + MONTHS[d.getUTCMonth()] + (d.getUTCFullYear() + 930); };
+const fleetClock = (ms) => { const d = new Date(ms); return fleetDate(ms) + " " + String(d.getUTCHours()).padStart(2, "0") + String(d.getUTCMinutes()).padStart(2, "0") + " SET"; };
 
 function eventEmbed(ev) {
   const fields = [
     { name: "🎖️ Event Tier", value: ev.tier || "OPERATION" },
-    { name: "🔔 Start Time", value: ts(ev.at, "F") },
+    { name: "🔔 Start Time", value: fleetClock(ev.at) + "\n" + ts(ev.at, "f") },
   ];
-  if (ev.endAt) fields.push({ name: "🔔 End Time", value: ts(ev.endAt, "F") });
+  if (ev.endAt) fields.push({ name: "🔔 End Time", value: fleetClock(ev.endAt) + "\n" + ts(ev.endAt, "f") });
   fields.push({ name: "📆 Event Countdown", value: ts(ev.at, "R") });
   if (ev.location) fields.push({ name: "🌐 Location", value: ev.location });
   if (ev.uniform) fields.push({ name: "👕 Uniform of the Day", value: ev.uniform });
@@ -143,7 +147,7 @@ function eventEmbed(ev) {
     "❌ Not Attending: **" + ev.counts.no + "**\n" +
     "❓ Unsure: **" + ev.counts.maybe + "**" });
   return {
-    title: "🪖 EVENT - " + new Date(ev.at).toISOString().slice(0, 10) + " - " + ev.title.toUpperCase(),
+    title: "🪖 EVENT - " + fleetDate(ev.at) + " - " + ev.title.toUpperCase(),
     description: ev.brief || "",
     color: GOLD, fields, footer: FOOTER, timestamp: new Date().toISOString(),
   };
@@ -182,13 +186,13 @@ function announceEmbeds(job) {
   const out = [];
   for (const it of job.items || []) {
     if (job.kind === "rank" && it.promoted) out.push({
-      title: "PROMOTION - " + it.name.toUpperCase(),
+      title: "PROMOTION - " + (it.toAbbr ? it.toAbbr + " " : "") + String(it.nick || it.name).toUpperCase(),
       description: "To all who see these presents, greetings:\n\n" +
-        "Know ye, that reposing special trust and confidence in the fidelity and abilities of **" +
-        it.fromRank + "**" + mentionOf(it) + " **" + it.name + "**, hereby, shall be promoted to the rank of **" +
+        "Know ye, that reposing special trust and confidence in the fidelity and abilities of former **" +
+        it.fromRank + "**" + (mentionOf(it) || " **" + it.name + "**") + ", hereby, shall be promoted to the rank of **" +
         it.toRank + "** in the UEE Navy. The recipient shall discharge the duties of their previous rank " +
-        "and assume the duties and responsibilities commensurate with their new station.",
-      color: GOLD, footer: FOOTER,
+        "and assume the duties and responsibilities commensurate with their new station.\n\n-UEES Operations Command",
+      color: GOLD,
     });
     else if (job.kind === "rank") out.push({
       title: "REDUCTION IN RANK - " + it.name.toUpperCase(),
@@ -287,6 +291,48 @@ async function handleJob(job) {
         allowed_mentions: { parse: [], users: (job.items || []).map(x => x.discordId)
           .filter(id => id && !String(id).startsWith("m-")) },
       });
+    return {};
+  }
+  if (job.type === "orders") {
+    const chan = channelFor("assignments");
+    if (!chan) { log("waiting for an assignment-orders channel"); return "wait"; }
+    /* the Bureau's order goes out as written — plain text, mention up top */
+    const head = mentionOf(job) ? "Orders for" + mentionOf(job) + "\n\n" : "";
+    await dapi("POST", "/channels/" + chan + "/messages", {
+      content: (head + job.text).slice(0, 2000),
+      allowed_mentions: { parse: [], users: job.discordId && !String(job.discordId).startsWith("m-") ? [job.discordId] : [] },
+    });
+    log("assignment orders posted for", job.name);
+    return {};
+  }
+  if (job.type === "aar") {
+    const chan = channelFor("activity");
+    if (!chan) { log("waiting for an activity-tracker channel"); return "wait"; }
+    const lines = ["**DATE**: " + job.date, "**MISSION**: " + job.mission,
+      "**PERSONNEL**: " + (job.personnel || []).join(", "), "**SHIP(S)**: " + (job.ships || "N/A"),
+      "**SYNOPSIS**: " + (job.synopsis || "—"), "**REPORTED BY**: " + job.reportedBy];
+    await dapi("POST", "/channels/" + chan + "/messages",
+      { content: lines.join("\n").slice(0, 2000), allowed_mentions: { parse: [] } });
+    log("after-action posted:", job.mission);
+    return {};
+  }
+  if (job.type === "status") {
+    /* rename the standing-orders voice channel: "AOR: Nyx System" */
+    const prefix = (state.cfg.config.status || {})[job.which] || (job.which === "aor" ? "AOR:" : "Duty Station:");
+    const chans = await dapi("GET", "/guilds/" + GUILD + "/channels");
+    const target = chans.find(c => c.type === 2 && String(c.name).toLowerCase().startsWith(prefix.toLowerCase()));
+    if (!target) { log("no voice channel starting with", JSON.stringify(prefix), "— create one and the status posts itself"); return "wait"; }
+    const name = (prefix + " " + job.value).slice(0, 100);
+    if (target.name !== name) await dapi("PATCH", "/channels/" + target.id, { name }, { "X-Audit-Log-Reason": "22EF standing orders" });
+    log("status channel:", name);
+    return {};
+  }
+  if (job.type === "dm") {
+    if (!job.discordId || String(job.discordId).startsWith("m-")) return {};
+    try {
+      const dm = await dapi("POST", "/users/@me/channels", { recipient_id: job.discordId });
+      await dapi("POST", "/channels/" + dm.id + "/messages", { content: String(job.text).slice(0, 2000), allowed_mentions: { parse: [] } });
+    } catch (e) { log("dm undeliverable to", job.discordId, "—", e.message); }   /* closed DMs are not a poison job */
     return {};
   }
   if (job.type === "remind-now") {

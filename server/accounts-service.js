@@ -514,6 +514,7 @@ const server = http.createServer(async (req, res) => {
         target.role = b.role;
         audit(a.acc.callsign || a.acc.discordName, a.id, "standing",
           (target.callsign || target.discordName || m[1]) + ": " + previousRole + " -> " + b.role);
+        try { portal.onStanding(m[1], previousRole, b.role); } catch (error) { console.error("[portal] onStanding:", error.message); }
         tokensFor(target);
         if (b.role === "revoked") {
           for (const [sessionToken, session] of Object.entries(db.sessions)) {

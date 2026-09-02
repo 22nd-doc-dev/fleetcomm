@@ -502,6 +502,73 @@ const pause = ms => new Promise(r => setTimeout(r, ms));
   ok(r.body.entries.length === audBefore + 1 && r.body.entries[0].action === "event",
      "the ledger only ever grows, newest first");
 
+  /* ── fleet standing orders: the Fleet CO's keys ── */
+  await api("POST", "/api/coc", { nodes }, doc);            /* doc holds the top billet again */
+  r = await api("POST", "/api/fleet", { aor: "Pyro System" }, oak);
+  ok(r.status === 403, "the AOR is the Fleet CO's to set, not a member's");
+  r = await api("POST", "/api/fleet", { aor: "Pyro System", dutyStation: "Levski, Delamar, Nyx System" }, doc);
+  ok(r.status === 200 && r.body.fleet.aor === "Pyro System", "the Fleet CO sets the AOR and duty station");
+  r = await api("GET", "/api/bot/outbox", null, "Bot bot-secret-test");
+  ok(r.body.jobs.some(j => j.type === "status" && j.which === "aor" && j.value === "Pyro System"),
+     "an AOR change queues the Discord status-channel update");
+  r = await api("GET", "/api/fleet", null, oak);
+  ok(r.body.fleet.dutyStation === "Levski, Delamar, Nyx System" && /^\d{2}[A-Z]{3}\d{4}$/.test(r.body.fleetDate),
+     "everyone reads the standing orders and the fleet date");
+  r = await api("GET", "/api/public");
+  ok(r.body.fleet.aor === "Pyro System", "the public registry carries the AOR");
+
+  /* ── enlistment and assignment orders ── */
+  r = await api("GET", "/api/personnel/" + trav.discordId, null, doc);
+  ok(r.body.profile.record.some(e => e.kind === "enlist" && /2955|2956/.test(e.text)),
+     "an imported member enlisted on the record with an in-universe date");
+  r = await api("POST", "/api/squadrons/desron-38/assign", { memberId: "2002", billet: "Gunnery Officer" }, doc);
+  ok(r.status === 200, "Oak is assigned to DESRON-38");
+  r = await api("GET", "/api/personnel/2002", null, doc);
+  const order = r.body.profile.orders[0];
+  ok(order && /ASSIGNMENT ORDER/.test(order.text) && /Reporting Unit \/ Ship: DESRON-38, DESRON-38/.test(order.text) &&
+     /Service Number: #\d{5}/.test(order.text) && /Current Duty Station: Levski/.test(order.text),
+     "assignment orders are written in the Bureau's format with a service number");
+  r = await api("GET", "/api/bot/outbox", null, "Bot bot-secret-test");
+  ok(r.body.jobs.some(j => j.type === "orders" && j.discordId === "2002"), "orders go out to the assignment-orders channel");
+
+  /* ── after-action: attendance onto the record ── */
+  r = await api("POST", "/api/events/" + botEvId + "/aar", { attendees: ["2002", "1001"], ships: "UEES Tiber", synopsis: "Door kicked." }, oak);
+  ok(r.status === 403, "after-action reports are COMMAND's to file");
+  r = await api("POST", "/api/events/" + botEvId + "/aar", { attendees: ["2002", "1001"], ships: "UEES Tiber", synopsis: "Door kicked." }, doc);
+  ok(r.status === 200 && r.body.aar.attendees.length === 2, "COMMAND files the after-action report");
+  r = await api("GET", "/api/personnel/2002", null, doc);
+  ok(r.body.profile.record.some(e => e.kind === "event" && /Attended: Bot Door Op/.test(e.text)),
+     "official attendance lands on the service record");
+  r = await api("GET", "/api/bot/outbox", null, "Bot bot-secret-test");
+  ok(r.body.jobs.some(j => j.type === "aar" && j.mission === "Bot Door Op" && j.personnel.length === 2),
+     "the activity-tracker report goes out with the muster");
+
+  /* ── Request Mast: up the chain, answered, resolved ── */
+  r = await api("POST", "/api/mast", { subject: "Leave extension", body: "Requesting two more weeks." }, oak);
+  ok(r.status === 200 && r.body.case.to === "1001", "a request routes to the nearest leader above on the chain");
+  const mastId = r.body.case.id;
+  r = await api("GET", "/api/mast", null, doc);
+  ok(r.body.inbox.some(c => c.id === mastId), "the leader sees it in their inbox");
+  r = await api("POST", "/api/mast/" + mastId + "/resolve", { text: "Approved." }, oak);
+  ok(r.status === 403, "only the recipient resolves");
+  r = await api("POST", "/api/mast/" + mastId + "/reply", { text: "Approved, enjoy." }, doc);
+  r = await api("POST", "/api/mast/" + mastId + "/resolve", { text: "Approved." }, doc);
+  ok(r.status === 200 && r.body.case.status === "resolved" && r.body.case.log.length === 3, "reply and resolution land on the case log");
+  r = await api("GET", "/api/bot/outbox", null, "Bot bot-secret-test");
+  ok(r.body.jobs.filter(j => j.type === "dm" && j.discordId === "2002").length >= 2, "the requester is DM'd at each stage");
+
+  /* ── the muster desk: a manual record folds into its Discord arrival ── */
+  r = await api("POST", "/api/personnel/add", { callsign: "Oak \"Gully\" Morcroft", rank: "PO2" }, doc);
+  const gullyId = r.body.profile.discordId;
+  r = await api("GET", "/api/personnel/unmatched", null, doc);
+  const arrival = r.body.arrivals.find(a => a.id === "2002");
+  ok(arrival && arrival.suggestions.some(s => s.id === gullyId && s.score >= 0.5),
+     "the desk suggests the matching manual record for an arrival");
+  r = await api("POST", "/api/personnel/merge", { manualId: gullyId, discordId: "2002" }, doc);
+  ok(r.status === 200 && r.body.profile.rank.abbr === "PO2", "merging carries the roster rank onto the Discord account");
+  r = await api("GET", "/api/personnel/" + gullyId, null, doc);
+  ok(r.status === 404, "the manual shell is retired after the merge");
+
   await stop();
   fs.rmSync(dataDir, { recursive: true, force: true });
   console.log("\n✔ PORTAL API PASS — profiles, bulk actions, CoC, availability, events, SSO and the bot door hold their gates");
