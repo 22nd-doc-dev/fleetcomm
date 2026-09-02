@@ -757,8 +757,9 @@ function beep(f1, f2, dur, g0) {
     o.connect(g); g.connect(masterGain); o.start(t); o.stop(t + dur + 0.02);
   } catch (e) {}
 }
-const chirpDown = () => beep(1650, 1250, 0.07, 0.06);
-const chirpUp = () => beep(1150, 1500, 0.05, 0.045);
+const chirpCount = { down: 0, up: 0 };            /* the rig counts what it cannot hear */
+const chirpDown = () => { chirpCount.down++; beep(1650, 1250, 0.07, 0.06); };
+const chirpUp = () => { chirpCount.up++; beep(1150, 1500, 0.05, 0.045); };
 
 /* ══ TX control ══ */
 function txReasons(n) { if (!n._txReasons) n._txReasons = new Set(); return n._txReasons; }
@@ -773,6 +774,13 @@ async function requestTX(i, reason) {
      can become stuck transmitting without any key still held. */
   if (!connected || !n.tuned || txReasons(n).size === 0 || n.tx) return;
   n.tx = true; txEndPending.delete(n.idx); txSet.add(n.idx);
+  /* the key-down chirp belongs to the CARRIER, not to the button that raised
+     it: the first net to go live chirps, whatever keyed it. Per-net keys used
+     to key silently (the chirps lived in the master-PTT handler only) —
+     Sven, IF-55 bind, 2026-09-02. Per-net keys also log their own TX line;
+     the master PTT logs all its targets in one line up front. */
+  if (txSet.size === 1) chirpDown();
+  if (reason === "bind") addLog("tx", n.cfg.name, "TX START — " + callsign + " (net key)");
   if (n.bcast) { bcastIdx.add(n.idx); await ipcRenderer.invoke("arm-broadcast", n.idx); } else bcastIdx.delete(n.idx);
   netDyn(i); sendOv(); renderTxTargets();
 }
@@ -780,12 +788,13 @@ function finishTX(i) {
   const n = nets[i];
   if (!n || !n.tx) return;
   n.tx = false; txSet.delete(n.idx); txEndPending.add(n.idx);
+  if (txSet.size === 0) chirpUp();                /* last carrier down → key-up chirp */
   netDyn(i); sendOv(); renderTxTargets();
 }
 function releaseTX(i, reason) {
   const n = nets[i]; if (!n) return;
   txReasons(n).delete(reason);
-  if (txReasons(n).size === 0) finishTX(i);
+  if (txReasons(n).size === 0) { const was = n.tx; finishTX(i); if (was && reason === "bind") addLog("tx", n.cfg.name, "TX END (net key)"); }
 }
 function syncReasonTargets(reason, active) {
   const targets = active ? new Set(txTargetIdxs()) : new Set();
@@ -813,10 +822,9 @@ async function pttAll(down) {
   const t = txTargetIdxs();
   if (down) {
     if (!t.length) { toast("No net has TX enabled — toggle TX on at least one net."); pttHeld = false; $("ptt").classList.remove("hot"); return; }
-    chirpDown(); addLog("tx", txNames(t), "TX START — " + callsign);
+    addLog("tx", txNames(t), "TX START — " + callsign);
     syncReasonTargets("ptt", true);
   } else if (!openMic) {
-    chirpUp();
     syncReasonTargets("ptt", false);
     addLog("tx", "", "TX END");
   } else {
@@ -832,10 +840,10 @@ async function setOpenMic(on) {
   const t = txTargetIdxs();
   if (on) {
     if (!t.length) { toast("No net has TX enabled."); setOpenMic(false); return; }
-    chirpDown(); addLog("tx", txNames(t), "OPEN MIC ENGAGED — " + callsign);
+    addLog("tx", txNames(t), "OPEN MIC ENGAGED — " + callsign);
     syncReasonTargets("open", true);
   } else {
-    chirpUp(); syncReasonTargets("open", false);
+    syncReasonTargets("open", false);
     addLog("tx", "", "OPEN MIC ENDED");
   }
 }
@@ -3553,6 +3561,22 @@ if (bridge.autotestHost) {
           $("toast").style.display === "block" && /not tuned/.test($("toast").textContent));
         onKeyUp("dom", "F23", "F23");
         u.bind = bindWas; $("toast").style.display = "none";
+      }
+    }
+    /* a per-net key must chirp like the master PTT: the chirps belong to the
+       carrier transitions, not to the button (Sven, IF-55 bind, 2026-09-02) */
+    {
+      const bi = nets.findIndex(n => n.tuned && n.idx != null);
+      if (bi < 0 || !connected) L("bind-chirps", "skipped(no-tuned)");
+      else {
+        const d0 = chirpCount.down, u0 = chirpCount.up;
+        await requestTX(bi, "bind");
+        if (!nets[bi].tx) L("bind-chirps", "skipped(no-mic)");
+        else {
+          const keyed = chirpCount.down === d0 + 1 && chirpCount.up === u0;
+          releaseTX(bi, "bind");
+          L("bind-chirps", keyed && !nets[bi].tx && chirpCount.up === u0 + 1 && chirpCount.down === d0 + 1);
+        }
       }
     }
     /* the global hook relays OS key auto-repeat: a held cycle key must step once */
