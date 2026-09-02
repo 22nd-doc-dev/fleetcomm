@@ -66,10 +66,13 @@
       "icon": "build/icon.png",
       "executableName": "fleetcomm",
       "desktop": {
-        "Name": "FleetComm",
-        "Comment": "22nd Expeditionary Fleet radio",
-        "Categories": "Game;AudioVideo;"
+        "entry": {
+          "Name": "FleetComm",
+          "Comment": "22nd Expeditionary Fleet radio",
+          "Categories": "Game;AudioVideo;"
+        }
       }
-    }
+    },
+    "npmRebuild": false
   }
 }
