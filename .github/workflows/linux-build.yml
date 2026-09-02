@@ -17,12 +17,17 @@ jobs:
       - run: npm ci
       - name: Flatpak toolchain + runtimes (system-wide, so flatpak-builder finds them)
         run: |
-          sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq flatpak flatpak-builder
+          sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq flatpak flatpak-builder imagemagick
           sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
           sudo flatpak install -y --noninteractive flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08 org.electronjs.Electron2.BaseApp//24.08
       - run: npx electron-builder --linux AppImage --x64 --publish never
       - run: bash scripts/repack-appimage.sh
-      - run: bash scripts/build-flatpak.sh
+      - name: Build the Flatpak (output kept for the log publisher)
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p /tmp/smoke
+          bash scripts/build-flatpak.sh 2>&1 | tee /tmp/smoke/build-flatpak.log
       - run: ls -la dist/ && file dist/*.AppImage dist/*.flatpak
       - name: Linux smoke - run both artifacts headless with the autotest rig
         run: |
@@ -56,7 +61,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          rm -rf /tmp/pub && mkdir -p /tmp/pub && cp /tmp/smoke/*.log /tmp/pub/ 2>/dev/null || true
+          rm -rf /tmp/pub && mkdir -p /tmp/pub && (cp /tmp/smoke/*.log /tmp/pub/ 2>/dev/null || true)
+          echo "run $GITHUB_RUN_ID sha $GITHUB_SHA $(date -u +%FT%TZ)" > /tmp/pub/RUN.txt
           cd /tmp/pub && git init -q && git config user.name ci && git config user.email ci@fleetcomm.local
           git add . && git commit -qm "linux smoke logs for $GITHUB_SHA" && git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:ci-debug-log
       - uses: actions/upload-artifact@v4
