@@ -19,7 +19,10 @@
  * Pure: takes what it needs, returns a plan. The filesystem work lives in
  * main.js and is fed by this.
  */
-const path = require("path");
+/* Windows semantics on every platform: the feature only exists on Windows, but
+   the suite runs on Linux CI, where a POSIX join of a C:\ path produces mixed
+   separators and the launched-from-home comparison silently fails */
+const path = require("path").win32;
 const { cmpVer } = require("./update-guard");
 
 const APP_ID = "space.fleetcomm.app";       /* = build.appId in package.json */
