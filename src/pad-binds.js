@@ -36,9 +36,17 @@ function pressedStates(gamepadButtons) {
   return (gamepadButtons || []).map(b => !!(b && (b.pressed || b.value > 0.6)));
 }
 
-/* Transitions between two polls → down/up events, one per changed button. */
+/* Transitions between two polls → down/up events, one per changed button.
+   The FIRST poll of a device is its baseline and emits nothing: a VelocityOne
+   reports two buttons (23, 26) as permanently pressed, and Chromium exposes a
+   pad only once a button is pressed — so "held at first sight" is the stuck
+   bits plus the waking press, and a capture would bind the lowest stuck bit
+   and key the net forever. The operator presses again; the waking press is
+   the one input we consciously drop. A vanished device (curr empty) still
+   releases everything it held. */
 function diffButtons(prev, curr) {
   const events = [];
+  if (!prev) return events;
   const n = Math.max(prev ? prev.length : 0, curr ? curr.length : 0);
   for (let b = 0; b < n; b++) {
     const was = !!(prev && prev[b]), is = !!(curr && curr[b]);

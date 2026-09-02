@@ -418,23 +418,46 @@ function pollPads(padsOverride) {
   let pads;
   try { pads = padsOverride || (navigator.getGamepads ? navigator.getGamepads() : []); }
   catch (e) { return; }
+  const seen = new Set();
   for (const gp of pads) {
     if (!gp) continue;
     const key = bridge.padBinds.padKey(gp.id);
+    seen.add(key);
     if (!padAnnounced.has(key)) {
       padAnnounced.add(key);
       addLog("sys", "", "controller detected — " + key + " (" + (gp.buttons || []).length +
-        " buttons; bind them like keys: click any KEY control, then press the button)" +
+        " buttons; bind them like keys: click any KEY control, then press the button — " +
+        "the press that woke the controller is its baseline, press again)" +
         (document.hasFocus() ? "" : " [window unfocused]"));
       console.log("[pad] detected " + JSON.stringify(gp.id) + " key=" + key + " buttons=" + (gp.buttons || []).length +
         " axes=" + (gp.axes || []).length + " mapping=" + gp.mapping + " focus=" + document.hasFocus());
     }
-    const curr = bridge.padBinds.pressedStates(gp.buttons);
+    /* GamepadButton is a host object: pressed/value are PROTOTYPE getters, and
+       contextBridge copies own properties only — so gp.buttons crossed into
+       the preload world as a list of empty objects and pressedStates() saw
+       every real stick as all-false, forever. (The rig's plain-object fake pad
+       survived the bridge, which is why the test was green while Oak's stick
+       did nothing.) Unwrap to plain values on THIS side of the bridge. */
+    const plainButtons = Array.from(gp.buttons || [], b => ({ pressed: !!(b && b.pressed), value: (b && +b.value) || 0 }));
+    const curr = bridge.padBinds.pressedStates(plainButtons);
     const events = bridge.padBinds.diffButtons(padStates.get(key), curr);
     padStates.set(key, curr);
     /* --enable-logging trace of every transition: the only way to see what a
        stick actually reports when the operator is at the desk and I am not */
-    if (bridge.autotestHost) for (const ev of events) console.log("[pad] " + key + " b" + ev.button + (ev.down ? " DOWN" : " up") + " focus=" + document.hasFocus() + " capturing=" + !!capturing);
+    if (bridge.autotestHost) {
+      for (const ev of events) console.log("[pad] " + key + " b" + ev.button + (ev.down ? " DOWN" : " up") + " focus=" + document.hasFocus() + " capturing=" + !!capturing);
+      /* raw dump whenever ANY reported value moves — the VelocityOne showed
+         32 buttons and 10 axes and never a transition, so see what a press
+         actually changes (rate-limited per pad) */
+      const sig = (gp.buttons || []).map(b => (b.value || (b.pressed ? 1 : 0)).toFixed(1)).join("") + "|" +
+        (gp.axes || []).map(a => a.toFixed(1)).join(",");
+      const rawKey = "raw:" + key, last = padStates.get(rawKey);
+      if (last && last.sig !== sig && Date.now() - last.at > 100) {
+        console.log("[pad] raw " + key + " btn=[" + (gp.buttons || []).map((b, j) => (b.pressed || b.value > 0.3) ? j + ":" + (b.value || 1).toFixed(1) : "").filter(Boolean).join(" ") +
+          "] axes=[" + (gp.axes || []).map(a => a.toFixed(2)).join(",") + "] ts=" + Math.round(gp.timestamp || 0));
+        padStates.set(rawKey, { sig, at: Date.now() });
+      } else if (!last) padStates.set(rawKey, { sig, at: 0 });
+    }
     /* diagnostic for the in-game failure: Chromium's per-backend focus rules
        decide whether stick input still flows while the game has focus, and it
        differs BY DEVICE. This line appearing in an operator's log proves
@@ -450,6 +473,14 @@ function pollPads(padsOverride) {
       if (ev.down) onKeyDown("pad", code, label, []);
       else onKeyUp("pad", code, label);
     }
+  }
+  /* a stick unplugged (or dropped by Chromium) mid-press must release what it
+     held, or PTT wedges open — the module always supported it, the loop never
+     asked */
+  if (!padsOverride) for (const [key, prev] of padStates) {
+    if (key.startsWith("raw:") || seen.has(key)) continue;
+    for (const ev of bridge.padBinds.diffButtons(prev, [])) onKeyUp("pad", key + "#b" + ev.button, bridge.padBinds.padLabel(key, ev.button));
+    padStates.delete(key);
   }
 }
 setInterval(pollPads, 16);
@@ -3254,8 +3285,13 @@ if (bridge.autotestHost) {
     /* flight stick end-to-end with a synthetic pad: capture binds it,
        pressing keys the net (ON AIR lights), releasing un-keys it */
     {
+      /* buttons shaped like Chromium's GamepadButton — pressed/value as
+         PROTOTYPE getters, no own properties — so the fake crosses the
+         contextBridge exactly the way a real stick does (a plain-object fake
+         passed for months while every real stick read as all-false) */
+      class HostBtn { constructor(p) { Object.defineProperty(this, "_p", { value: p, enumerable: false }); } get pressed() { return this._p; } get value() { return this._p ? 1 : 0; } }
       const fakePad = (pressed) => [{ id: "T.16000M (Vendor: 044f Product: b10a)", index: 0,
-        buttons: [{ pressed: false, value: 0 }, { pressed: false, value: 0 }, { pressed, value: pressed ? 1 : 0 }] }];
+        buttons: [new HostBtn(false), new HostBtn(false), new HostBtn(pressed)] }];
       const savedBind = masterBinds.active;
       /* arm exactly one tuned net so pttAll has a deterministic target,
          independent of what earlier checks left selected */

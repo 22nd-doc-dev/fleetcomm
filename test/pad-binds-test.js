@@ -35,8 +35,10 @@ ok("a half-pulled HOTAS trigger keys the net; a resting one doesn't");
 assert.deepStrictEqual(diffButtons([false, false], [true, false]), [{ button: 0, down: true }], "press");
 assert.deepStrictEqual(diffButtons([true, false], [false, false]), [{ button: 0, down: false }], "release");
 assert.deepStrictEqual(diffButtons([true, false], [true, false]), [], "held button repeats nothing");
-assert.deepStrictEqual(diffButtons(undefined, [true]), [{ button: 0, down: true }],
-  "a button already held at first poll still registers as a press");
+assert.deepStrictEqual(diffButtons(undefined, [true, false, true]), [],
+  "first sight of a device is its baseline — stuck bits (VelocityOne holds 23 and 26 forever) and the waking press emit nothing");
+assert.deepStrictEqual(diffButtons([true, false, true], [true, true, true]), [{ button: 1, down: true }],
+  "after the baseline, only real transitions fire — a permanently-held bit never becomes a bind");
 assert.deepStrictEqual(diffButtons([true], []), [{ button: 0, down: false }],
   "a vanished device releases its held buttons instead of wedging PTT open");
 ok("state diffs give one clean event per transition — no repeats, no stuck keys");
