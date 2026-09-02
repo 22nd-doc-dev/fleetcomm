@@ -1,0 +1,51 @@
+# FleetComm Flatpak — declarative manifest, built by scripts/build-flatpak.sh
+# from electron-builder's unpacked Linux app (dist/linux-unpacked).
+#
+# Why not electron-builder's flatpak target: it hard-wires the launch through
+# zypak (the Electron base app's Chromium-sandbox shim), which never brings
+# Electron 44's zygote up — the app hangs before its first line of JS. Its
+# `files` override can't replace the launcher either (the bundler copies all
+# entries in parallel and the stage tree wins). So the manifest is ours: the
+# same runtime and base, our launcher, exact permission grants.
+app-id: space.fleetcomm.app
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+base: org.electronjs.Electron2.BaseApp
+base-version: '24.08'
+branch: stable
+command: fleetcomm-launch
+separate-locales: false
+finish-args:
+  - --share=ipc
+  - --share=network            # the relay, the accounts service, and the Discord sign-in loopback redirect on 127.0.0.1
+  - --socket=x11               # the global push-to-talk hook (XRecord) and the overlay
+  - --socket=wayland
+  - --socket=pulseaudio        # microphone + net audio (PipeWire's Pulse front end)
+  - --device=all               # the flight stick: Chromium reads /dev/input directly. `--device=input` is the
+                               # precise grant but needs flatpak >= 1.15.6 on the builder AND the user's box;
+                               # the Ubuntu 24.04 builder ships 1.14. Narrow it when the runner catches up.
+  - --filesystem=xdg-download  # hand-installed updates land here
+  - --talk-name=org.freedesktop.Notifications
+modules:
+  - name: fleetcomm
+    buildsystem: simple
+    build-commands:
+      - mkdir -p /app/lib/space.fleetcomm.app
+      - cp -a app/. /app/lib/space.fleetcomm.app/
+      - install -Dm755 fleetcomm-launch /app/bin/fleetcomm-launch
+      - install -Dm644 space.fleetcomm.app.desktop /app/share/applications/space.fleetcomm.app.desktop
+      - install -Dm644 icon-512.png /app/share/icons/hicolor/512x512/apps/space.fleetcomm.app.png
+      - install -Dm644 icon-256.png /app/share/icons/hicolor/256x256/apps/space.fleetcomm.app.png
+    sources:
+      - type: dir
+        path: ../../dist/linux-unpacked
+        dest: app
+      - type: file
+        path: fleetcomm-launch
+      - type: file
+        path: space.fleetcomm.app.desktop
+      - type: file
+        path: gen/icon-512.png
+      - type: file
+        path: gen/icon-256.png

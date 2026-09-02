@@ -1,0 +1,12 @@
+#!/bin/sh
+# FleetComm Flatpak launcher.
+#
+# Runs the Electron binary directly with Chromium's inner sandbox off. The
+# Electron base app's zypak shim (which re-creates that sandbox inside
+# Flatpak) never brings Electron 44's zygote up — the sandboxed zygote dies at
+# spawn and the browser process waits forever; verified in CI, three zypak
+# variants dead, the direct launch passes the full autotest rig. The Flatpak
+# sandbox (bubblewrap + the manifest's finish-args) remains the isolation
+# boundary. Revisit when the base app's zypak catches up with Electron.
+export TMPDIR="$XDG_RUNTIME_DIR/app/$FLATPAK_ID"
+exec /app/lib/space.fleetcomm.app/fleetcomm --no-sandbox "$@"

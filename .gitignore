@@ -12,3 +12,6 @@ fc_parts*/
 FleetComm-v*.zip
 fleetcomm-transfer/
 .fleetcomm-secrets.txt
+
+# generated at flatpak build time
+build/flatpak/gen/

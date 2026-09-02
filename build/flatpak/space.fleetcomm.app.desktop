@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=FleetComm
+Comment=22nd Expeditionary Fleet radio
+Exec=fleetcomm-launch %U
+Icon=space.fleetcomm.app
+Terminal=false
+Categories=Game;AudioVideo;Network;
+StartupWMClass=FleetComm

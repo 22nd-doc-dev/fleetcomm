@@ -20,8 +20,9 @@ jobs:
           sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq flatpak flatpak-builder
           sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
           sudo flatpak install -y --noninteractive flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08 org.electronjs.Electron2.BaseApp//24.08
-      - run: npx electron-builder --linux AppImage flatpak --x64 --publish never
+      - run: npx electron-builder --linux AppImage --x64 --publish never
       - run: bash scripts/repack-appimage.sh
+      - run: bash scripts/build-flatpak.sh
       - run: ls -la dist/ && file dist/*.AppImage dist/*.flatpak
       - name: Linux smoke - run both artifacts headless with the autotest rig
         run: |
@@ -39,7 +40,7 @@ jobs:
           flatpak list --user --columns=application,version,branch,runtime > /tmp/smoke/flatpak-list.log 2>&1 || true
           cat /tmp/smoke/flatpak-list.log
           echo "== Flatpak: sandbox layout + stdout capture check"
-          (flatpak run --command=sh space.fleetcomm.app -c 'echo hello-from-sandbox; echo "TMPDIR=$TMPDIR XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR DISPLAY=$DISPLAY"; ls -la /app/bin; echo ---; ls -la /app/bin/electron-wrapper; cat /app/bin/electron-wrapper; echo ---; ls /app/lib/space.fleetcomm.app | head -30; echo ---; ldd /app/lib/space.fleetcomm.app/fleetcomm | grep -i "not found" || echo "ldd: all libs resolved"; ls /app/lib/space.fleetcomm.app/resources; find /app/lib/space.fleetcomm.app -name "*.node" | head' > /tmp/smoke/flatpak-layout.log 2>&1 || true)
+          (flatpak run --command=sh space.fleetcomm.app -c 'echo hello-from-sandbox; echo "TMPDIR=$TMPDIR XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR DISPLAY=$DISPLAY"; ls -la /app/bin; echo ---; ls -la /app/bin/fleetcomm-launch; cat /app/bin/fleetcomm-launch; echo ---; ls /app/lib/space.fleetcomm.app | head -30; echo ---; ldd /app/lib/space.fleetcomm.app/fleetcomm | grep -i "not found" || echo "ldd: all libs resolved"; ls /app/lib/space.fleetcomm.app/resources; find /app/lib/space.fleetcomm.app -name "*.node" | head' > /tmp/smoke/flatpak-layout.log 2>&1 || true)
           cat /tmp/smoke/flatpak-layout.log
           echo "== Flatpak run (our launcher — must match the direct run)"
           (timeout 60 dbus-run-session -- xvfb-run -a flatpak run --env=FLEETCOMM_AUTOTEST=127.0.0.1 --env=ELECTRON_ENABLE_LOGGING=1 --env=ELECTRON_ENABLE_STACK_DUMPING=1 space.fleetcomm.app --enable-logging=stderr > /tmp/smoke/flatpak.log 2>&1 || true)

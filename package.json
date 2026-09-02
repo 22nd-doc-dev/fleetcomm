@@ -15,7 +15,8 @@
     "admin-token": "node scripts/set-admin-token.js",
     "dist:win": "electron-builder --win --x64 --publish never",
     "dist:mac": "electron-builder --mac zip --publish never",
-    "dist:linux": "electron-builder --linux AppImage --x64 --publish never"
+    "dist:linux": "electron-builder --linux AppImage --x64 --publish never",
+    "dist:flatpak": "bash scripts/build-flatpak.sh"
   },
   "dependencies": {
     "opusscript": "^0.1.1",
@@ -60,8 +61,7 @@
     "artifactName": "${productName}-${version}.${ext}",
     "linux": {
       "target": [
-        "AppImage",
-        "flatpak"
+        "AppImage"
       ],
       "category": "Game",
       "icon": "build/icon.png",
@@ -74,32 +74,6 @@
         }
       }
     },
-    "npmRebuild": false,
-    "flatpak": {
-      "runtime": "org.freedesktop.Platform",
-      "runtimeVersion": "24.08",
-      "sdk": "org.freedesktop.Sdk",
-      "base": "org.electronjs.Electron2.BaseApp",
-      "baseVersion": "24.08",
-      "branch": "stable",
-      "category": "Game",
-      "synopsis": "22nd Expeditionary Fleet radio",
-      "finishArgs": [
-        "--share=ipc",
-        "--share=network",
-        "--socket=x11",
-        "--socket=wayland",
-        "--socket=pulseaudio",
-        "--device=all",
-        "--filesystem=xdg-download",
-        "--talk-name=org.freedesktop.Notifications"
-      ],
-      "files": [
-        [
-          "build/flatpak/electron-wrapper",
-          "/bin/electron-wrapper"
-        ]
-      ]
-    }
+    "npmRebuild": false
   }
 }
