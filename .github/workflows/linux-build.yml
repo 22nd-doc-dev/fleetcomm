@@ -6,7 +6,7 @@ on:
   push:
     branches: ['linux-build']
 permissions:
-  contents: read
+  contents: write   # the smoke logs are force-pushed to ci-debug-log (job logs need admin auth to read)
 jobs:
   appimage:
     runs-on: ubuntu-latest
@@ -23,6 +23,33 @@ jobs:
       - run: npx electron-builder --linux AppImage flatpak --x64 --publish never
       - run: bash scripts/repack-appimage.sh
       - run: ls -la dist/ && file dist/*.AppImage dist/*.flatpak
+      - name: Linux smoke - run both artifacts headless with the autotest rig
+        run: |
+          set -uo pipefail
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq xvfb dbus-x11 >/dev/null
+          mkdir -p /tmp/smoke
+          node test/fake-murmur.js > /tmp/smoke/fake-murmur.log 2>&1 &
+          sleep 2
+          chmod +x dist/FleetComm-*.AppImage
+          echo "== AppImage"
+          (FLEETCOMM_AUTOTEST=127.0.0.1 timeout 75 xvfb-run -a ./dist/FleetComm-*.AppImage --no-sandbox --enable-logging > /tmp/smoke/appimage.log 2>&1 || true)
+          echo "== Flatpak install"
+          flatpak install --user -y --noninteractive ./dist/FleetComm-*.flatpak > /tmp/smoke/flatpak-install.log 2>&1 || true
+          tail -n 5 /tmp/smoke/flatpak-install.log
+          flatpak list --user --columns=application,version,branch,runtime > /tmp/smoke/flatpak-list.log 2>&1 || true
+          cat /tmp/smoke/flatpak-list.log
+          echo "== Flatpak run"
+          (timeout 75 dbus-run-session -- xvfb-run -a flatpak run --env=FLEETCOMM_AUTOTEST=127.0.0.1 space.fleetcomm.app --enable-logging > /tmp/smoke/flatpak.log 2>&1 || true)
+          for f in appimage flatpak; do echo "== $f: autotest lines $(grep -c '\[AUTOTEST\]' /tmp/smoke/$f.log || true) / console errors $(grep -c 'ERROR:CONSOLE' /tmp/smoke/$f.log || true)"; done
+          echo "== flatpak.log tail"; tail -n 60 /tmp/smoke/flatpak.log || true
+      - name: Publish smoke logs to the ci-debug-log branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          rm -rf /tmp/pub && mkdir -p /tmp/pub && cp /tmp/smoke/*.log /tmp/pub/ 2>/dev/null || true
+          cd /tmp/pub && git init -q && git config user.name ci && git config user.email ci@fleetcomm.local
+          git add . && git commit -qm "linux smoke logs for $GITHUB_SHA" && git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:ci-debug-log
       - uses: actions/upload-artifact@v4
         with:
           name: fleetcomm-appimage
