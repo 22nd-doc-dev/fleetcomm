@@ -29,14 +29,62 @@
       "monitor": false,
       "ship": true,
       "subnets": [
-        { "name": "TIBER BRIDGE", "display": "BRIDGE", "tag": "CMD", "freq": "265.100", "enc": false },
-        { "name": "TIBER TACTICAL", "display": "TACTICAL", "tag": "TAC", "freq": "265.200", "enc": false },
-        { "name": "TIBER DAMAGE CONTROL", "display": "DAMAGE CONTROL", "tag": "DC", "freq": "265.300", "enc": false },
-        { "name": "TIBER SECURITY", "display": "SECURITY", "tag": "SEC", "freq": "265.400", "enc": false },
-        { "name": "TIBER ENGINEERING", "display": "ENGINEERING", "tag": "ENG", "freq": "265.500", "enc": false },
-        { "name": "TIBER MEDICAL", "display": "MEDICAL", "tag": "MED", "freq": "265.600", "enc": false },
-        { "name": "TIBER LOGISTICS", "display": "LOGISTICS", "tag": "LOG", "freq": "265.700", "enc": false },
-        { "name": "TIBER DECK", "display": "DECK", "tag": "ATC", "freq": "265.800", "enc": false }
+        {
+          "name": "TIBER BRIDGE",
+          "display": "BRIDGE",
+          "tag": "CMD",
+          "freq": "265.100",
+          "enc": false
+        },
+        {
+          "name": "TIBER TACTICAL",
+          "display": "TACTICAL",
+          "tag": "TAC",
+          "freq": "265.200",
+          "enc": false
+        },
+        {
+          "name": "TIBER DAMAGE CONTROL",
+          "display": "DAMAGE CONTROL",
+          "tag": "DC",
+          "freq": "265.300",
+          "enc": false
+        },
+        {
+          "name": "TIBER SECURITY",
+          "display": "SECURITY",
+          "tag": "SEC",
+          "freq": "265.400",
+          "enc": false
+        },
+        {
+          "name": "TIBER ENGINEERING",
+          "display": "ENGINEERING",
+          "tag": "ENG",
+          "freq": "265.500",
+          "enc": false
+        },
+        {
+          "name": "TIBER MEDICAL",
+          "display": "MEDICAL",
+          "tag": "MED",
+          "freq": "265.600",
+          "enc": false
+        },
+        {
+          "name": "TIBER LOGISTICS",
+          "display": "LOGISTICS",
+          "tag": "LOG",
+          "freq": "265.700",
+          "enc": false
+        },
+        {
+          "name": "TIBER DECK",
+          "display": "DECK",
+          "tag": "ATC",
+          "freq": "265.800",
+          "enc": false
+        }
       ]
     },
     {
@@ -47,14 +95,62 @@
       "monitor": false,
       "ship": true,
       "subnets": [
-        { "name": "MINERVA BRIDGE", "display": "BRIDGE", "tag": "CMD", "freq": "268.100", "enc": false },
-        { "name": "MINERVA TACTICAL", "display": "TACTICAL", "tag": "TAC", "freq": "268.200", "enc": false },
-        { "name": "MINERVA DAMAGE CONTROL", "display": "DAMAGE CONTROL", "tag": "DC", "freq": "268.300", "enc": false },
-        { "name": "MINERVA SECURITY", "display": "SECURITY", "tag": "SEC", "freq": "268.400", "enc": false },
-        { "name": "MINERVA ENGINEERING", "display": "ENGINEERING", "tag": "ENG", "freq": "268.500", "enc": false },
-        { "name": "MINERVA MEDICAL", "display": "MEDICAL", "tag": "MED", "freq": "268.600", "enc": false },
-        { "name": "MINERVA LOGISTICS", "display": "LOGISTICS", "tag": "LOG", "freq": "268.700", "enc": false },
-        { "name": "MINERVA DECK", "display": "DECK", "tag": "ATC", "freq": "268.800", "enc": false }
+        {
+          "name": "MINERVA BRIDGE",
+          "display": "BRIDGE",
+          "tag": "CMD",
+          "freq": "268.100",
+          "enc": false
+        },
+        {
+          "name": "MINERVA TACTICAL",
+          "display": "TACTICAL",
+          "tag": "TAC",
+          "freq": "268.200",
+          "enc": false
+        },
+        {
+          "name": "MINERVA DAMAGE CONTROL",
+          "display": "DAMAGE CONTROL",
+          "tag": "DC",
+          "freq": "268.300",
+          "enc": false
+        },
+        {
+          "name": "MINERVA SECURITY",
+          "display": "SECURITY",
+          "tag": "SEC",
+          "freq": "268.400",
+          "enc": false
+        },
+        {
+          "name": "MINERVA ENGINEERING",
+          "display": "ENGINEERING",
+          "tag": "ENG",
+          "freq": "268.500",
+          "enc": false
+        },
+        {
+          "name": "MINERVA MEDICAL",
+          "display": "MEDICAL",
+          "tag": "MED",
+          "freq": "268.600",
+          "enc": false
+        },
+        {
+          "name": "MINERVA LOGISTICS",
+          "display": "LOGISTICS",
+          "tag": "LOG",
+          "freq": "268.700",
+          "enc": false
+        },
+        {
+          "name": "MINERVA DECK",
+          "display": "DECK",
+          "tag": "ATC",
+          "freq": "268.800",
+          "enc": false
+        }
       ]
     },
     {
@@ -65,13 +161,55 @@
       "monitor": false,
       "ship": true,
       "subnets": [
-        { "name": "OLYMPIA BRIDGE", "display": "BRIDGE", "tag": "CMD", "freq": "274.100", "enc": false },
-        { "name": "OLYMPIA TACTICAL", "display": "TACTICAL", "tag": "TAC", "freq": "274.200", "enc": false },
-        { "name": "OLYMPIA DAMAGE CONTROL", "display": "DAMAGE CONTROL", "tag": "DC", "freq": "274.300", "enc": false },
-        { "name": "OLYMPIA SECURITY", "display": "SECURITY", "tag": "SEC", "freq": "274.400", "enc": false },
-        { "name": "OLYMPIA ENGINEERING", "display": "ENGINEERING", "tag": "ENG", "freq": "274.500", "enc": false },
-        { "name": "OLYMPIA MEDICAL", "display": "MEDICAL", "tag": "MED", "freq": "274.600", "enc": false },
-        { "name": "OLYMPIA LOGISTICS", "display": "LOGISTICS", "tag": "LOG", "freq": "274.700", "enc": false }
+        {
+          "name": "OLYMPIA BRIDGE",
+          "display": "BRIDGE",
+          "tag": "CMD",
+          "freq": "274.100",
+          "enc": false
+        },
+        {
+          "name": "OLYMPIA TACTICAL",
+          "display": "TACTICAL",
+          "tag": "TAC",
+          "freq": "274.200",
+          "enc": false
+        },
+        {
+          "name": "OLYMPIA DAMAGE CONTROL",
+          "display": "DAMAGE CONTROL",
+          "tag": "DC",
+          "freq": "274.300",
+          "enc": false
+        },
+        {
+          "name": "OLYMPIA SECURITY",
+          "display": "SECURITY",
+          "tag": "SEC",
+          "freq": "274.400",
+          "enc": false
+        },
+        {
+          "name": "OLYMPIA ENGINEERING",
+          "display": "ENGINEERING",
+          "tag": "ENG",
+          "freq": "274.500",
+          "enc": false
+        },
+        {
+          "name": "OLYMPIA MEDICAL",
+          "display": "MEDICAL",
+          "tag": "MED",
+          "freq": "274.600",
+          "enc": false
+        },
+        {
+          "name": "OLYMPIA LOGISTICS",
+          "display": "LOGISTICS",
+          "tag": "LOG",
+          "freq": "274.700",
+          "enc": false
+        }
       ]
     },
     {
@@ -82,14 +220,62 @@
       "monitor": false,
       "ship": true,
       "subnets": [
-        { "name": "WARRIOR BRIDGE", "display": "BRIDGE", "tag": "CMD", "freq": "277.100", "enc": false },
-        { "name": "WARRIOR TACTICAL", "display": "TACTICAL", "tag": "TAC", "freq": "277.200", "enc": false },
-        { "name": "WARRIOR DAMAGE CONTROL", "display": "DAMAGE CONTROL", "tag": "DC", "freq": "277.300", "enc": false },
-        { "name": "WARRIOR SECURITY", "display": "SECURITY", "tag": "SEC", "freq": "277.400", "enc": false },
-        { "name": "WARRIOR ENGINEERING", "display": "ENGINEERING", "tag": "ENG", "freq": "277.500", "enc": false },
-        { "name": "WARRIOR MEDICAL", "display": "MEDICAL", "tag": "MED", "freq": "277.600", "enc": false },
-        { "name": "WARRIOR LOGISTICS", "display": "LOGISTICS", "tag": "LOG", "freq": "277.700", "enc": false },
-        { "name": "WARRIOR DECK", "display": "DECK", "tag": "ATC", "freq": "277.800", "enc": false }
+        {
+          "name": "WARRIOR BRIDGE",
+          "display": "BRIDGE",
+          "tag": "CMD",
+          "freq": "277.100",
+          "enc": false
+        },
+        {
+          "name": "WARRIOR TACTICAL",
+          "display": "TACTICAL",
+          "tag": "TAC",
+          "freq": "277.200",
+          "enc": false
+        },
+        {
+          "name": "WARRIOR DAMAGE CONTROL",
+          "display": "DAMAGE CONTROL",
+          "tag": "DC",
+          "freq": "277.300",
+          "enc": false
+        },
+        {
+          "name": "WARRIOR SECURITY",
+          "display": "SECURITY",
+          "tag": "SEC",
+          "freq": "277.400",
+          "enc": false
+        },
+        {
+          "name": "WARRIOR ENGINEERING",
+          "display": "ENGINEERING",
+          "tag": "ENG",
+          "freq": "277.500",
+          "enc": false
+        },
+        {
+          "name": "WARRIOR MEDICAL",
+          "display": "MEDICAL",
+          "tag": "MED",
+          "freq": "277.600",
+          "enc": false
+        },
+        {
+          "name": "WARRIOR LOGISTICS",
+          "display": "LOGISTICS",
+          "tag": "LOG",
+          "freq": "277.700",
+          "enc": false
+        },
+        {
+          "name": "WARRIOR DECK",
+          "display": "DECK",
+          "tag": "ATC",
+          "freq": "277.800",
+          "enc": false
+        }
       ]
     },
     {
@@ -99,8 +285,16 @@
       "defaultKey": "",
       "monitor": false,
       "subnets": [
-        { "name": "REAPER-1", "freq": "300.100", "enc": false },
-        { "name": "REAPER-2", "freq": "300.200", "enc": false }
+        {
+          "name": "REAPER-1",
+          "freq": "300.100",
+          "enc": false
+        },
+        {
+          "name": "REAPER-2",
+          "freq": "300.200",
+          "enc": false
+        }
       ]
     },
     {
@@ -110,8 +304,16 @@
       "defaultKey": "",
       "monitor": false,
       "subnets": [
-        { "name": "ALPHA SQUADRON", "freq": "310.100", "enc": false },
-        { "name": "BRAVO SQUADRON", "freq": "310.200", "enc": false }
+        {
+          "name": "ALPHA SQUADRON",
+          "freq": "310.100",
+          "enc": false
+        },
+        {
+          "name": "BRAVO SQUADRON",
+          "freq": "310.200",
+          "enc": false
+        }
       ]
     },
     {
@@ -125,7 +327,7 @@
   "updates": {
     "url": "https://raw.githubusercontent.com/22nd-doc-dev/fleetcomm/main/version.json",
     "releases": "https://github.com/22nd-doc-dev/fleetcomm/releases/latest",
-    "exeTemplate": "https://github.com/22nd-doc-dev/fleetcomm/releases/download/v{v}/FleetComm-{v}.exe"
+    "exeTemplate": "https://github.com/22nd-doc-dev/fleetcomm/releases/download/v{v}/FleetComm-{v}-windows.exe"
   },
   "accounts": {
     "url": "https://68.183.103.215",

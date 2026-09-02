@@ -23,6 +23,6 @@ REPO=/tmp/fleetcomm-flatpak-repo
 BUILD=/tmp/fleetcomm-flatpak-build
 rm -rf "$REPO" "$BUILD"
 flatpak-builder --force-clean --disable-rofiles-fuse --repo="$REPO" "$BUILD" "$MANIFEST"
-flatpak build-bundle "$REPO" "dist/FleetComm-$VERSION.flatpak" "$APP_ID" stable
-ls -la "dist/FleetComm-$VERSION.flatpak"
-echo "built dist/FleetComm-$VERSION.flatpak from $MANIFEST"
+flatpak build-bundle "$REPO" "dist/FleetComm-$VERSION-linux-x64.flatpak" "$APP_ID" stable
+ls -la "dist/FleetComm-$VERSION-linux-x64.flatpak"
+echo "built dist/FleetComm-$VERSION-linux-x64.flatpak from $MANIFEST"
