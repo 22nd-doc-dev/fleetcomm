@@ -1,4 +1,4 @@
 {
-  "version": "1.3.4",
-  "notes": "FleetComm 1.3.4 — pin it. FleetComm now keeps a permanent copy of itself under your user profile and puts FleetComm in your Start menu; open it from there (or right-click the running window ▸ Pin to taskbar) and the pin keeps working through every update, because updates replace that copy in place. You will see a one-time note in the COMM LOG when it is set up; the file you downloaded can be deleted afterwards. Everything from 1.3 rides along: the two-minute walkthrough (SYS ▸ HELP) and the helmet-cam wall with its recorder burn-in and talking outline."
+  "version": "1.3.7",
+  "notes": "FleetComm 1.3.7 — chirps for every key, and Linux. FIX: a talk key bound to a single net (the KEY control on a net row) keyed the net silently — no key-down or key-up chirp and no TX line in the COMM LOG. The chirps now follow the carrier itself, so every way of keying (PTT button, PTT key, per-net key, stick button, open mic) gets exactly one pair. LINUX (experimental): FleetComm now ships as an AppImage and a Flatpak alongside the Windows exe and the Mac zip — download from the release page; Linux has no auto-update yet, you get a banner pointing there. Also riding along since 1.3.4: the Start-menu copy you can pin to the taskbar, the two-minute walkthrough (SYS ▸ HELP), and the helmet-cam wall."
 }
