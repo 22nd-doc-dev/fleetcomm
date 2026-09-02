@@ -27,6 +27,16 @@ if (!TOKEN || !GUILD || !DOOR) {
 }
 
 const log = (...a) => console.log("[bot]", new Date().toISOString().slice(11, 19), ...a);
+
+/* Node 22+ ships a WebSocket client; older runtimes can borrow the `ws`
+   package (same addEventListener/data/code surface) rather than strand the bot */
+const WS = typeof WebSocket !== "undefined" ? WebSocket : (() => {
+  try { return require("ws"); }
+  catch (e) {
+    console.error("[bot] Node " + process.version + " has no WebSocket client - run Node 22+ (or `npm install ws`)");
+    process.exit(1);
+  }
+})();
 const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
 
 /* ── portal client (the bot door) ── */
@@ -451,7 +461,7 @@ let heartbeatTimer = null, awaitedAck = false, backoff = 1000;
 
 function connectGateway(resume) {
   const base = resume && resumeUrl ? resumeUrl : "wss://gateway.discord.gg";
-  ws = new WebSocket(base + "/?v=10&encoding=json");
+  ws = new WS(base + "/?v=10&encoding=json");
   ws.addEventListener("open", () => { backoff = 1000; });
   ws.addEventListener("message", (ev) => {
     let p;
