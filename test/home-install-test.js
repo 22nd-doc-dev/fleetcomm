@@ -2,7 +2,7 @@
 /* The persistent home: when a portable launch installs/refreshes its stable
    copy, and what the Start Menu shortcut must carry for pinning to work. */
 const assert = require("assert");
-const path = require("path");
+const path = require("path").win32;   /* the module is Windows-only and pins win32 — so must the expectations, or Linux CI fails */
 const { plan, APP_ID } = require("../src/home-install");
 
 const ok = (m) => console.log("  ✓ " + m);
