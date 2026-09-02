@@ -1159,6 +1159,7 @@ function cycleSel(dir) {
   addLog("sys", nets[selectedI].cfg.name, "selected — TX armed");
 }
 function sendOv() {
+  camTalkSync();
   ipcRenderer.send("ov-state", nets.filter(n => n.tuned).map(n => {
     const now = Date.now();
     let who = null;
@@ -1919,6 +1920,9 @@ async function afterConnect(cs) {
   $("authName").textContent = callsign; $("authRole").textContent = roleTxt;
   $("acctKey").style.display = (acct && acct.account.role === "command") ? "" : "none";
   addLog("sys", "", "operator " + callsign + " authenticated (" + roleTxt + ")");
+  /* the walkthrough's hand-off: it stopped at "sign in", we are now signed in */
+  if (!bridge.autotestHost && !store.get("tutDone", false) && (store.get("tutPending", false) || (tut.on && tut.phase === "quarterdeck")))
+    setTimeout(() => tutOpen("board"), 1200);
   renderNets(); chirpDown(); pollOps();
   /* first ship's-state paint without waiting out the 12s poll */
   try { renderShipState(await ipcRenderer.invoke("atc-view")); } catch (e) {}
@@ -2495,6 +2499,8 @@ const cam = {
   pub: null,                  /* {stream, quality, viewers:Map<actor,pc>} */
   watching: new Map(),        /* actor → {pc, tile, cs, state} */
   live: new Map(),            /* actor → callsign of announced publishers  */
+  meta: new Map(),            /* actor → {since, who} from their announce   */
+  since: 0,                   /* when MY cam went live (rides the announce) */
   peers: [], limit: 5000, seq: 0,
   reasm: bridge.camSignal.newReassembler({ ttlMs: 30000 }),
   announceTimer: null
@@ -2553,10 +2559,13 @@ ipcRenderer.on("cam-signal", async (ev, s) => {
   if (!m || typeof m.t !== "string") return;
   const from = s.from || "OPERATOR";
   if (m.t === "who") {
-    if (cam.pub && await camViewerAllowed(from)) sendSig([s.actor], { t: "on", cs: callsign });
+    if (cam.pub && await camViewerAllowed(from)) sendSig([s.actor], camOnPayload());
     return;
   }
   if (m.t === "on") {
+    /* since/who are cosmetic burn-in for the tile (elapsed timer, name):
+       bounded, never identity — identity stays the relay-verified `from` */
+    cam.meta.set(s.actor, { since: Math.max(0, +m.since || 0), who: String(m.who || "").slice(0, 40) });
     /* Identity comes from the SERVER's user table (the |ctl username the
        relay verified), never from the payload — any operator can write any
        cs into a signal. A fresh announce from the same callsign under a new
@@ -2628,7 +2637,8 @@ async function camGoLive(source) {
   $("camStart").hidden = true; $("camStop").hidden = false;
   $("camStatus").textContent = "ON AIR · 0 WATCHING"; $("camStatus").classList.add("live");
   addLog("sys", "", "helmet cam live — " + source.name);
-  camMountTile("self", callsign + " (YOU)", stream, true);
+  cam.since = Date.now();
+  camMountTile("self", callsign + " (YOU)", stream, true, { since: cam.since, who: camMyName(), cs: callsign });
   camAnnounce();
   /* re-announce once a minute: sessions churn on relinks and latecomers ask
      WHO only when they open the page */
@@ -2645,10 +2655,15 @@ async function camAnnounce() {
     ? others.filter(sess => { const p = cam.peers.find(x => x.session === sess);
         return p && authorized.has(camCanon(p.callsign)); })
     : others;
-  if (targets.length) sendSig(targets, { t: "on", cs: callsign });
+  if (targets.length) sendSig(targets, camOnPayload());
 }
+/* what rides every announce besides the callsign: when the feed started (for
+   the viewer's elapsed timer) and the operator's name (for the burn-in) */
+const camMyName = () => (acct && acct.account.discordName) ? String(acct.account.discordName).slice(0, 40) : "";
+const camOnPayload = () => ({ t: "on", cs: callsign, since: cam.since || 0, who: camMyName() });
 function camStopPub() {
   if (!cam.pub) return;
+  cam.since = 0;
   clearInterval(cam.announceTimer); cam.announceTimer = null;
   const others = camOthers();
   if (others.length) sendSig(others, { t: "off" });
@@ -2718,7 +2733,7 @@ function camPubCount() {
 function camWatch(actor) {
   if (cam.watching.has(actor)) return;
   const cs = cam.live.get(actor) || "OPERATOR";
-  const entry = { pc: null, cs, tile: camMountTile(actor, cs, null, false) };
+  const entry = { pc: null, cs, tile: camMountTile(actor, cs, null, false, Object.assign({ cs }, cam.meta.get(actor) || {})) };
   cam.watching.set(actor, entry);
   /* a req can go unanswered (stale session id, publisher quit) — say so and
      clean up instead of CALLING… forever */
@@ -2745,6 +2760,7 @@ async function camAcceptOffer(actor, from, sdp) {
     if (!current()) return;
     const v = entry.tile.querySelector("video");
     if (v && v.srcObject !== e.streams[0]) { v.srcObject = e.streams[0]; v.play().catch(() => {}); }
+    if (!entry.tile.dataset.since) entry.tile.dataset.since = String(camSinceFor(cam.meta.get(actor) || {}));
     entry.tile.classList.remove("lost");
     entry.tile.querySelector(".st8").textContent = "";
   });
@@ -2795,15 +2811,31 @@ function camDropTile(actor, why) {
   camViewState(); renderCamList();
 }
 /* ── tiles ── */
-function camMountTile(actor, label, stream, isSelf) {
+/* the streamer's clock says when the feed started; trust it only when it is
+   sane (not in the future, not zero) — else the timer runs from arrival */
+function camSinceFor(meta) {
+  const s = +(meta && meta.since) || 0, now = Date.now();
+  return (s > 0 && s <= now + 5000) ? Math.min(s, now) : now;
+}
+const camElapsed = (since) => {
+  const t = Math.max(0, Math.floor((Date.now() - since) / 1000));
+  return String(Math.floor(t / 3600)).padStart(2, "0") + ":" + String(Math.floor(t / 60) % 60).padStart(2, "0") + ":" + String(t % 60).padStart(2, "0");
+};
+function camMountTile(actor, label, stream, isSelf, metaIn) {
   const grid = $("camGrid");
+  const meta = metaIn || {};
   const tile = document.createElement("div");
   tile.className = "tile" + (isSelf ? " self" : "");
   tile.dataset.actor = String(actor);
+  tile.dataset.cs = String(meta.cs || label).replace(/\s*\(YOU\)$/, "");
+  if (stream) tile.dataset.since = String(camSinceFor(meta));
   tile.innerHTML = '<video autoplay muted playsinline></video>' +
-    '<div class="tl"><span class="livebadge">LIVE</span><b>' + esc(label) + '</b><span class="st8">' + (stream ? "" : "CALLING…") + '</span>' +
+    '<div class="tl"><span class="livebadge">LIVE</span><span class="tmr" data-timer>' + (stream ? camElapsed(+tile.dataset.since) : "--:--:--") + '</span>' +
+    '<b>' + esc(label) + '</b>' + (meta.who ? '<span class="who">' + esc(meta.who) + '</span>' : "") +
+    '<span class="st8">' + (stream ? "" : "CALLING…") + '</span>' +
     '<button data-pip title="Float this feed over the game">PIP</button>' +
-    (isSelf ? "" : '<button data-close title="Stop watching">✕</button>') + "</div>";
+    (isSelf ? "" : '<button data-close title="Stop watching">✕</button>') + "</div>" +
+    '<div class="bl"><span data-fclock>' + esc(fleetTime()) + '</span><span class="vox">● VOX</span></div>';
   const v = tile.querySelector("video");
   if (stream) { v.srcObject = stream; v.play().catch(() => {}); }
   v.addEventListener("click", () => {
@@ -2822,14 +2854,43 @@ function camMountTile(actor, label, stream, isSelf) {
   return tile;
 }
 /* columns for n feeds: 1, 2, then the squarest wall that fits (4 across at
-   most — beyond that the plates are too small to read a callsign) */
-const camCols = (n) => (n <= 1 ? 1 : Math.min(4, Math.ceil(Math.sqrt(n))));
+   most — beyond that the plates are too small to read a callsign) — and never
+   more than the pane can hold at 300px a plate (a narrow window gets a
+   single column rather than two unreadable ones) */
+const camCols = (n, width) => {
+  const byCount = n <= 1 ? 1 : Math.min(4, Math.ceil(Math.sqrt(n)));
+  const byWidth = width > 0 ? Math.max(1, Math.floor((width - 24) / 300)) : byCount;
+  return Math.max(1, Math.min(byCount, byWidth));
+};
+/* the operator on a feed is keyed → outline their tile. Speakers are known
+   per net by relay session; tiles by callsign — the relay's wire name for a
+   session IS the canon callsign (same rule the cam gate uses). Runs from
+   sendOv(), i.e. on every speaking/TX change. */
+function camTalkSync() {
+  const tiles = $("camGrid").querySelectorAll(".tile");
+  if (!tiles.length) return;
+  const now = Date.now(), talking = new Set();
+  for (const n of nets) for (const [sess, until] of n.speaking) if (until > now) talking.add(camCanon(n.roster.get(sess) || ""));
+  const meTx = txSet.size > 0;
+  tiles.forEach(t => t.classList.toggle("talking", t.classList.contains("self") ? meTx : talking.has(camCanon(t.dataset.cs))));
+}
+function camTick() {
+  const tiles = $("camGrid").querySelectorAll(".tile[data-since]");
+  if (!tiles.length) return;
+  const stamp = fleetTime();
+  tiles.forEach(t => {
+    const tm = t.querySelector("[data-timer]"); if (tm) tm.textContent = camElapsed(+t.dataset.since);
+    const fc = t.querySelector("[data-fclock]"); if (fc) fc.textContent = stamp;
+  });
+}
+setInterval(camTick, 1000);
 function camViewState() {
   const grid = $("camGrid");
   if (!grid.children.length) grid.classList.remove("solo");
-  grid.style.setProperty("--camcols", String(camCols(grid.children.length)));
+  grid.style.setProperty("--camcols", String(camCols(grid.children.length, grid.clientWidth)));
   $("camEmpty").style.display = grid.children.length ? "none" : "";
 }
+try { new ResizeObserver(() => camViewState()).observe($("camGrid")); } catch (e) {}
 function renderCamList() {
   if (!camMayWatch()) {
     $("camList").innerHTML = '<div class="camgated">ELEMENT LEADERS &amp; COMMAND ONLY</div>' +
@@ -2886,6 +2947,109 @@ function camTeardownAll() {
 }
 
 /* headless CI hook */
+/* ══ WALKTHROUGH ══
+   Coach marks over the REAL controls: a spotlight cut into a dim wash and a
+   card beside it. Two phases, because the board does not exist before
+   sign-in: the quarterdeck phase (welcome, sign in) hands off by setting
+   tutPending, and afterConnect() picks up the board phase. Opens itself once
+   for a first-time operator (tutDone unset), never in the rig; SYS ▸ HELP and
+   the sign-in link replay it any time. SKIP anywhere ends it for good. */
+const TUT_QD = [
+  { t: "WELCOME ABOARD", b: "FleetComm is the fleet's radio: every net at once, one key to talk, and a board that shows who is where. This tour takes two minutes and ends with you on the net." },
+  { t: "SIGN IN", el: () => $("discordBtn").offsetParent ? $("discordBtn") : $("connectLegacyBtn"),
+    b: "Discord confirms who you are \u2014 username only. New arrivals wait for a COMMAND operator to clear them; <b>PENDING</b> means you're in the queue. Once cleared, pick your callsign and <b>CONNECT</b>. The tour resumes on the board.", next: "SIGN IN, THEN CONTINUE \u25b8" }
+];
+const TUT_BOARD = [
+  { t: "THE BOARD", page: "pgComms", el: () => $("netlist"),
+    b: "Every net the fleet runs. Ships sit at the top with their departments nested beneath; the tag names the department. <b>TUNE \u25b8</b> joins a net \u2014 tuned nets are live in your headset." },
+  { t: "TX AND LSN", page: "pgComms", el: () => { const b = document.querySelector("#netlist [data-txon]"); return b ? b.closest(".net") : $("netlist"); },
+    b: "Each tuned net has two switches. <b>LSN</b> is your ear: on, you hear it; off, it's muted but still tuned. <b>TX</b> arms it for your voice \u2014 the net you talk on when you key. Arm one at a time unless you mean to talk on several." },
+  { t: "SHIP CONTROLS", page: "pgComms", el: () => { const b = document.querySelector("#netlist [data-lsnall]"); return b ? b.closest(".net") : null; },
+    b: "A ship row carries two more. <b>LSN ALL</b> hears every department aboard at once \u2014 a bridge watch. <b>1MC</b> is the ship-wide announce: your voice on every net aboard, at once. Command use; the whole ship hears it." },
+  { t: "PUSH TO TALK", page: "pgComms", el: () => $("ptt"),
+    b: "Click and hold, or press and hold your key. Set the key with <b>change</b> under the button \u2014 any keyboard key, mouse button, or flight-stick button (press a stick button twice: the first press wakes the stick). Binds work while the game has focus." },
+  { t: "CYCLING NETS", page: "pgComms", el: () => $("ovShowBtn").closest(".panel") || $("ovShowBtn").parentElement,
+    b: "<kbd>PAGE UP</kbd> / <kbd>PAGE DOWN</kbd> step your armed net through the tuned list \u2014 in the game too. Rebind them in SYS. The <b>GAME OVERLAY</b> floats your nets over Star Citizen with the armed one marked ARMED: SHOW it here, UNLOCK to move it." },
+  { t: "CHAT", page: "pgComms", el: () => $("chatBar2").offsetParent ? $("chatBar2") : document.querySelector('.pkey[data-page="pgChat"]'),
+    b: "Text rides the same net as voice. Type here for the selected net, or open <b>CHAT</b> on the rail for the full feed with a tab per net." },
+  { t: "THE STATIONS", el: () => $("rail"),
+    b: "<b>01 COMMS</b> \u2014 the board. <b>02 CHAT</b>. <b>03 ATC</b> \u2014 the tower's picture of the fleet. <b>04 CAM</b> \u2014 helmet cams. <b>05 SYS</b> \u2014 your microphone, keys, theme, and this tour again." },
+  { t: "YOU'RE ON THE NET", page: "pgComms",
+    b: "Tune a net, arm TX, key up and say hello. Radio discipline: listen first, keep it short, say who you are and who you're calling.", next: "FINISH \u25b8" }
+];
+const tut = { on: false, phase: "", steps: [], i: 0 };
+function tutOpen(phase) {
+  tut.phase = phase; tut.steps = phase === "quarterdeck" ? TUT_QD : TUT_BOARD; tut.i = 0; tut.on = true;
+  $("tut").hidden = false;
+  tutRender();
+}
+function tutClose(done) {
+  tut.on = false; $("tut").hidden = true;
+  if (done) { store.set("tutDone", true); store.set("tutPending", false); }
+}
+function tutRender() {
+  const st = tut.steps[tut.i]; if (!st) return;
+  if (st.page && connected) showPage(st.page);
+  $("tutStep").textContent = "WALKTHROUGH \u00b7 " + String(tut.i + 1).padStart(2, "0") + " / " + String(tut.steps.length).padStart(2, "0");
+  $("tutTitle").textContent = st.t;
+  $("tutBody").innerHTML = st.b;
+  $("tutDots").innerHTML = tut.steps.map((x, k) => "<i" + (k === tut.i ? ' class="on"' : "") + "></i>").join("");
+  $("tutBack").style.visibility = tut.i ? "" : "hidden";
+  $("tutNext").textContent = st.next || (tut.i === tut.steps.length - 1 ? "FINISH \u25b8" : "NEXT \u25b8");
+  requestAnimationFrame(tutPlace);
+}
+function tutPlace() {
+  if (!tut.on) return;
+  const st = tut.steps[tut.i]; if (!st) return;
+  let el = null; try { el = st.el ? st.el() : null; } catch (e) { el = null; }
+  const spot = $("tut").querySelector(".tut-spot"), card = $("tut").querySelector(".tut-card");
+  const vw = window.innerWidth, vh = window.innerHeight, pad = 6, gap = 14, m = 16;
+  const cw = card.offsetWidth, ch = card.offsetHeight;
+  let r = el && el.getClientRects().length ? el.getBoundingClientRect() : null;
+  if (r && (r.width < 4 || r.height < 4)) r = null;
+  if (!r) {
+    spot.classList.add("none");
+    card.style.left = Math.round((vw - cw) / 2) + "px"; card.style.top = Math.round((vh - ch) / 2) + "px";
+    return;
+  }
+  spot.classList.remove("none");
+  spot.style.left = (r.left - pad) + "px"; spot.style.top = (r.top - pad) + "px";
+  spot.style.width = (r.width + pad * 2) + "px"; spot.style.height = (r.height + pad * 2) + "px";
+  /* card: right of the mark if it fits, else below, else above, else left; then clamp */
+  let x, y;
+  if (r.right + gap + cw + m <= vw) { x = r.right + gap; y = r.top; }
+  else if (r.bottom + gap + ch + m <= vh) { x = r.left; y = r.bottom + gap; }
+  else if (r.top - gap - ch >= m) { x = r.left; y = r.top - gap - ch; }
+  else if (r.left - gap - cw >= m) { x = r.left - gap - cw; y = r.top; }
+  else { x = (vw - cw) / 2; y = Math.max(m, vh - ch - m); }
+  card.style.left = Math.round(Math.max(m, Math.min(vw - cw - m, x))) + "px";
+  card.style.top = Math.round(Math.max(m, Math.min(vh - ch - m, y))) + "px";
+}
+function tutNext() {
+  if (tut.i < tut.steps.length - 1) { tut.i++; tutRender(); return; }
+  if (tut.phase === "quarterdeck") { store.set("tutPending", true); tutClose(false); return; }
+  tutClose(true); toast("Walkthrough complete \u2014 replay it any time from SYS \u25b8 HELP.");
+}
+$("tutNext").addEventListener("click", tutNext);
+$("tutBack").addEventListener("click", () => { if (tut.i > 0) { tut.i--; tutRender(); } });
+$("tutSkip").addEventListener("click", () => tutClose(true));
+$("tutStartBtn").addEventListener("click", () => tutOpen(connected ? "board" : "quarterdeck"));
+$("tutLink").addEventListener("click", () => tutOpen(connected ? "board" : "quarterdeck"));
+window.addEventListener("resize", () => { if (tut.on) tutPlace(); });
+window.addEventListener("keydown", (e) => {
+  if (!tut.on) return;
+  if (e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); tutClose(true); }
+  else if (e.key === "ArrowRight" || e.key === "Enter") { e.preventDefault(); e.stopImmediatePropagation(); tutNext(); }
+  else if (e.key === "ArrowLeft") { e.preventDefault(); e.stopImmediatePropagation(); if (tut.i > 0) { tut.i--; tutRender(); } }
+}, true);
+/* first-time operators get it once, unprompted; the rig never does */
+function tutMaybeAuto() {
+  if (bridge.autotestHost || store.get("tutDone", false)) return;
+  if (connected) tutOpen("board");
+  else if (!$("connectOv").classList.contains("hidden")) tutOpen("quarterdeck");
+}
+setTimeout(tutMaybeAuto, 2200);
+
 if (bridge.autotestHost) {
   /* FLEETCOMM_DEMO swaps rig-speak for in-character strings in screenshot
      runs; every check reads the same variables, so nothing is exempted */
@@ -2981,6 +3145,30 @@ if (bridge.autotestHost) {
          photographed it */
       showPage("pgCam"); $("camStart").click(); await wait(900); await shot("cam-pick");
       $("camPick").hidden = true; $("camPick").innerHTML = "";
+      /* a live wall with real pixels: canvas feeds stand in for helmet cams */
+      const feeds = [];
+      const fakeFeed = (label) => {
+        const c = document.createElement("canvas"); c.width = 640; c.height = 360; const x = c.getContext("2d");
+        const f = { alive: true, n: 0 };
+        const draw = () => {
+          if (!f.alive) return;
+          x.fillStyle = "#0b1a12"; x.fillRect(0, 0, 640, 360); x.strokeStyle = "#1f3a2a";
+          for (let i = 0; i < 640; i += 40) { x.beginPath(); x.moveTo(i, 0); x.lineTo(i, 360); x.stroke(); }
+          for (let j = 0; j < 360; j += 40) { x.beginPath(); x.moveTo(0, j); x.lineTo(640, j); x.stroke(); }
+          x.fillStyle = "#5CA877"; x.font = "bold 26px monospace"; x.fillText(label, 24, 320);
+          x.fillStyle = "#C9A96A"; x.fillRect(300 + Math.sin(f.n / 10) * 120, 150, 40, 40); f.n++;
+          requestAnimationFrame(draw);
+        };
+        draw(); feeds.push(f); return c.captureStream(15);
+      };
+      const tA = camMountTile(9001, "TIBER DOC 2", fakeFeed("HANGAR DECK 2"), false, { cs: "TIBER DOC 2", who: "Test Operator", since: Date.now() - 754000 });
+      const tB = camMountTile(9002, "WARRIOR TAC 4", fakeFeed("FLIGHT DECK"), false, { cs: "WARRIOR TAC 4", who: "Second Operator", since: Date.now() - 128000 });
+      tA.classList.add("talking"); camTick(); await wait(800); await shot("cam-live");
+      feeds.forEach(f => { f.alive = false; }); tA.remove(); tB.remove(); camViewState();
+      /* the walkthrough at its PTT mark */
+      showPage("pgComms"); const tdWas = store.get("tutDone", false);
+      tutOpen("board"); for (let k = 0; k < 3; k++) $("tutNext").click(); await wait(600); await shot("tutorial");
+      tutClose(false); store.set("tutDone", tdWas);
       /* the in-game overlay window too — show it if hidden, capture, restore */
       const ovWasHidden = $("ovShowBtn").textContent === "SHOW";
       if (ovWasHidden) $("ovShowBtn").click();
@@ -3380,7 +3568,7 @@ if (bridge.autotestHost) {
       }
     }
     /* the cam wall: 1, 2, 2x2, 3x2, 3x3, then four across */
-    L("cam-wall-columns", [1, 2, 3, 4, 5, 6, 9, 10, 16].map(camCols).join(",") === "1,2,2,2,3,3,3,4,4");
+    L("cam-wall-columns", [1, 2, 3, 4, 5, 6, 9, 10, 16].map(n => camCols(n)).join(",") === "1,2,2,2,3,3,3,4,4");
     {
       const g = $("camGrid"), stub = document.createElement("div"); stub.className = "tile";
       g.append(stub, stub.cloneNode(), stub.cloneNode(), stub.cloneNode()); camViewState();
@@ -3391,6 +3579,36 @@ if (bridge.autotestHost) {
         (/^repeat\(2,/.test(tracks) || tracks.split(" ").length === 2));
       L("cam-tile-clips-scanband", cs.overflow === "hidden");
       g.innerHTML = ""; camViewState();
+    }
+    /* walkthrough: opens on demand, marks the real controls, skip persists */
+    {
+      const doneWas = store.get("tutDone", false), pendWas = store.get("tutPending", false);
+      store.set("tutDone", false);
+      tutOpen("board");
+      L("tut-opens", !$("tut").hidden && tut.steps.length === 8 && $("tutTitle").textContent === "THE BOARD");
+      await new Promise(r => setTimeout(r, 350));
+      L("tut-spotlights-board", $("tut").querySelector(".tut-spot").getBoundingClientRect().width > 50);
+      for (let k = 0; k < 3; k++) $("tutNext").click();
+      await new Promise(r => setTimeout(r, 350));
+      const spotR = $("tut").querySelector(".tut-spot").getBoundingClientRect(), pttR = $("ptt").getBoundingClientRect();
+      L("tut-ptt-step", $("tutTitle").textContent === "PUSH TO TALK" && Math.abs(spotR.left + 6 - pttR.left) < 2 && Math.abs(spotR.top + 6 - pttR.top) < 2);
+      $("tutSkip").click();
+      L("tut-skip-persists", $("tut").hidden && store.get("tutDone") === true);
+      store.set("tutDone", doneWas); store.set("tutPending", pendWas);
+    }
+    /* cam: the keyed operator's tile outlines; the burn-in timer and name show */
+    {
+      const k = nets.findIndex(n => n.tuned);
+      const stub = camMountTile(4242, "TIBER DOC 2", null, false, { cs: "TIBER DOC 2", who: "Test Operator", since: Date.now() - 65000 });
+      stub.dataset.since = String(Date.now() - 65000); camTick();
+      L("cam-timer-burnin", /^00:01:0[5-7]$/.test(stub.querySelector("[data-timer]").textContent) && stub.querySelector(".who").textContent === "Test Operator");
+      if (k >= 0) {
+        nets[k].roster.set(4242, "TIBER-DOC-2"); nets[k].speaking.set(4242, Date.now() + 3000); camTalkSync();
+        const on = stub.classList.contains("talking");
+        nets[k].speaking.delete(4242); nets[k].roster.delete(4242); camTalkSync();
+        L("cam-talking-outline", on && !stub.classList.contains("talking"));
+      } else L("cam-talking-outline", "skipped(no-tuned)");
+      stub.remove(); camViewState();
     }
     /* the command rail replaced the bezel: it must never overflow sideways,
        and the docstrip must truncate rather than push the clock off-window */

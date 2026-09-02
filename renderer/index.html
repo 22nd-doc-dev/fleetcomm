@@ -464,8 +464,13 @@
   #camGrid:empty{display:none}
   #camGrid.solo{grid-template-columns:1fr}
   #camGrid.solo .tile:not(.focus){display:none}
-  .tile{position:relative;border:1px solid var(--grn);background:#000;min-height:0;min-width:0;
-    aspect-ratio:16/9;overflow:hidden;box-shadow:var(--shadow-sm)}
+  .tile{position:relative;border:1px solid var(--line-strong);background:#000;min-height:0;min-width:0;
+    aspect-ratio:16/9;overflow:hidden;box-shadow:var(--shadow-sm);container-type:inline-size}
+  /* the burn-in yields gracefully as a plate shrinks: name first, then the
+     clock stamp, then the timer slims — the callsign and LIVE lamp never go */
+  .tile .tl span,.tile .bl span{white-space:nowrap}
+  @container (max-width:430px){ .tile .tl .who{display:none} .tile .tl .tmr{font-size:.76rem} }
+  @container (max-width:330px){ .tile .bl [data-fclock]{display:none} .tile .tl{gap:7px;padding:5px 8px} }
   #camGrid.solo .tile.focus{aspect-ratio:auto}
   .tile video{width:100%;height:100%;display:block;object-fit:contain;background:#000;cursor:pointer}
   #camGrid.solo .tile.focus video{max-height:74vh}
@@ -491,11 +496,30 @@
   .tile .livebadge::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--amber);
     animation:onairlamp 1.2s ease-in-out infinite}
   .tile.lost .livebadge{display:none}
-  .tile .tl{position:absolute;left:0;right:0;top:0;display:flex;align-items:center;gap:8px;
-    padding:5px 9px;background:linear-gradient(rgba(9,15,22,.85),transparent);z-index:2;
-    font-family:var(--font-mono);font-size:.64rem;letter-spacing:.14em;color:var(--ink)}
-  .tile .tl b{color:var(--grn);font-weight:600}
-  .tile .tl .st8{margin-left:auto;color:var(--muted)}
+  /* CCTV chrome: the top strip reads LIVE · elapsed · CALLSIGN · NAME like a
+     recorder's burn-in; the bottom strip stamps fleet time. Both are IN the
+     feed (diegetic), never on the chrome. */
+  .tile .tl{position:absolute;left:0;right:0;top:0;display:flex;align-items:center;gap:10px;
+    padding:6px 10px;background:linear-gradient(rgba(9,15,22,.88),rgba(9,15,22,.4) 70%,transparent);z-index:2;
+    font-family:var(--font-mono);font-size:.64rem;letter-spacing:.14em;color:var(--ink);min-width:0}
+  .tile .tl .tmr{font-family:var(--font-instrument);font-size:.9rem;letter-spacing:.06em;color:var(--ink);
+    font-variant-numeric:tabular-nums;flex:0 0 auto}
+  .tile .tl b{color:var(--grn);font-weight:600;white-space:nowrap;flex:0 0 auto}
+  .tile .tl .who{color:var(--muted);letter-spacing:.1em;text-transform:uppercase;white-space:nowrap;
+    overflow:hidden;text-overflow:ellipsis;min-width:0;flex:0 1 auto}
+  .tile .tl .st8{margin-left:auto;color:var(--muted);flex:0 0 auto}
+  .tile .bl{position:absolute;left:0;right:0;bottom:0;z-index:2;pointer-events:none;display:flex;
+    justify-content:space-between;align-items:center;padding:5px 10px;
+    font-family:var(--font-mono);font-size:.62rem;letter-spacing:.14em;color:var(--muted);
+    background:linear-gradient(transparent,rgba(9,15,22,.78))}
+  .tile .bl .vox{opacity:0;transition:opacity .12s}
+  /* the operator on the feed is keyed: green = receiving (their carrier),
+     vermilion only on YOUR own tile (your carrier) — the colour law holds */
+  .tile.talking{border-color:var(--grn);box-shadow:0 0 0 1px var(--grn),0 0 22px var(--grn-tint)}
+  .tile.talking .tl b,.tile.talking .bl .vox{color:var(--grn)}
+  .tile.talking .bl .vox{opacity:1}
+  .tile.self.talking{border-color:var(--tx);box-shadow:0 0 0 1px var(--tx),0 0 22px var(--tx-tint)}
+  .tile.self.talking .tl b,.tile.self.talking .bl .vox{color:var(--tx)}
   .tile .tl button{font-family:var(--font-mono);font-size:.64rem;letter-spacing:.1em;color:var(--ink2);
     border:1px solid var(--line2);padding:2px 7px;background:rgba(9,15,22,.6);transition:color .2s,border-color .2s}
   .tile .tl button:hover{color:var(--gold);border-color:var(--gold)}
@@ -507,6 +531,30 @@
     letter-spacing:.2em;color:var(--muted);line-height:2}
   #camEmpty small{font-size:.64rem;letter-spacing:.14em;text-transform:none}
   #camStatus.live{color:var(--tx)}
+  /* ── the walkthrough: a spotlight cut into a dim wash, a card beside it ── */
+  #tut{position:fixed;inset:0;z-index:120}
+  #tut[hidden]{display:none}
+  #tut .tut-spot{position:absolute;border:1px solid var(--holo);border-radius:2px;pointer-events:none;
+    box-shadow:0 0 0 100vmax rgba(9,15,22,.74),0 0 0 4px var(--holo-tint),0 0 28px rgba(201,169,106,.25);
+    transition:left .22s var(--ease-out),top .22s var(--ease-out),width .22s var(--ease-out),height .22s var(--ease-out)}
+  #tut .tut-spot.none{left:50%;top:50%;width:0;height:0;border:0;box-shadow:0 0 0 100vmax rgba(9,15,22,.8)}
+  #tut .tut-card{position:absolute;width:min(390px,calc(100vw - 32px));background:var(--panel);border:1px solid var(--line-strong);
+    border-top:2px solid var(--holo);box-shadow:var(--shadow);padding:16px 18px 14px;
+    transition:left .22s var(--ease-out),top .22s var(--ease-out)}
+  #tut .tut-card .kicker{display:block;margin-bottom:6px}
+  #tut .tut-card h3{margin:0 0 8px;font-family:var(--font-display);font-size:1.4rem;font-weight:600;letter-spacing:.04em;
+    text-transform:uppercase;color:var(--ink);line-height:1.1}
+  #tut .tut-card p{margin:0 0 14px;font-family:var(--font-body);font-size:.96rem;line-height:1.5;color:var(--ink2)}
+  #tut .tut-card p b{color:var(--ink)}
+  #tut .tut-card kbd{font-family:var(--font-mono);font-size:.68rem;letter-spacing:.1em;border:1px solid var(--line-strong);
+    padding:1px 5px;color:var(--holo);background:var(--bez)}
+  #tut .tut-nav{display:flex;align-items:center;gap:8px}
+  #tut .tut-nav .dots{margin-left:auto;margin-right:auto;display:flex;gap:5px}
+  #tut .tut-nav .dots i{width:6px;height:6px;border-radius:50%;background:var(--line-strong)}
+  #tut .tut-nav .dots i.on{background:var(--holo)}
+  #tut .tut-skip{font-family:var(--font-mono);font-size:.64rem;letter-spacing:.14em;color:var(--muted);background:none;border:0;cursor:pointer;padding:0;white-space:nowrap}
+  #tut .tut-skip:hover{color:var(--red)}
+  #tut .tut-nav .btn{padding:8px 12px}
   .camgated{font-family:var(--font-mono);font-size:.64rem;font-weight:500;letter-spacing:.18em;
     color:var(--muted);border:1px dashed var(--line2);padding:8px 10px;margin-bottom:8px;text-align:center}
   @media (max-width:900px){.camside{flex-basis:230px}}
@@ -991,6 +1039,9 @@
       <div class="togrow"><div class="tl"><b>Effect intensity</b><span>The same dial, continuous — 0 clean · 50 standard · 100 heavy; presets snap it</span></div>
         <div id="fxrow"><input type="range" id="fxSl" min="0" max="100" step="1">
           <span class="num" id="fxVal">50</span></div></div>
+      <div class="miniheading">HELP</div>
+      <div class="togrow"><div class="tl"><b>Walkthrough</b><span>The two-minute tour, sign-in to first transmission — the board, TX and LSN, ship controls, PTT, cycling nets, chat</span></div>
+        <button class="btn" id="tutStartBtn">START TOUR</button></div>
       <div class="miniheading">DISPLAY</div>
       <div class="togrow"><div class="tl"><b>Prose typeface</b><span>The manual's serif, or a plain system face if serif reads slower for you — data and labels stay mono either way</span></div>
         <select class="orgsel" id="sfontsel"><option value="legible">Manual serif</option><option value="system">System sans</option></select></div>
@@ -1081,6 +1132,20 @@
 </div>
 
 <!-- sign-in -->
+<div id="tut" hidden>
+  <div class="tut-spot none"></div>
+  <div class="tut-card" role="dialog" aria-live="polite">
+    <span class="kicker" id="tutStep">WALKTHROUGH · 01 / 08</span>
+    <h3 id="tutTitle"></h3>
+    <p id="tutBody"></p>
+    <div class="tut-nav">
+      <button class="tut-skip" id="tutSkip">SKIP TUTORIAL</button>
+      <span class="dots" id="tutDots"></span>
+      <button class="btn" id="tutBack">◂ BACK</button>
+      <button class="btn" id="tutNext">NEXT ▸</button>
+    </div>
+  </div>
+</div>
 <div class="overlay" id="connectOv">
   <div class="modal">
     <div class="bootcrest">
@@ -1122,6 +1187,7 @@
     </div>
     <div class="kv" id="hostrow" style="display:none;margin-top:10px"><label>SERVER ADDRESS</label><input id="hostIn" class="mono"></div>
     <p class="hint" id="connErr" style="color:var(--red);margin-top:10px;text-align:left"></p>
+    <p class="hint" style="margin-top:8px"><a id="tutLink" style="color:var(--holo);cursor:pointer;letter-spacing:.04em">First time here? Take the two-minute tour ▸</a></p>
     <div class="signfoot" id="signFoot">No account needed yet — your callsign is your identity on the relay.
       Once COMMAND enables Discord sign-in, access is gated and role-based.</div>
     <span class="stamp">SEMPER PARATUS</span>
