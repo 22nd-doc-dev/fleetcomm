@@ -38,8 +38,16 @@ jobs:
           tail -n 5 /tmp/smoke/flatpak-install.log
           flatpak list --user --columns=application,version,branch,runtime > /tmp/smoke/flatpak-list.log 2>&1 || true
           cat /tmp/smoke/flatpak-list.log
-          echo "== Flatpak run"
-          (timeout 75 dbus-run-session -- xvfb-run -a flatpak run --env=FLEETCOMM_AUTOTEST=127.0.0.1 space.fleetcomm.app --enable-logging > /tmp/smoke/flatpak.log 2>&1 || true)
+          echo "== Flatpak: sandbox layout + stdout capture check"
+          (flatpak run --command=sh space.fleetcomm.app -c 'echo hello-from-sandbox; echo "TMPDIR=$TMPDIR XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR DISPLAY=$DISPLAY"; ls -la /app/bin; echo ---; cat /app/bin/electron-wrapper; echo ---; ls /app/lib/space.fleetcomm.app | head -30; echo ---; ldd /app/lib/space.fleetcomm.app/fleetcomm | grep -i "not found" || echo "ldd: all libs resolved"; ls /app/lib/space.fleetcomm.app/resources; find /app/lib/space.fleetcomm.app -name "*.node" | head' > /tmp/smoke/flatpak-layout.log 2>&1 || true)
+          cat /tmp/smoke/flatpak-layout.log
+          echo "== Flatpak run (zypak, verbose)"
+          (timeout 60 dbus-run-session -- xvfb-run -a flatpak run --env=FLEETCOMM_AUTOTEST=127.0.0.1 --env=ELECTRON_ENABLE_LOGGING=1 --env=ELECTRON_ENABLE_STACK_DUMPING=1 --env=ZYPAK_DEBUG=1 space.fleetcomm.app --enable-logging=stderr --v=0 > /tmp/smoke/flatpak.log 2>&1 || true)
+          echo "== Flatpak run (binary direct, no zypak, --no-sandbox)"
+          (timeout 60 dbus-run-session -- xvfb-run -a flatpak run --command=/app/lib/space.fleetcomm.app/fleetcomm --env=FLEETCOMM_AUTOTEST=127.0.0.1 --env=ELECTRON_ENABLE_LOGGING=1 space.fleetcomm.app --no-sandbox --enable-logging=stderr > /tmp/smoke/flatpak-direct.log 2>&1 || true)
+          echo "== sandbox tmp/userData after runs"
+          (ls -laR "$XDG_RUNTIME_DIR/app/space.fleetcomm.app" 2>/dev/null | head -40; ls -laR ~/.var/app/space.fleetcomm.app 2>/dev/null | head -40) > /tmp/smoke/flatpak-dirs.log || true
+          for f in flatpak flatpak-direct; do echo "== $f: autotest lines $(grep -c '\[AUTOTEST\]' /tmp/smoke/$f.log || true) / main lines $(grep -c '\[fleetcomm\]' /tmp/smoke/$f.log || true)"; done
           for f in appimage flatpak; do echo "== $f: autotest lines $(grep -c '\[AUTOTEST\]' /tmp/smoke/$f.log || true) / console errors $(grep -c 'ERROR:CONSOLE' /tmp/smoke/$f.log || true)"; done
           echo "== flatpak.log tail"; tail -n 60 /tmp/smoke/flatpak.log || true
       - name: Publish smoke logs to the ci-debug-log branch
