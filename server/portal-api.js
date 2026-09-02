@@ -17,6 +17,8 @@
  */
 const https = require("https");
 const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
 const querystring = require("querystring");
 
 module.exports = function createPortalApi(deps) {
@@ -45,7 +47,8 @@ module.exports = function createPortalApi(deps) {
     discord: record(load("discord.json", {}), "discord.json"),           // {config{}, outbox[], muster{}}
     fleet: record(load("fleet.json", {}), "fleet.json"),                 // standing orders: aor, dutyStation, order constants
     mast: record(load("mast.json", {}), "mast.json"),                    // {cases[]} — Request Mast
-    logistics: record(load("logistics.json", {}), "logistics.json")      // {catalog[], inventory[], orders[], contributions[], claims[], blueprints[]}
+    logistics: record(load("logistics.json", {}), "logistics.json"),     // {catalog[], inventory[], orders[], contributions[], claims[], blueprints[]}
+    docs: record(load("docs.json", {}), "docs.json")                     // {files:[{id,name,ext,size,tag,ref,rate,by,at}]} — bytes under DATA/docs
   };
   const persist = (name) => save(name + ".json", pdb[name]);
   const SHIP_STATUS = ["active", "reserve", "refit", "lost", "decommissioned"];
@@ -220,7 +223,7 @@ module.exports = function createPortalApi(deps) {
       "3. Additional Instructions", "",
       "a. Ensure personal records and transfer documentation are updated prior to departure.",
       "b. All issued equipment, uniforms, and identification shall be accounted for and transferred in accordance with UEE Navy supply regulations.",
-      "c. Report to the Commanding Officer, " + sq.name + ".", "",
+      "c. Report to the Commanding Officer, " + (a.reportTo || sq.name) + ".", "",
       "4. Point of Contact", "",
       "For administrative questions concerning these orders, contact Stanton Central Command, Bureau of Naval Personnel, at comms frequency " + f.commsFreq + ".", "",
       "By Order of Stanton Central Command", "",
@@ -289,13 +292,8 @@ module.exports = function createPortalApi(deps) {
   const LG = pdb.logistics;
   for (const k of ["catalog", "inventory", "orders", "contributions", "claims", "blueprints"])
     if (!Array.isArray(LG[k])) LG[k] = [];
-  if (!LG.blueprints.length) LG.blueprints = [
-    { id: "10-series-greatsword", name: "10-Series Greatsword Cannon", type: "Vehicle Weapon", materials: "3 materials", sources: "12 drop sources" },
-    { id: "11-series-broadsword", name: "11-Series Broadsword Cannon", type: "Vehicle Weapon", materials: "3 materials", sources: "12 drop sources" },
-    { id: "7ma-lorica", name: "7MA 'Lorica' Shield Generator", type: "Shield", materials: "3 materials", sources: "6 drop sources" },
-    { id: "fr-86", name: "FR-86 Shield Generator", type: "Shield", materials: "3 materials", sources: "8 drop sources" },
-    { id: "atlas-qd", name: "Atlas Quantum Drive", type: "Component S2", materials: "4 materials", sources: "9 drop sources" },
-  ];
+  /* no public crafting-blueprint dataset exists for the current patch —
+     the library starts empty and says so; Logistics fills it by hand */
   if (!pdb.fleet.treasury) pdb.fleet.treasury = "Keleus_Harper";
   const lgId = () => crypto.randomBytes(6).toString("hex");
   const ORDER_STATES = ["submitted", "logistics", "command", "approved", "fulfilled", "rejected"];
@@ -354,6 +352,22 @@ module.exports = function createPortalApi(deps) {
     return out;
   }
   let uexWarm = null;
+  /* warm the registry in the background at boot, and again daily, so the
+     requisition finder answers instantly instead of on the first keystroke */
+  const warmUex = () => { if (!uexWarm) uexWarm = uexAll().catch(() => null).finally(() => { uexWarm = null; }); };
+  if (!process.env.UEX_DISABLED) { setTimeout(warmUex, 3000); setInterval(warmUex, 6 * 3600e3); }
+
+  /* ── the document library: course decks, SOPs, regulations. Bytes live
+     under DATA/docs; the index is docs.json. Management uploads anything;
+     a purview holder uploads for the rate they hold. ── */
+  if (!Array.isArray(pdb.docs.files)) pdb.docs.files = [];
+  const DOC_DIR = path.join(deps.dataDir || process.env.DATA_DIR || ".", "docs");
+  const DOC_MAX = 25 * 1024 * 1024;
+  const DOC_TYPES = { pdf: "application/pdf", pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ppt: "application/vnd.ms-powerpoint", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    doc: "application/msword", xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", txt: "text/plain", md: "text/markdown" };
+  const canUploadDoc = (actor, rate) => isAdmin(actor) || (!!rate && hasScope(actor, "rate:" + rate));
 
   /* standing changes from the accounts registry: a cleared arrival enlists */
   function onStanding(id, prev, next) {
@@ -741,7 +755,7 @@ module.exports = function createPortalApi(deps) {
     /* everything below needs an operator session or the bot secret */
     const actor = actorOf(req);
     const need = (ok, code, msg) => { if (!ok) { send(res, code, { ok: false, error: msg }); return true; } return false; };
-    if (!/^\/api\/(catalog|personnel|coc|availability|events|sso|activity|loa|roster|squadrons|record|export|bot|cam-viewers|audit|fleet|mast|logistics|uex|me\/permissions)/.test(p)) return false;
+    if (!/^\/api\/(catalog|personnel|coc|availability|events|sso|activity|loa|roster|squadrons|record|export|bot|cam-viewers|audit|fleet|mast|logistics|uex|docs|me\/permissions)/.test(p)) return false;
     if (need(actor, 401, "unauthorized")) return true;
     /* pending accounts can see nothing but their own approval state */
     if (need(actor.bot || actor.member, 403, "awaiting COMMAND approval")) return true;
@@ -1216,6 +1230,56 @@ module.exports = function createPortalApi(deps) {
       send(res, 200, { ok: true, blueprints: LG.blueprints }); return true;
     }
 
+    /* ── documents ── */
+    if (p === "/api/docs" && req.method === "GET") {
+      send(res, 200, { ok: true, files: pdb.docs.files.map(f => Object.assign({}, f, { byName: f.by })),
+        canUpload: isAdmin(actor) || actorScopes(actor).some(s => s.startsWith("rate:")),
+        rates: isAdmin(actor) ? pdb.catalog.certs.map(c => c.id) : rateScopeCerts(actor) });
+      return true;
+    }
+    if (p === "/api/docs" && req.method === "POST") {
+      const b = await body(req);
+      const rate = b.rate ? String(b.rate).slice(0, 40) : "";
+      if (need(canUploadDoc(actor, rate), 403, "management access or a purview for that rate required")) return true;
+      const name = String(b.name || "").trim().slice(0, 120);
+      const ext = (name.split(".").pop() || "").toLowerCase();
+      if (need(name && DOC_TYPES[ext], 400, "file type not accepted (pdf, pptx, docx, xlsx, png, jpg, txt, md)")) return true;
+      let bytes;
+      try { bytes = Buffer.from(String(b.data || "").replace(/^data:[^,]*,/, ""), "base64"); } catch (e) { bytes = null; }
+      if (need(bytes && bytes.length > 0 && bytes.length <= DOC_MAX, 400, "file missing or over 25 MB")) return true;
+      const id = crypto.randomBytes(8).toString("hex");
+      fs.mkdirSync(DOC_DIR, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(path.join(DOC_DIR, id + "." + ext), bytes, { mode: 0o600 });
+      const f = { id, name, ext, size: bytes.length, tag: ["course", "sop", "reg"].includes(b.tag) ? b.tag : "course",
+        ref: String(b.ref || "").trim().slice(0, 40), title: String(b.title || "").trim().slice(0, 120),
+        rate, by: actor.name, at: Date.now() };
+      pdb.docs.files.push(f); persist("docs");
+      audit("docs", "uploaded " + name + (f.ref ? " (" + f.ref + ")" : ""));
+      send(res, 200, { ok: true, file: f });
+      return true;
+    }
+    if ((m = /^\/api\/docs\/([a-f0-9]{16})\/file$/.exec(p)) && req.method === "GET") {
+      const f = pdb.docs.files.find(x => x.id === m[1]);
+      if (need(f, 404, "no such document")) return true;
+      const fp = path.join(DOC_DIR, f.id + "." + f.ext);
+      if (need(fs.existsSync(fp), 410, "file is missing from the store")) return true;
+      res.writeHead(200, { "Content-Type": DOC_TYPES[f.ext] || "application/octet-stream",
+        "Content-Length": fs.statSync(fp).size, "Cache-Control": "private, max-age=3600",
+        "Content-Disposition": "inline; filename=\"" + f.name.replace(/[^\w. -]+/g, "_") + "\"" });
+      fs.createReadStream(fp).pipe(res);
+      return true;
+    }
+    if ((m = /^\/api\/docs\/([a-f0-9]{16})\/delete$/.exec(p)) && req.method === "POST") {
+      const f = pdb.docs.files.find(x => x.id === m[1]);
+      if (need(f, 404, "no such document")) return true;
+      if (need(isAdmin(actor) || f.by === actor.name, 403, "management access required")) return true;
+      try { fs.unlinkSync(path.join(DOC_DIR, f.id + "." + f.ext)); } catch (e) {}
+      pdb.docs.files = pdb.docs.files.filter(x => x !== f); persist("docs");
+      audit("docs", "removed " + f.name);
+      send(res, 200, { ok: true });
+      return true;
+    }
+
     if (p === "/api/catalog" && req.method === "GET") { send(res, 200, { ok: true, catalog: pdb.catalog }); return true; }
     if (p === "/api/catalog" && req.method === "POST") {
       if (need(isAdmin(actor), 403, "management access required")) return true;
@@ -1522,7 +1586,7 @@ module.exports = function createPortalApi(deps) {
         logEntry(recFor(member), actor.name, "station",
           "Assigned to station: " + hit.st.title + ", " + hit.ship.name);
         issueOrders(member, actor, { unit: hit.ship.name, hull: hit.ship.hullId || "",
-          title: hit.st.title, department: hit.dept ? hit.dept.name : "", previous: wasAt });
+          title: hit.st.title, department: hit.dept ? hit.dept.name : "", previous: wasAt, reportTo: hit.ship.name });
         enqueueRoles(member);
       }
       audit("billet", (member ? displayName(member) + " → " : "vacated: ") + hit.st.title + ", " + hit.ship.name);

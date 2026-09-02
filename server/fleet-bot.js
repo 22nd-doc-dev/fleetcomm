@@ -297,9 +297,9 @@ async function handleJob(job) {
     const chan = channelFor("assignments");
     if (!chan) { log("waiting for an assignment-orders channel"); return "wait"; }
     /* the Bureau's order goes out as written — plain text, mention up top */
-    const head = mentionOf(job) ? "Orders for" + mentionOf(job) + "\n\n" : "";
+    const head = mentionOf(job) ? "Orders for" + mentionOf(job) + "\n" : "";
     await dapi("POST", "/channels/" + chan + "/messages", {
-      content: (head + job.text).slice(0, 2000),
+      content: (head + "```\n" + job.text.slice(0, 1900) + "\n```").slice(0, 2000),
       allowed_mentions: { parse: [], users: job.discordId && !String(job.discordId).startsWith("m-") ? [job.discordId] : [] },
     });
     log("assignment orders posted for", job.name);

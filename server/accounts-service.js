@@ -361,7 +361,7 @@ let createPortalApi;
 try { createPortalApi = require("./portal-api"); }
 catch (error) { createPortalApi = require("../server/portal-api"); }
 const portal = createPortalApi({ load, save, record, send, body, auth, serializeMutation,
-  db, MOCK, SESSION_TTL_MS, verifyDiscord, requireGuildMember, persist, audit, auditTail });
+  db, MOCK, SESSION_TTL_MS, verifyDiscord, requireGuildMember, persist, audit, auditTail, dataDir: DATA });
 
 /* ── routes ── */
 const server = http.createServer(async (req, res) => {

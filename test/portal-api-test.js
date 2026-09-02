@@ -613,6 +613,27 @@ const pause = ms => new Promise(r => setTimeout(r, ms));
   r = await api("POST", "/api/logistics/blueprints", { blueprints: [{ name: "Atlas Quantum Drive", type: "Component S2", materials: "4 materials", sources: "9 drop sources" }] }, oak);
   ok(r.status === 200 && r.body.blueprints.length === 1 && r.body.blueprints[0].id === "atlas-quantum-drive", "logistics keeps the blueprint library");
 
+  /* ── the document library: management uploads anything; a purview holder uploads for their rate ── */
+  const pdfB64 = Buffer.from("%PDF-1.4 fleet test document").toString("base64");
+  r = await api("POST", "/api/docs", { name: "corpsman-101.pdf", data: pdfB64, tag: "course", ref: "206" }, oak);
+  ok(r.status === 403, "a member without a purview cannot upload");
+  await api("POST", "/api/personnel/2002/scopes", { scopes: ["rate:hospital-corpsman"] }, doc);
+  r = await api("POST", "/api/docs", { name: "corpsman-101.pdf", data: pdfB64, tag: "course", ref: "206", rate: "hospital-corpsman" }, oak);
+  ok(r.status === 200 && r.body.file.ref === "206", "a rate purview holder uploads for that rate");
+  const docId = r.body.file.id;
+  r = await api("POST", "/api/docs", { name: "gunnery.pdf", data: pdfB64, tag: "course", ref: "202", rate: "naval-gunnery" }, oak);
+  ok(r.status === 403, "…but not for a rate they don't hold");
+  r = await api("POST", "/api/docs", { name: "gq.pdf", data: pdfB64, tag: "sop", ref: "101.1" }, doc);
+  ok(r.status === 200, "management uploads without a rate");
+  r = await api("GET", "/api/docs", null, oak);
+  ok(r.body.files.length === 2 && r.body.canUpload === true && r.body.rates.join() === "hospital-corpsman", "the library lists files and each member's upload rights");
+  r = await api("GET", "/api/docs/" + docId + "/file", null, oak);
+  ok(r.status === 200 && r.headers["content-type"] === "application/pdf", "members open a document with their session");
+  r = await api("POST", "/api/docs", { name: "evil.exe", data: pdfB64, tag: "course" }, doc);
+  ok(r.status === 400, "unknown file types are refused");
+  r = await api("POST", "/api/docs/" + docId + "/delete", {}, doc);
+  ok(r.status === 200, "management removes a document");
+
   await stop();
   fs.rmSync(dataDir, { recursive: true, force: true });
   console.log("\n✔ PORTAL API PASS — profiles, bulk actions, CoC, availability, events, SSO and the bot door hold their gates");
