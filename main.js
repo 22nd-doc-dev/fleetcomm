@@ -1,6 +1,7 @@
 "use strict";
 /* FleetComm — Electron main: window, global PTT hooks, radio stack owner. */
 const { app, BrowserWindow, ipcMain, shell, screen, session, desktopCapturer } = require("electron");
+const homeInstallMod = require("./src/home-install");   /* used at the single-instance gate below — must precede it */
 const path = require("path");
 const fs = require("fs");
 const http = require("http");
@@ -45,6 +46,11 @@ if (process.env.FLEETCOMM_AUTOTEST) {
 
 /* Only one FleetComm at a time — a second launch just focuses the first. */
 if (!app.requestSingleInstanceLock()) app.quit();
+/* One identity for the taskbar: the running process and the Start Menu
+   shortcut (see homeInstall) carry the same AppUserModelID, which is what
+   lets a pin taken from the live window resolve to a file that survives
+   both the portable launcher's temp unpack and the next update. */
+if (process.platform === "win32") app.setAppUserModelId(homeInstallMod.APP_ID);
 app.on("second-instance", () => {
   if (win && !win.isDestroyed()) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
 });
@@ -617,6 +623,56 @@ function scheduleSwapTask(powershell, swapScript, args, outLog) {
     return false;
   }
 }
+/* ── the persistent home ──
+   A portable build unpacks to a throwaway temp folder every launch, so
+   nothing about the running exe can be pinned. After the window is up, lay
+   the newest launcher the operator has run at a fixed path and point a Start
+   Menu shortcut (stamped with the app id) at it. The update swap replaces
+   that file in place, so a pin taken there stays good forever. Decisions are
+   in src/home-install.js; this is the filesystem half. Never blocks the
+   radio: any failure is a console line. FLEETCOMM_HOME_ROOT redirects both
+   folders so the rig can exercise the real copy without touching a profile. */
+async function homeInstall() {
+  try {
+    const root = process.env.FLEETCOMM_HOME_ROOT;
+    const localAppData = root ? path.join(root, "Local") : (process.env.LOCALAPPDATA || path.join(app.getPath("home"), "AppData", "Local"));
+    const startMenu = root ? path.join(root, "StartMenu") : path.join(app.getPath("appData"), "Microsoft", "Windows", "Start Menu", "Programs");
+    const base = { platform: process.platform, portableExe: process.env.PORTABLE_EXECUTABLE_FILE, localAppData, startMenu,
+      runningVersion: app.getVersion(), homeVersion: null, homeExists: false };
+    const pre = homeInstallMod.plan(base);
+    if (!pre.active) return;
+    base.homeExists = fs.existsSync(pre.homeExe);
+    try { base.homeVersion = fs.readFileSync(pre.stamp, "utf8").trim() || null; } catch (e) { base.homeVersion = null; }
+    const p = homeInstallMod.plan(base);
+    let copied = false;
+    if (p.copy) {
+      fs.mkdirSync(p.homeDir, { recursive: true });
+      const tmp = p.homeExe + ".new";
+      await fs.promises.copyFile(process.env.PORTABLE_EXECUTABLE_FILE, tmp);
+      if (!isPortableExecutable(tmp, 40 * 1024 * 1024)) { try { fs.unlinkSync(tmp); } catch (e) {} throw new Error("home copy failed verification"); }
+      let placed = false;
+      for (let i = 0; i < 5 && !placed; i++) {
+        try { fs.renameSync(tmp, p.homeExe); placed = true; }
+        catch (e) { await new Promise(r => setTimeout(r, 600)); }     /* AV may hold a fresh exe briefly */
+      }
+      if (!placed) { try { fs.unlinkSync(tmp); } catch (e) {} throw new Error("could not place the home copy"); }
+      fs.writeFileSync(p.stamp, app.getVersion());
+      copied = true;
+    } else if (p.launchedFromHome && base.homeVersion !== app.getVersion()) {
+      /* the swap updates the home exe in place but not the stamp — keep it honest */
+      try { fs.mkdirSync(p.homeDir, { recursive: true }); fs.writeFileSync(p.stamp, app.getVersion()); } catch (e) {}
+    }
+    fs.mkdirSync(startMenu, { recursive: true });
+    const hadShortcut = fs.existsSync(p.shortcut.path);
+    const ok = shell.writeShortcutLink(p.shortcut.path, "create", {
+      target: p.shortcut.target, cwd: p.shortcut.cwd, description: p.shortcut.description,
+      icon: p.shortcut.icon, iconIndex: p.shortcut.iconIndex, appUserModelId: p.shortcut.appUserModelId });
+    if (!ok) throw new Error("Start Menu shortcut refused");
+    console.log("[fleetcomm] home install: " + (copied ? "copied v" + app.getVersion() : p.launchedFromHome ? "running from home" : "home current") +
+      " -> " + p.homeExe + " shortcut=" + (hadShortcut ? "refreshed" : "created"));
+    if (copied || !hadShortcut) sendWin("update-note", { home: p.homeExe, first: !hadShortcut });
+  } catch (e) { console.warn("[fleetcomm] home install skipped: " + e.message); }
+}
 ipcMain.handle("do-update", async (ev, info) => {
   const pkgCfg = require("./config/22nd-package.json");
   const origExe = process.env.PORTABLE_EXECUTABLE_FILE;
@@ -816,6 +872,7 @@ app.whenReady().then(async () => {
   try { identity = await loadOrCreate(app.getPath("userData")); }
   catch (e) { console.warn("[fleetcomm] identity cert unavailable:", e.message); }
   createWindow();
+  setTimeout(() => { homeInstall(); }, 3500);      /* after the board is up — it copies ~100MB once per version */
   /* Global PTT — works while Star Citizen has focus.
      macOS: needs System Settings → Privacy & Security → Accessibility for the app/terminal. */
   try {

@@ -2331,6 +2331,12 @@ async function runUpdate(version, auto) {
 /* what happened to the last automatic attempt, reported on the way back up */
 ipcRenderer.on("update-note", (ev, note) => {
   if (!note) return;
+  if (note.home) {
+    if (note.first) toast("FleetComm is in your Start menu now — pin it to the taskbar from there.");
+    addLog("sys", "", "persistent copy " + (note.first ? "installed" : "refreshed") + " at " + note.home +
+      " — Start \u25b8 FleetComm is the one to pin; updates keep it current");
+    return;
+  }
   if (note.installed) { toast("Updated to FleetComm v" + note.installed + "."); addLog("sys", "", "auto-update installed v" + note.installed); return; }
   if (note.failed) {
     showUpdate({ version: note.target || "", url: (pkg.updates && pkg.updates.releases) || "" });
