@@ -1,6 +1,6 @@
 {
   "name": "fleetcomm",
-  "version": "1.3.7",
+  "version": "1.3.8",
   "description": "FleetComm — multi-net voice radio for the 22nd Expeditionary Fleet (QLink successor). Mumble-protocol backbone, radio-rack UI.",
   "author": "Rook \"Doc\" Sabbah — 22nd Expeditionary Fleet",
   "main": "main.js",
@@ -93,6 +93,12 @@
         "--device=all",
         "--filesystem=xdg-download",
         "--talk-name=org.freedesktop.Notifications"
+      ],
+      "files": [
+        [
+          "build/flatpak/electron-wrapper",
+          "/bin/electron-wrapper"
+        ]
       ]
     }
   }
