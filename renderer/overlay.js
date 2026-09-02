@@ -15,7 +15,7 @@ function row(net) {
   const lamp = document.createElement("span"); lamp.className = "lamp";
   const name = document.createElement("span"); name.className = "nm"; name.textContent = net.name;
   const freq = document.createElement("small"); freq.textContent = net.freq; name.appendChild(freq);
-  const active = document.createElement("span"); active.className = "act"; active.textContent = "◈"; name.appendChild(active);
+  const active = document.createElement("span"); active.className = "act"; active.textContent = "ARMED"; name.appendChild(active);
   const who = document.createElement("span"); who.className = "who";
   who.textContent = net.tx ? "TX·" + net.me : (net.who || "");
   el.append(lamp, name, who);

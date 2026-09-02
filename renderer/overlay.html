@@ -46,8 +46,15 @@
   .nm{font-weight:700;letter-spacing:.4px;white-space:nowrap}
   .nm small{color:var(--gold);font-weight:500;margin-left:6px;
     font-family:"IBM Plex Mono",Consolas,ui-monospace,monospace;font-size:10.5px;letter-spacing:.08em}
-  .act{color:var(--gold);font-size:10.5px;font-weight:700;letter-spacing:1px;display:none}
+  /* the armed net must read at a glance from across the cockpit: gold rule,
+     gold name, and the ARMED tag — not a lone glyph */
+  .act{color:var(--gold);font-family:"IBM Plex Mono",Consolas,ui-monospace,monospace;font-size:10px;font-weight:500;
+    letter-spacing:.14em;display:none;margin-left:6px}
+  .row.active{border-left-color:var(--gold)}
+  .row.active .nm{color:var(--gold)}
   .row.active .act{display:inline}
+  .row.active.tx{border-left-color:var(--tx)}
+  .row.active.tx .nm{color:var(--tx)}
   .who{margin-left:auto;font-family:"IBM Plex Mono",Consolas,ui-monospace,monospace;font-weight:500;font-size:11.5px;
     color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:150px}
   .rx .who{color:var(--holo)} .tx .who{color:var(--tx)}

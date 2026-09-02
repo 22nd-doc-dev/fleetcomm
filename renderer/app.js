@@ -360,19 +360,40 @@ function onKeyDown(src, code, label, mods) {
   if (matchDown(masterBinds.cycUp, src, code, label, mods)) { cycleSel(-1); return; }
   if (matchDown(masterBinds.cycDn, src, code, label, mods)) { cycleSel(1); return; }
   if (matchDown(masterBinds.active, src, code, label, mods)) { pttAll(true); return; }
-  nets.forEach((n, i) => { if (n.tuned && matchDown(n.bind, src, code, label, mods)) requestTX(i, "bind"); });
+  nets.forEach((n, i) => {
+    if (!matchDown(n.bind, src, code, label, mods)) return;
+    if (n.tuned) requestTX(i, "bind");
+    else bindDormant(n);
+  });
+}
+/* a key bound to a net that isn't tuned does nothing — say so, once, rather
+   than let the operator wonder which net (if any) just heard them */
+const dormantSaid = new Map();
+const netLabel = (n) => (n.cfg.tag ? n.cfg.tag + " " : "") + (n.cfg.display || n.cfg.name);
+function bindDormant(n) {
+  const last = dormantSaid.get(n.cfg.name) || 0;
+  if (Date.now() - last < 5000) return;
+  dormantSaid.set(n.cfg.name, Date.now());
+  toast(netLabel(n) + " is not tuned — its key is idle. TUNE it first.");
 }
 function onKeyUp(src, code, label) {
   if (matchUp(masterBinds.active, src, code, label)) pttAll(false);
   nets.forEach((n, i) => { if (matchUp(n.bind, src, code, label)) releaseTX(i, "bind"); });
 }
-ipcRenderer.on("gkey", (ev, k) => {
+/* the OS auto-repeats a held key and the hook faithfully relays every repeat —
+   the DOM path drops them via e.repeat, this one has to remember what is down,
+   or a PageUp held a beat too long cycles two or three nets */
+const gHeld = new Set();
+function onGKey(k) {
   gActive = true;
+  const hk = k.type + ":" + k.code;
+  if (k.down) { if (gHeld.has(hk)) return; gHeld.add(hk); } else gHeld.delete(hk);
   const mod = normMod(k.label);
   if (mod) { k.down ? heldMods.add(mod) : heldMods.delete(mod); if (capturing) return; }
-  if (k.down && !mod) onKeyDown("g", k.type + ":" + k.code, k.label, [...heldMods]);
-  if (!k.down && !mod) onKeyUp("g", k.type + ":" + k.code, k.label);
-});
+  if (k.down && !mod) onKeyDown("g", hk, k.label, [...heldMods]);
+  if (!k.down && !mod) onKeyUp("g", hk, k.label);
+}
+ipcRenderer.on("gkey", (ev, k) => onGKey(k));
 window.addEventListener("keydown", (e) => {
   if (e.repeat) return;
   if (gActive) { if (e.key === "PageUp" || e.key === "PageDown" || (e.code === "Space" && !/INPUT|TEXTAREA/.test(document.activeElement.tagName))) e.preventDefault(); return; }
@@ -405,10 +426,15 @@ function pollPads(padsOverride) {
       addLog("sys", "", "controller detected — " + key + " (" + (gp.buttons || []).length +
         " buttons; bind them like keys: click any KEY control, then press the button)" +
         (document.hasFocus() ? "" : " [window unfocused]"));
+      console.log("[pad] detected " + JSON.stringify(gp.id) + " key=" + key + " buttons=" + (gp.buttons || []).length +
+        " axes=" + (gp.axes || []).length + " mapping=" + gp.mapping + " focus=" + document.hasFocus());
     }
     const curr = bridge.padBinds.pressedStates(gp.buttons);
     const events = bridge.padBinds.diffButtons(padStates.get(key), curr);
     padStates.set(key, curr);
+    /* --enable-logging trace of every transition: the only way to see what a
+       stick actually reports when the operator is at the desk and I am not */
+    if (bridge.autotestHost) for (const ev of events) console.log("[pad] " + key + " b" + ev.button + (ev.down ? " DOWN" : " up") + " focus=" + document.hasFocus() + " capturing=" + !!capturing);
     /* diagnostic for the in-game failure: Chromium's per-backend focus rules
        decide whether stick input still flows while the game has focus, and it
        differs BY DEVICE. This line appearing in an operator's log proves
@@ -440,12 +466,15 @@ const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate:
 const masterGain = ctx.createGain();
 masterGain.connect(ctx.destination);
 let masterVol = Math.max(0, Math.min(150, Number(store.get("masterVol", 100)) || 100));
-let sbVol = Math.max(0, Math.min(150, Number(store.get("sbVol", 100)) || 100));
+/* 1MC clips at 100% flattened the stress test — everyone starts at 35 now.
+   New store key on purpose: applyMasterVols() wrote the old default back on
+   every launch, so "never touched" and "chose 100" are indistinguishable. */
+let sbVol = Math.max(0, Math.min(150, Number(store.get("sbVol2", 35)) || 0));
 function applyMasterVols() {
   masterGain.gain.value = masterVol / 100;
   $("masterVolSl").value = masterVol; $("masterVolVal").textContent = masterVol + "%";
   $("sbVolSl").value = sbVol; $("sbVolVal").textContent = sbVol + "%";
-  store.set("masterVol", masterVol); store.set("sbVol", sbVol);
+  store.set("masterVol", masterVol); store.set("sbVol2", sbVol);
 }
 $("masterVolSl").addEventListener("input", function () { masterVol = +this.value; applyMasterVols(); });
 $("sbVolSl").addEventListener("input", function () { sbVol = +this.value; applyMasterVols(); });
@@ -561,6 +590,13 @@ async function openMicOnce() {
       const t = stream.getAudioTracks()[0], st = t && t.getSettings ? t.getSettings() : {};
       aecOn = st.echoCancellation !== false;
       if (!aecOn) addLog("sys", "", "echo cancellation unavailable on this microphone — use a headset");
+      /* the field report "laggy and doubled on first launch, fine after a
+         restart" needs the engine's state on record: this line is what to
+         quote next time */
+      if (ctx.state !== "running") { try { ctx.resume(); } catch (e2) {} }
+      addLog("sys", "", "mic open — " + (aecOn ? "echo cancel on" : "NO echo cancel") + ", " +
+        (st.sampleRate || "?") + " Hz capture, engine " + ctx.state + " @ " + ctx.sampleRate + " Hz, output latency " +
+        Math.round((ctx.outputLatency || ctx.baseLatency || 0) * 1000) + " ms");
     } catch (e) { aecOn = true; }
     renderMic(); renderGate();
     const src = ctx.createMediaStreamSource(stream);
@@ -666,6 +702,9 @@ function playFrame(n, session, opusBuf) {
   const view = new DataView(pcm);
   for (let i = 0; i < cnt; i++) chd[i] = view.getInt16(i * 2, true) / 32768;
   const src = ctx.createBufferSource(); src.buffer = ab; src.connect(n.gainNode);
+  /* a context that isn't running never advances currentTime: frames would
+     queue at a frozen cursor and all fire at once when it wakes */
+  if (ctx.state !== "running") { try { ctx.resume(); } catch (e) {} }
   d.cursor = Math.max(ctx.currentTime + 0.06, d.cursor);
   if (d.cursor > ctx.currentTime + 0.75) d.cursor = ctx.currentTime + 0.06;
   src.start(d.cursor); d.cursor += cnt / 48000;
@@ -2751,9 +2790,13 @@ function camMountTile(actor, label, stream, isSelf) {
   camViewState();
   return tile;
 }
+/* columns for n feeds: 1, 2, then the squarest wall that fits (4 across at
+   most — beyond that the plates are too small to read a callsign) */
+const camCols = (n) => (n <= 1 ? 1 : Math.min(4, Math.ceil(Math.sqrt(n))));
 function camViewState() {
   const grid = $("camGrid");
   if (!grid.children.length) grid.classList.remove("solo");
+  grid.style.setProperty("--camcols", String(camCols(grid.children.length)));
   $("camEmpty").style.display = grid.children.length ? "none" : "";
 }
 function renderCamList() {
@@ -3258,8 +3301,61 @@ if (bridge.autotestHost) {
     $("masterVolSl").value = 60; $("masterVolSl").dispatchEvent(new Event("input"));
     L("mastervol-drives-bus", Math.abs(masterGain.gain.value - 0.6) < 0.001 && store.get("masterVol") === 60);
     $("sbVolSl").value = 130; $("sbVolSl").dispatchEvent(new Event("input"));
-    L("sbvol-independent", Math.abs(masterGain.gain.value - 0.6) < 0.001 && sbVol === 130 && store.get("sbVol") === 130);
+    L("sbvol-independent", Math.abs(masterGain.gain.value - 0.6) < 0.001 && sbVol === 130 && store.get("sbVol2") === 130);
     masterVol = volWas; sbVol = sbWas; applyMasterVols();
+
+    /* ── stress-test findings, 2026-09-01 ── */
+    /* a key bound to an untuned net keys nothing, and says so */
+    {
+      const ui = nets.findIndex(n => !n.tuned && !n.group);
+      if (ui < 0) L("untuned-bind-idle", "skipped(all-tuned)");
+      else {
+        const u = nets[ui], bindWas = u.bind;
+        u.bind = { src: "label", label: "F23" };
+        const reasonsBefore = nets.filter(n => n._txReasons && n._txReasons.has("bind")).length;
+        onKeyDown("dom", "F23", "F23", []);
+        await new Promise(r => setTimeout(r, 60));
+        const reasonsAfter = nets.filter(n => n._txReasons && n._txReasons.has("bind")).length;
+        L("untuned-bind-idle", !u.tx && !u.tuned && reasonsAfter === reasonsBefore &&
+          $("toast").style.display === "block" && /not tuned/.test($("toast").textContent));
+        onKeyUp("dom", "F23", "F23");
+        u.bind = bindWas; $("toast").style.display = "none";
+      }
+    }
+    /* the global hook relays OS key auto-repeat: a held cycle key must step once */
+    {
+      const tunedCount = nets.filter(n => n.tuned).length;
+      if (tunedCount < 2) L("gkey-repeat-filtered", "skipped(<2 tuned)");
+      else {
+        const selWas = selectedI, gWas = gActive, txOnWas = nets.map(n => n.txOn);
+        const before = selectedI;
+        onGKey({ type: "key", code: 3657, label: "PageDown", down: true });
+        onGKey({ type: "key", code: 3657, label: "PageDown", down: true });   /* auto-repeat */
+        onGKey({ type: "key", code: 3657, label: "PageDown", down: true });
+        const once = selectedI;
+        onGKey({ type: "key", code: 3657, label: "PageDown", down: false });
+        onGKey({ type: "key", code: 3657, label: "PageDown", down: true });
+        const twice = selectedI;
+        onGKey({ type: "key", code: 3657, label: "PageDown", down: false });
+        const tunedOrder = tree.rows.map(r => r.i).filter(i => nets[i].tuned);
+        const expectOnce = tunedOrder[(tunedOrder.indexOf(before) + 1) % tunedOrder.length];
+        L("gkey-repeat-filtered", once === expectOnce && twice !== once);
+        selectedI = selWas; gActive = gWas; nets.forEach((n, i) => { n.txOn = txOnWas[i]; }); renderNets();
+      }
+    }
+    /* the cam wall: 1, 2, 2x2, 3x2, 3x3, then four across */
+    L("cam-wall-columns", [1, 2, 3, 4, 5, 6, 9, 10, 16].map(camCols).join(",") === "1,2,2,2,3,3,3,4,4");
+    {
+      const g = $("camGrid"), stub = document.createElement("div"); stub.className = "tile";
+      g.append(stub, stub.cloneNode(), stub.cloneNode(), stub.cloneNode()); camViewState();
+      const cs = getComputedStyle(stub), tracks = getComputedStyle(g).gridTemplateColumns;
+      /* the CAM page is not on screen here, so the computed value is the
+         unresolved repeat(); on screen it resolves to two pixel tracks */
+      L("cam-wall-2x2", g.style.getPropertyValue("--camcols") === "2" &&
+        (/^repeat\(2,/.test(tracks) || tracks.split(" ").length === 2));
+      L("cam-tile-clips-scanband", cs.overflow === "hidden");
+      g.innerHTML = ""; camViewState();
+    }
     /* the command rail replaced the bezel: it must never overflow sideways,
        and the docstrip must truncate rather than push the clock off-window */
     const railEl = document.getElementById("rail");
@@ -3324,6 +3420,7 @@ if (bridge.autotestHost) {
         .map(v => v + "->" + (normFreq(v) || "-")).join(" "));
 
     const target = tunedIdx[0] != null ? tunedIdx[0] : 0;
+    cmdToken = "autotest-token";        /* the soundboard block above cleared it; editing is COMMAND-gated */
     try { openNetDialog("edit", target);
           L("edit-dialog-open", document.getElementById("dlg").classList.contains("on"));
           L("edit-dialog-prefilled", document.getElementById("dlgName").value || "(empty)");

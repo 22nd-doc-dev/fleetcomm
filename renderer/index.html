@@ -455,15 +455,20 @@
   #camList .camrow button:hover{color:var(--grn);border-color:var(--grn)}
   #camList .camrow button.watching{color:var(--grn);border-color:var(--grn)}
   .camview{flex:1;min-width:0;display:flex;position:relative}
+  /* a video-wall grid: --camcols is set by camViewState() from the tile
+     count (1, 2, 2x2, 3x2, 3x3), so feeds fill rows and columns instead of
+     one ever-widening strip; every tile keeps a 16:9 plate */
   #camGrid{flex:1;display:grid;gap:10px;padding:12px;align-content:start;overflow-y:auto;
-    grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
+    grid-template-columns:repeat(var(--camcols,1),minmax(0,1fr))}
   /* an empty grid still absorbed all flex space and shoved the hint to the edge */
   #camGrid:empty{display:none}
   #camGrid.solo{grid-template-columns:1fr}
   #camGrid.solo .tile:not(.focus){display:none}
-  .tile{position:relative;border:1px solid var(--grn);background:#000;min-height:0;
-    box-shadow:var(--shadow-sm)}
-  .tile video{width:100%;height:100%;max-height:74vh;display:block;object-fit:contain;background:#000;cursor:pointer}
+  .tile{position:relative;border:1px solid var(--grn);background:#000;min-height:0;min-width:0;
+    aspect-ratio:16/9;overflow:hidden;box-shadow:var(--shadow-sm)}
+  #camGrid.solo .tile.focus{aspect-ratio:auto}
+  .tile video{width:100%;height:100%;display:block;object-fit:contain;background:#000;cursor:pointer}
+  #camGrid.solo .tile.focus video{max-height:74vh}
   /* ── the field-feed treatment (SYS-togglable, on by default): faint
      scanlines + a slow-drifting refresh band, IN the feed, never on the
      chrome — the design language bans HUD scanlines, but a helmet cam IS
