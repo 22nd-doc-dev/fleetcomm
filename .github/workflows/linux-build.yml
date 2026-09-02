@@ -16,6 +16,7 @@ jobs:
         with: { node-version: 20 }
       - run: npm ci
       - run: npx electron-builder --linux AppImage --x64 --publish never
+      - run: bash scripts/repack-appimage.sh
       - run: ls -la dist/ && file dist/*.AppImage
       - uses: actions/upload-artifact@v4
         with:

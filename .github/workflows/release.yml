@@ -56,6 +56,7 @@ jobs:
         with: { node-version: 20 }
       - run: npm ci
       - run: npx electron-builder --linux AppImage --x64 --publish never
+      - run: bash scripts/repack-appimage.sh
       - uses: softprops/action-gh-release@v2
         with:
           files: |
