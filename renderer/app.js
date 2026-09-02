@@ -3042,9 +3042,12 @@ window.addEventListener("keydown", (e) => {
   else if (e.key === "ArrowRight" || e.key === "Enter") { e.preventDefault(); e.stopImmediatePropagation(); tutNext(); }
   else if (e.key === "ArrowLeft") { e.preventDefault(); e.stopImmediatePropagation(); if (tut.i > 0) { tut.i--; tutRender(); } }
 }, true);
-/* first-time operators get it once, unprompted; the rig never does */
+/* first-time operators get it once, unprompted; the rig never does. "First
+   time" = a profile that has never connected (no saved callsign) — a
+   returning operator updating into this build is not a first-timer and gets
+   the tour only from SYS ▸ HELP or the sign-in link */
 function tutMaybeAuto() {
-  if (bridge.autotestHost || store.get("tutDone", false)) return;
+  if (bridge.autotestHost || store.get("tutDone", false) || store.get("callsign", "")) return;
   if (connected) tutOpen("board");
   else if (!$("connectOv").classList.contains("hidden")) tutOpen("quarterdeck");
 }
