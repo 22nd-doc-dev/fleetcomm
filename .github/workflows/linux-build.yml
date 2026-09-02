@@ -1,0 +1,23 @@
+name: Linux build (proof)
+# Pushing a branch named linux-build builds the AppImage without cutting a
+# release — the way to prove the Linux target before a tag (a failed tag is
+# a re-tag under the same version, per the release rules).
+on:
+  push:
+    branches: ['linux-build']
+permissions:
+  contents: read
+jobs:
+  appimage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npm ci
+      - run: npx electron-builder --linux AppImage --x64 --publish never
+      - run: ls -la dist/ && file dist/*.AppImage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fleetcomm-appimage
+          path: dist/*.AppImage

@@ -44,3 +44,20 @@ jobs:
           files: |
             dist/*.zip
           fail_on_unmatched_files: true
+  linux:
+    # EXPERIMENTAL — an AppImage for the Linux operators (Sven). Not wired to
+    # the auto-updater (that path is Windows-only); a hand download from the
+    # release page. Built on the same runner that already runs verify.
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npm ci
+      - run: npx electron-builder --linux AppImage --x64 --publish never
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.AppImage
+          fail_on_unmatched_files: true
