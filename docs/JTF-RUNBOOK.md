@@ -18,9 +18,9 @@ Participating organizations and their Discord servers:
 |---|---|---|
 | 22nd Expeditionary Fleet | (the fleet's own) | members, as always |
 | 12th Battle Group — DESRON-15, 13th Carrier Air Wing, 8th Expeditionary Marines, 55th Logistical Squadron | 832999076894605382 | ALLIED |
-| 112th Carrier Strike Group | 1501732069724786850 | ALLIED |
+| 112th Carrier Strike Group | 717645988088643604 | ALLIED |
 | 44th Battle Group | 1403475979074142411 | ALLIED |
-| Joint Task Force AEGIS | 1501732069724786850 (same id as the 112th — confirm) | ALLIED |
+| Joint Task Force AEGIS | 1501732069724786850 | ALLIED |
 | Wildknights (allied ground, integrated with the 8th Marines) | **not on the list yet** | ALLIED if they have their own Discord; otherwise they sign in through the 12th's |
 | GSI (allied fleet, fighters, ground QRF; command call sign UNION ACTUAL) | **not on the list yet** | ALLIED — needs its Discord server id |
 
