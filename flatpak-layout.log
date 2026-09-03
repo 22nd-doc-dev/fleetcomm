@@ -1,0 +1,60 @@
+
+(flatpak run:5322): dconf-CRITICAL **: 14:00:35.897: unable to create file '/run/user/1001/dconf/user': Permission denied.  dconf will not work properly.
+
+(flatpak run:5322): dconf-CRITICAL **: 14:00:35.897: unable to create file '/run/user/1001/dconf/user': Permission denied.  dconf will not work properly.
+hello-from-sandbox
+TMPDIR= XDG_RUNTIME_DIR=/run/user/1001 DISPLAY=
+total 940
+drwxr-xr-x 2 runner runner   4096 Jan  1  1970 .
+drwxr-xr-x 5 runner runner   4096 Sep  3 14:00 ..
+-rwxr-xr-x 2 runner runner    678 Jan  1  1970 fleetcomm-launch
+-rwxr-xr-x 2 runner runner     26 Jan  1  1970 gvfs-trash
+-rwxr-xr-x 2 runner runner   2032 Jan  1  1970 patch-desktop-filename
+-rwxr-xr-x 2 runner runner 569112 Jan  1  1970 zypak-helper
+-rwxr-xr-x 2 runner runner 367928 Jan  1  1970 zypak-sandbox
+lrwxrwxrwx 1 runner runner     25 Sep  3 14:00 zypak-wrapper -> /app/bin/zypak-wrapper.sh
+-rwxr-xr-x 2 runner runner    285 Jan  1  1970 zypak-wrapper.sh
+---
+-rwxr-xr-x 2 runner runner 678 Jan  1  1970 /app/bin/fleetcomm-launch
+#!/bin/sh
+# FleetComm Flatpak launcher.
+#
+# Runs the Electron binary directly with Chromium's inner sandbox off. The
+# Electron base app's zypak shim (which re-creates that sandbox inside
+# Flatpak) never brings Electron 44's zygote up — the sandboxed zygote dies at
+# spawn and the browser process waits forever; verified in CI, three zypak
+# variants dead, the direct launch passes the full autotest rig. The Flatpak
+# sandbox (bubblewrap + the manifest's finish-args) remains the isolation
+# boundary. Revisit when the base app's zypak catches up with Electron.
+export TMPDIR="$XDG_RUNTIME_DIR/app/$FLATPAK_ID"
+exec /app/lib/space.fleetcomm.app/fleetcomm --no-sandbox "$@"
+---
+LICENSE.electron.txt
+LICENSES.chromium.html
+chrome-sandbox
+chrome_100_percent.pak
+chrome_200_percent.pak
+chrome_crashpad_handler
+fleetcomm
+icudtl.dat
+libffmpeg.so
+libvk_swiftshader.so
+libvulkan.so.1
+locales
+resources
+resources.pak
+snapshot_blob.bin
+v8_context_snapshot.bin
+vk_swiftshader_icd.json
+---
+ldd: all libs resolved
+app-update.yml
+app.asar
+app.asar.unpacked
+/app/lib/space.fleetcomm.app/resources/app.asar.unpacked/node_modules/uiohook-napi/prebuilds/linux-arm64/uiohook-napi.node
+/app/lib/space.fleetcomm.app/resources/app.asar.unpacked/node_modules/uiohook-napi/prebuilds/darwin-arm64/uiohook-napi.node
+/app/lib/space.fleetcomm.app/resources/app.asar.unpacked/node_modules/uiohook-napi/prebuilds/linux-x64/uiohook-napi.node
+/app/lib/space.fleetcomm.app/resources/app.asar.unpacked/node_modules/uiohook-napi/prebuilds/linux-loong64/uiohook-napi.node
+/app/lib/space.fleetcomm.app/resources/app.asar.unpacked/node_modules/uiohook-napi/prebuilds/win32-x64/uiohook-napi.node
+/app/lib/space.fleetcomm.app/resources/app.asar.unpacked/node_modules/uiohook-napi/prebuilds/darwin-x64/uiohook-napi.node
+/app/lib/space.fleetcomm.app/resources/app.asar.unpacked/node_modules/uiohook-napi/prebuilds/win32-arm64/uiohook-napi.node

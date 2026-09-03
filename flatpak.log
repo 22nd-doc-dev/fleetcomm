@@ -1,0 +1,299 @@
+dbus-daemon[5373]: [session uid=1001 pid=5373] Activating service name='org.freedesktop.Flatpak' requested by ':1.0' (uid=1001 pid=5387 comm="flatpak run --env=FLEETCOMM_AUTOTEST=127.0.0.1 --e" label="flatpak (unconfined)")
+dbus-daemon[5373]: [session uid=1001 pid=5373] Successfully activated service 'org.freedesktop.Flatpak'
+
+(flatpak run:5387): dconf-CRITICAL **: 14:00:36.048: unable to create file '/run/user/1001/dconf/user': Permission denied.  dconf will not work properly.
+
+(flatpak run:5387): dconf-CRITICAL **: 14:00:36.048: unable to create file '/run/user/1001/dconf/user': Permission denied.  dconf will not work properly.
+dbus-daemon[5373]: [session uid=1001 pid=5373] Activating service name='org.freedesktop.portal.Documents' requested by ':1.0' (uid=1001 pid=5387 comm="flatpak run --env=FLEETCOMM_AUTOTEST=127.0.0.1 --e" label="flatpak (unconfined)")
+dbus-daemon[5373]: [session uid=1001 pid=5373] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.2' (uid=1001 pid=5400 comm="/usr/libexec/xdg-document-portal" label="unconfined")
+dbus-daemon[5373]: [session uid=1001 pid=5373] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[5373]: [session uid=1001 pid=5373] Successfully activated service 'org.freedesktop.portal.Documents'
+fusermount3: failed to access mountpoint /run/user/1001/doc: Permission denied
+error: fuse init failed: Can't mount path /run/user/1001/doc
+F: Can't get document portal: GDBus.Error:org.freedesktop.DBus.Error.NoReply: Message recipient disconnected from message bus without replying
+[2:0903/140036.198838:ERROR:dbus/bus.cc:406] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory
+[2:0903/140036.416732:ERROR:dbus/bus.cc:406] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory
+[2:0903/140036.416777:ERROR:dbus/bus.cc:406] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory
+[2:0903/140036.436450:WARNING:device/bluetooth/dbus/bluez_dbus_manager.cc:209] Floss manager service not available, cannot set Floss enable/disable.
+dbus-daemon[5373]: [session uid=1001 pid=5373] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.4' (uid=1001 pid=5416 comm="xdg-dbus-proxy --args=41" label="flatpak (unconfined)")
+dbus-daemon[5373]: [session uid=1001 pid=5373] Activating service name='org.freedesktop.portal.Documents' requested by ':1.5' (uid=1001 pid=5467 comm="/usr/libexec/xdg-desktop-portal" label="unconfined")
+dbus-daemon[5373]: [session uid=1001 pid=5373] Successfully activated service 'org.freedesktop.portal.Documents'
+fusermount3: failed to access mountpoint /run/user/1001/doc: Permission denied
+error: fuse init failed: Can't mount path /run/user/1001/doc
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.496: Choosing gtk.portal for org.freedesktop.impl.portal.Lockdown as a last-resort fallback
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.496: The preferred method to match portal implementations to desktop environments is to use the portals.conf(5) configuration file
+dbus-daemon[5373]: [session uid=1001 pid=5373] Activating service name='org.freedesktop.impl.portal.desktop.gtk' requested by ':1.5' (uid=1001 pid=5467 comm="/usr/libexec/xdg-desktop-portal" label="unconfined")
+
+(xdg-desktop-portal-gtk:5492): Gtk-WARNING **: 14:00:36.521: cannot open display: 
+dbus-daemon[5373]: [session uid=1001 pid=5373] Activated service 'org.freedesktop.impl.portal.desktop.gtk' failed: Process org.freedesktop.impl.portal.desktop.gtk exited with status 1
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.528: Failed to load RealtimeKit property: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name org.freedesktop.RealtimeKit1 was not provided by any .service files
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.529: Failed to load RealtimeKit property: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name org.freedesktop.RealtimeKit1 was not provided by any .service files
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.529: Failed to load RealtimeKit property: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name org.freedesktop.RealtimeKit1 was not provided by any .service files
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.529: No skeleton to export
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.529: Choosing gtk.portal for org.freedesktop.impl.portal.FileChooser as a last-resort fallback
+dbus-daemon[5373]: [session uid=1001 pid=5373] Activating service name='org.freedesktop.impl.portal.desktop.gtk' requested by ':1.5' (uid=1001 pid=5467 comm="/usr/libexec/xdg-desktop-portal" label="unconfined")
+
+(xdg-desktop-portal-gtk:5505): Gtk-WARNING **: 14:00:36.554: cannot open display: 
+dbus-daemon[5373]: [session uid=1001 pid=5373] Activated service 'org.freedesktop.impl.portal.desktop.gtk' failed: Process org.freedesktop.impl.portal.desktop.gtk exited with status 1
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.556: Failed to create file chooser proxy: Error calling StartServiceByName for org.freedesktop.impl.portal.desktop.gtk: Process org.freedesktop.impl.portal.desktop.gtk exited with status 1
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.556: No skeleton to export
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.556: Choosing gtk.portal for org.freedesktop.impl.portal.AppChooser as a last-resort fallback
+dbus-daemon[5373]: [session uid=1001 pid=5373] Activating service name='org.freedesktop.impl.portal.desktop.gtk' requested by ':1.5' (uid=1001 pid=5467 comm="/usr/libexec/xdg-desktop-portal" label="unconfined")
+
+(xdg-desktop-portal-gtk:5509): Gtk-WARNING **: 14:00:36.569: cannot open display: 
+dbus-daemon[5373]: [session uid=1001 pid=5373] Activated service 'org.freedesktop.impl.portal.desktop.gtk' failed: Process org.freedesktop.impl.portal.desktop.gtk exited with status 1
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.575: Failed to create app chooser proxy: Error calling StartServiceByName for org.freedesktop.impl.portal.desktop.gtk: Process org.freedesktop.impl.portal.desktop.gtk exited with status 1
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.575: No skeleton to export
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.575: Choosing gtk.portal for org.freedesktop.impl.portal.Print as a last-resort fallback
+dbus-daemon[5373]: [session uid=1001 pid=5373] Activating service name='org.freedesktop.impl.portal.desktop.gtk' requested by ':1.5' (uid=1001 pid=5467 comm="/usr/libexec/xdg-desktop-portal" label="unconfined")
+[29:0903/140036.582883:WARNING:media/gpu/vaapi/vaapi_wrapper.cc:1660] drmGetDevices2() has not found any devices
+[29:0903/140036.589248:WARNING:sandbox/policy/linux/sandbox_linux.cc:405] InitializeSandbox() called with multiple threads in process gpu-process.
+
+(xdg-desktop-portal-gtk:5512): Gtk-WARNING **: 14:00:36.590: cannot open display: 
+dbus-daemon[5373]: [session uid=1001 pid=5373] Activated service 'org.freedesktop.impl.portal.desktop.gtk' failed: Process org.freedesktop.impl.portal.desktop.gtk exited with status 1
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.593: Failed to create print proxy: Error calling StartServiceByName for org.freedesktop.impl.portal.desktop.gtk: Process org.freedesktop.impl.portal.desktop.gtk exited with status 1
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.593: No skeleton to export
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.593: Choosing gtk.portal for org.freedesktop.impl.portal.Notification as a last-resort fallback
+dbus-daemon[5373]: [session uid=1001 pid=5373] Activating service name='org.freedesktop.impl.portal.desktop.gtk' requested by ':1.5' (uid=1001 pid=5467 comm="/usr/libexec/xdg-desktop-portal" label="unconfined")
+[29:0903/140036.597750:WARNING:ui/gfx/linux/gbm_support_x11.cc:48] dri3 extension not supported.
+
+(xdg-desktop-portal-gtk:5521): Gtk-WARNING **: 14:00:36.609: cannot open display: 
+dbus-daemon[5373]: [session uid=1001 pid=5373] Activated service 'org.freedesktop.impl.portal.desktop.gtk' failed: Process org.freedesktop.impl.portal.desktop.gtk exited with status 1
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.611: Failed to create notification proxy: Error calling StartServiceByName for org.freedesktop.impl.portal.desktop.gtk: Process org.freedesktop.impl.portal.desktop.gtk exited with status 1
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.611: No skeleton to export
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.611: Choosing gtk.portal for org.freedesktop.impl.portal.Inhibit as a last-resort fallback
+dbus-daemon[5373]: [session uid=1001 pid=5373] Activating service name='org.freedesktop.impl.portal.desktop.gtk' requested by ':1.5' (uid=1001 pid=5467 comm="/usr/libexec/xdg-desktop-portal" label="unconfined")
+
+(xdg-desktop-portal-gtk:5524): Gtk-WARNING **: 14:00:36.626: cannot open display: 
+dbus-daemon[5373]: [session uid=1001 pid=5373] Activated service 'org.freedesktop.impl.portal.desktop.gtk' failed: Process org.freedesktop.impl.portal.desktop.gtk exited with status 1
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.628: Failed to create inhibit proxy: Error calling StartServiceByName for org.freedesktop.impl.portal.desktop.gtk: Process org.freedesktop.impl.portal.desktop.gtk exited with status 1
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.628: No skeleton to export
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.628: Choosing gtk.portal for org.freedesktop.impl.portal.Access as a last-resort fallback
+dbus-daemon[5373]: [session uid=1001 pid=5373] Activating service name='org.freedesktop.impl.portal.desktop.gtk' requested by ':1.5' (uid=1001 pid=5467 comm="/usr/libexec/xdg-desktop-portal" label="unconfined")
+hook_thread_proc [101]: Could not set thread priority 49 for thread 0x7FCEEED416C0!
+
+(xdg-desktop-portal-gtk:5527): Gtk-WARNING **: 14:00:36.643: cannot open display: 
+dbus-daemon[5373]: [session uid=1001 pid=5373] Activated service 'org.freedesktop.impl.portal.desktop.gtk' failed: Process org.freedesktop.impl.portal.desktop.gtk exited with status 1
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.646: Failed to create access proxy: Error calling StartServiceByName for org.freedesktop.impl.portal.desktop.gtk: Process org.freedesktop.impl.portal.desktop.gtk exited with status 1
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.646: No skeleton to export
+[fleetcomm] global PTT hooks active
+dbus-daemon[5373]: [session uid=1001 pid=5373] Activating service name='org.freedesktop.impl.portal.desktop.gtk' requested by ':1.5' (uid=1001 pid=5467 comm="/usr/libexec/xdg-desktop-portal" label="unconfined")
+
+(xdg-desktop-portal-gtk:5533): Gtk-WARNING **: 14:00:36.659: cannot open display: 
+dbus-daemon[5373]: [session uid=1001 pid=5373] Activated service 'org.freedesktop.impl.portal.desktop.gtk' failed: Process org.freedesktop.impl.portal.desktop.gtk exited with status 1
+dbus-daemon[5373]: [session uid=1001 pid=5373] Activating service name='org.freedesktop.impl.portal.desktop.gtk' requested by ':1.5' (uid=1001 pid=5467 comm="/usr/libexec/xdg-desktop-portal" label="unconfined")
+
+(xdg-desktop-portal-gtk:5535): Gtk-WARNING **: 14:00:36.676: cannot open display: 
+dbus-daemon[5373]: [session uid=1001 pid=5373] Activated service 'org.freedesktop.impl.portal.desktop.gtk' failed: Process org.freedesktop.impl.portal.desktop.gtk exited with status 1
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.678: Failed to create access proxy: Error calling StartServiceByName for org.freedesktop.impl.portal.desktop.gtk: Process org.freedesktop.impl.portal.desktop.gtk exited with status 1
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.678: No skeleton to export
+[W][00535.419830] pw.conf      | [          conf.c: 1031 try_load_conf()] can't load config client.conf: No such file or directory
+[E][00535.419905] pw.conf      | [          conf.c: 1060 pw_conf_load_conf_for_context()] can't load config client.conf: No such file or directory
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.679: Failed connect to PipeWire: Couldn't create PipeWire context
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.679: Choosing gtk.portal for org.freedesktop.impl.portal.Account as a last-resort fallback
+dbus-daemon[5373]: [session uid=1001 pid=5373] Activating service name='org.freedesktop.impl.portal.desktop.gtk' requested by ':1.5' (uid=1001 pid=5467 comm="/usr/libexec/xdg-desktop-portal" label="unconfined")
+
+(xdg-desktop-portal-gtk:5542): Gtk-WARNING **: 14:00:36.694: cannot open display: 
+dbus-daemon[5373]: [session uid=1001 pid=5373] Activated service 'org.freedesktop.impl.portal.desktop.gtk' failed: Process org.freedesktop.impl.portal.desktop.gtk exited with status 1
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.696: Failed to create account proxy: Error calling StartServiceByName for org.freedesktop.impl.portal.desktop.gtk: Process org.freedesktop.impl.portal.desktop.gtk exited with status 1
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.696: No skeleton to export
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.696: Choosing gtk.portal for org.freedesktop.impl.portal.Email as a last-resort fallback
+dbus-daemon[5373]: [session uid=1001 pid=5373] Activating service name='org.freedesktop.impl.portal.desktop.gtk' requested by ':1.5' (uid=1001 pid=5467 comm="/usr/libexec/xdg-desktop-portal" label="unconfined")
+
+(xdg-desktop-portal-gtk:5546): Gtk-WARNING **: 14:00:36.710: cannot open display: 
+dbus-daemon[5373]: [session uid=1001 pid=5373] Activated service 'org.freedesktop.impl.portal.desktop.gtk' failed: Process org.freedesktop.impl.portal.desktop.gtk exited with status 1
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.712: Failed to create email proxy: Error calling StartServiceByName for org.freedesktop.impl.portal.desktop.gtk: Process org.freedesktop.impl.portal.desktop.gtk exited with status 1
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.712: No skeleton to export
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.712: Choosing gtk.portal for org.freedesktop.impl.portal.DynamicLauncher as a last-resort fallback
+dbus-daemon[5373]: [session uid=1001 pid=5373] Activating service name='org.freedesktop.impl.portal.desktop.gtk' requested by ':1.5' (uid=1001 pid=5467 comm="/usr/libexec/xdg-desktop-portal" label="unconfined")
+
+(xdg-desktop-portal-gtk:5549): Gtk-WARNING **: 14:00:36.731: cannot open display: 
+dbus-daemon[5373]: [session uid=1001 pid=5373] Activated service 'org.freedesktop.impl.portal.desktop.gtk' failed: Process org.freedesktop.impl.portal.desktop.gtk exited with status 1
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.733: Failed to create dynamic_launcher proxy: Error calling StartServiceByName for org.freedesktop.impl.portal.desktop.gtk: Process org.freedesktop.impl.portal.desktop.gtk exited with status 1
+
+(/usr/libexec/xdg-desktop-portal:5467): xdg-desktop-portal-WARNING **: 14:00:36.733: No skeleton to export
+dbus-daemon[5373]: [session uid=1001 pid=5373] Successfully activated service 'org.freedesktop.portal.Desktop'
+[2:0903/140036.735185:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.Properties.Get: object_path= /org/freedesktop/portal/desktop: org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.FileChooser”
+[93:0903/140036.876906:WARNING:media/audio/linux/audio_manager_linux.cc:53] Falling back to ALSA for audio output. PulseAudio is not available or could not be initialized.
+[2:0903/140043.744359:INFO:CONSOLE:3227] "[AUTOTEST] connected-tuned-to-nothing=true nets-tuned=0", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3227)
+[2:0903/140043.744943:INFO:CONSOLE:3229] "[AUTOTEST] atc-works-untuned=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3229)
+[2:0903/140045.155078:INFO:CONSOLE:3235] "[AUTOTEST] connected=true tuned=4 selected=COMMAND NET", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3235)
+[2:0903/140045.167037:INFO:CONSOLE:3238] "[AUTOTEST] atc-channels=45 chatlen=1", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3238)
+[2:0903/140045.182515:INFO:CONSOLE:3263] "[AUTOTEST] overlay=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3263)
+[2:0903/140045.187102:INFO:CONSOLE:3258] "[AUTOTEST] cam-signal-selftrip=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3258)
+[2:0903/140045.945777:INFO:CONSOLE:3365] "[AUTOTEST] armed-count=1", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140045.945843:INFO:CONSOLE:3365] "[AUTOTEST] armed-is-selected=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140045.954322:INFO:CONSOLE:3365] "[AUTOTEST] custom-holo=#ff00ff", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140045.954378:INFO:CONSOLE:3365] "[AUTOTEST] custom-red=#00ff00", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140045.960767:INFO:CONSOLE:3365] "[AUTOTEST] theme-leak=none", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140045.960904:INFO:CONSOLE:3365] "[AUTOTEST] ctx-menu=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140045.960947:INFO:CONSOLE:3365] "[AUTOTEST] splitter=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140045.960973:INFO:CONSOLE:3365] "[AUTOTEST] acct-scroll=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140045.961034:INFO:CONSOLE:3365] "[AUTOTEST] theme-inputs=10", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140045.961633:INFO:CONSOLE:3365] "[AUTOTEST] edit-gated-without-token=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140045.962072:INFO:CONSOLE:3365] "[AUTOTEST] tree-order=COMMAND NET@0 | EMERGENCY NET@0 | UEES TIBER@0 | TIBER BRIDGE@1 | TIBER TACTICAL@1 | TIBER DAMAGE CONTROL@1 | TIBER SECURITY@1 | TIBER ENGINEERING@1 | TIBER MEDICAL@1 | TIBER LOGISTICS@1 | TIBER DECK@1 | UEENS MINERVA@0 | MINERVA BRIDGE@1 | MINERVA TACTICAL@1 | MINERVA DAMAGE CONTROL@1 | MINERVA SECURITY@1 | MINERVA ENGINEERING@1 | MINERVA MEDICAL@1 | MINERVA LOGISTICS@1 | MINERVA DECK@1 | UEES OLYMPIA@0 | OLYMPIA BRIDGE@1 | OLYMPIA TACTICAL@1 | OLYMPIA DAMAGE CONTROL@1 | OLYMPIA SECURITY@1 | OLYMPIA ENGINEERING@1 | OLYMPIA MEDICAL@1 | OLYMPIA LOGISTICS@1 | UEES WARRIOR@0 | WARRIOR BRIDGE@1 | WARRIOR TACTICAL@1 | WARRIOR DAMAGE CONTROL@1 | WARRIOR SECURITY@1 | WARRIOR ENGINEERING@1 | WARRIOR MEDICAL@1 | WARRIOR LOGISTICS@1 | WARRIOR DECK@1 | 51ST SKR MARINES@0 | REAPER-1@1 | REAPER-2@1 | IF-55 WARDOGS@0 | ALPHA SQUADRON@1 | BRAVO SQUADRON@1 | MG-212@0", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140045.962181:INFO:CONSOLE:3365] "[AUTOTEST] tree-rows-vs-nets=44/44", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140045.962335:INFO:CONSOLE:3365] "[AUTOTEST] titlebar-dark=#090f16 vs bezel #090F16", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140045.973297:INFO:CONSOLE:3365] "[AUTOTEST] titlebar-light=#eae3d1 vs bezel #EAE3D1", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140045.985936:INFO:CONSOLE:3365] "[AUTOTEST] titlebar-custom=#402030 (set #402030)", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140045.993194:INFO:CONSOLE:3365] "[AUTOTEST] overlay-box-beside-auth=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140045.993260:INFO:CONSOLE:3365] "[AUTOTEST] overlay-buttons=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140045.993291:INFO:CONSOLE:3365] "[AUTOTEST] overlay-edit-follows-shown=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140045.993322:INFO:CONSOLE:3365] "[AUTOTEST] row-height-px=95", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140045.993365:INFO:CONSOLE:3365] "[AUTOTEST] nest-indent-px=28", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140045.993491:INFO:CONSOLE:3365] "[AUTOTEST] clip-target=0.18", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140045.993525:INFO:CONSOLE:3365] "[AUTOTEST] soundboard-always-shipwide=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.002225:INFO:CONSOLE:3365] "[AUTOTEST] denied-row-shows-restricted=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.002287:INFO:CONSOLE:3365] "[AUTOTEST] denied-row-hides-tune=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.015911:INFO:CONSOLE:3365] "[AUTOTEST] sys-width-at-1400=948px of 948px  overflow=0", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.016478:INFO:CONSOLE:3365] "[AUTOTEST] sys-width-at-1000=548px of 548px  overflow=0", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.017261:INFO:CONSOLE:3365] "[AUTOTEST] sys-width-at-700=248px of 248px  overflow=145", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.017301:INFO:CONSOLE:3365] "[AUTOTEST] acct-note-text="Leave this alone unless sign-in is broken and you have been told to ch"", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.017329:INFO:CONSOLE:3365] "[AUTOTEST] acct-under-advanced=ADVANCED — RECOVERY", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.020766:INFO:CONSOLE:3365] "[AUTOTEST] font-loaded=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.020815:INFO:CONSOLE:3365] "[AUTOTEST] font-display-loaded=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.020859:INFO:CONSOLE:3365] "[AUTOTEST] font-prose-loaded=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.020884:INFO:CONSOLE:3365] "[AUTOTEST] font-mono-loaded=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.023276:INFO:CONSOLE:3365] "[AUTOTEST] body-font=Newsreader", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.023369:INFO:CONSOLE:3365] "[AUTOTEST] body-size=15.5px", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.028564:INFO:CONSOLE:3365] "[AUTOTEST] elements-under-10px=0", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.375416:INFO:CONSOLE:3365] "[AUTOTEST] ship-name-at-300px="UEES TIBER" clipped=false shown≈158px need=158px", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.375494:INFO:CONSOLE:3365] "[AUTOTEST] ship-row-wraps=wrap", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.375525:INFO:CONSOLE:3365] "[AUTOTEST] pan-slider-visible=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.375545:INFO:CONSOLE:3365] "[AUTOTEST] pan-overflow-px=0", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.375576:INFO:CONSOLE:3365] "[AUTOTEST] srow-overflow-px=0", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.382919:INFO:CONSOLE:3365] "[AUTOTEST] ship-is-group=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.383123:INFO:CONSOLE:3365] "[AUTOTEST] ship-has-lsnall=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.383170:INFO:CONSOLE:3365] "[AUTOTEST] ship-has-txall=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.383260:INFO:CONSOLE:3365] "[AUTOTEST] ship-has-no-tune=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.383296:INFO:CONSOLE:3365] "[AUTOTEST] name-bigger-than-freq=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.383340:INFO:CONSOLE:3365] "[AUTOTEST] rows-not-draggable-at-rest=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.383772:INFO:CONSOLE:3365] "[AUTOTEST] grip-arms-drag=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.383866:INFO:CONSOLE:3365] "[AUTOTEST] release-disarms-drag=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.384493:INFO:CONSOLE:3365] "[AUTOTEST] nest-escape-refused=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.384528:INFO:CONSOLE:3365] "[AUTOTEST] sibling-reorder-allowed=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.384559:INFO:CONSOLE:3365] "[AUTOTEST] ptt-unbound-flagged=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.384578:INFO:CONSOLE:3365] "[AUTOTEST] ptt-btn-flagged=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.384862:INFO:CONSOLE:3365] "[AUTOTEST] ptt-bound-clears=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.385170:INFO:CONSOLE:3365] "[AUTOTEST] sys-key-label=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.386065:INFO:CONSOLE:3365] "[AUTOTEST] device-pickers=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.397204:INFO:CONSOLE:3365] "[AUTOTEST] bind-clears-to-unbound=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.397281:INFO:CONSOLE:3365] "[AUTOTEST] bind-clear-persisted=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.397302:INFO:CONSOLE:3365] "[AUTOTEST] bind-badge-reads-set-key=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.407509:INFO:CONSOLE:3365] "[AUTOTEST] bind-esc-keeps-old-key=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.407563:INFO:CONSOLE:3365] "[AUTOTEST] bind-listen-chrome-cleared=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.409647:INFO:CONSOLE:3365] "[AUTOTEST] fx-dial-custom=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.409685:INFO:CONSOLE:3365] "[AUTOTEST] fx-dial-between-anchors=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.412183:INFO:CONSOLE:3365] "[AUTOTEST] fx-preset-snaps-dial=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.412922:INFO:CONSOLE:3365] "[AUTOTEST] cam-page-present=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.412962:INFO:CONSOLE:3365] "[AUTOTEST] cam-codec-roundtrip=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.413025:INFO:CONSOLE:3365] "[AUTOTEST] ship-state-rows=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.413056:INFO:CONSOLE:3365] "[AUTOTEST] sb-no-local-monitor=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.413096:INFO:CONSOLE:3365] "[AUTOTEST] upd-busy-shown=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.413121:INFO:CONSOLE:3365] "[AUTOTEST] upd-busy-cleared=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.413168:INFO:CONSOLE:3365] "[AUTOTEST] upd-ack-shown=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.413199:INFO:CONSOLE:3365] "[AUTOTEST] upd-ack-text=v0.0.1  →  v1.4.1", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.413241:INFO:CONSOLE:3365] "[AUTOTEST] upd-ack-cleared=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.413354:INFO:CONSOLE:3365] "[AUTOTEST] ship-row-says-1mc=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.413410:INFO:CONSOLE:3365] "[AUTOTEST] comms-chat-present=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.413859:INFO:CONSOLE:3365] "[AUTOTEST] comms-chat-resizable=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.415945:INFO:CONSOLE:3365] "[AUTOTEST] comms-chat-mirrors=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.416031:INFO:CONSOLE:3365] "[AUTOTEST] sndlib-shown-for-command=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.416061:INFO:CONSOLE:3365] "[AUTOTEST] sndlib-hidden-without-command=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.416117:INFO:CONSOLE:433] "[pad] detected "T.16000M (Vendor: 044f Product: b10a)" key=T.16000M (Vendor: 044f Product: b10a) buttons=3 axes=0 mapping=undefined focus=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (433)
+[2:0903/140046.416367:INFO:CONSOLE:449] "[pad] T.16000M (Vendor: 044f Product: b10a) b2 DOWN focus=true capturing=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (449)
+[2:0903/140046.416490:INFO:CONSOLE:457] "[pad] raw T.16000M (Vendor: 044f Product: b10a) btn=[2:1.0] axes=[] ts=0", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (457)
+[2:0903/140046.426751:INFO:CONSOLE:3365] "[AUTOTEST] pad-captures-bind=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.426996:INFO:CONSOLE:449] "[pad] T.16000M (Vendor: 044f Product: b10a) b2 up focus=true capturing=false", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (449)
+[2:0903/140046.427084:INFO:CONSOLE:449] "[pad] T.16000M (Vendor: 044f Product: b10a) b2 DOWN focus=true capturing=false", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (449)
+[2:0903/140046.435178:INFO:CONSOLE:449] "[pad] T.16000M (Vendor: 044f Product: b10a) b2 up focus=true capturing=false", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (449)
+[2:0903/140046.435295:INFO:CONSOLE:3365] "[AUTOTEST] pad-drives-ptt=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.442226:INFO:CONSOLE:3241] "[AUTOTEST] fx=heavy chains=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3241)
+[2:0903/140046.447946:INFO:CONSOLE:3365] "[AUTOTEST] mic-reopen=skipped(no-mic-here)", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.448202:INFO:CONSOLE:3365] "[AUTOTEST] mastervol-drives-bus=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.448314:INFO:CONSOLE:3365] "[AUTOTEST] sbvol-independent=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.510513:INFO:CONSOLE:3365] "[AUTOTEST] untuned-bind-idle=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.514284:INFO:CONSOLE:3365] "[AUTOTEST] bind-chirps=skipped(no-mic)", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.529955:INFO:CONSOLE:3365] "[AUTOTEST] gkey-repeat-filtered=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.536032:INFO:CONSOLE:3365] "[AUTOTEST] cam-wall-columns=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.536410:INFO:CONSOLE:3365] "[AUTOTEST] cam-wall-2x2=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.536443:INFO:CONSOLE:3365] "[AUTOTEST] cam-tile-clips-scanband=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.536782:INFO:CONSOLE:3365] "[AUTOTEST] tut-opens=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140046.894543:INFO:CONSOLE:3365] "[AUTOTEST] tut-spotlights-board=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140048.558632:INFO:CONSOLE:3365] "[AUTOTEST] tut-ptt-step=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140048.558731:INFO:CONSOLE:3365] "[AUTOTEST] tut-skip-persists=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140048.560263:INFO:CONSOLE:3365] "[AUTOTEST] cam-timer-burnin=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140048.560440:INFO:CONSOLE:3365] "[AUTOTEST] cam-talking-outline=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140048.562784:INFO:CONSOLE:3365] "[AUTOTEST] acct-search=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140051.182533:INFO:CONSOLE:3365] "[AUTOTEST] cam-popout=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140051.194452:INFO:CONSOLE:3365] "[AUTOTEST] audio-drop-not-reset=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140051.298605:INFO:CONSOLE:3365] "[AUTOTEST] self-echo-dropped=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140051.298676:INFO:CONSOLE:3365] "[AUTOTEST] rail-overflow-x=0", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140051.298726:INFO:CONSOLE:3365] "[AUTOTEST] rail-nav-keys=6", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140051.300017:INFO:CONSOLE:3365] "[AUTOTEST] docstrip-overflow-at-720=0", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140051.300058:INFO:CONSOLE:3365] "[AUTOTEST] tag-badges-rendered=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140051.300130:INFO:CONSOLE:3365] "[AUTOTEST] tag-display-name=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140051.300917:INFO:CONSOLE:3365] "[AUTOTEST] trunc-hides-tagged-names=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140051.300953:INFO:CONSOLE:3365] "[AUTOTEST] trunc-spares-untagged=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140051.301395:INFO:CONSOLE:3365] "[AUTOTEST] trunc-off-restores=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140051.301429:INFO:CONSOLE:3365] "[AUTOTEST] cam-gate-legacy-open=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140051.301467:INFO:CONSOLE:3365] "[AUTOTEST] cam-gate-member-blocked=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140051.301507:INFO:CONSOLE:3365] "[AUTOTEST] cam-gate-element-allowed=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140051.301538:INFO:CONSOLE:3365] "[AUTOTEST] cam-gate-command-allowed=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140051.301589:INFO:CONSOLE:3365] "[AUTOTEST] cam-canon-wire-match=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140051.301692:INFO:CONSOLE:3365] "[AUTOTEST] camscan-default-on=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140051.301831:INFO:CONSOLE:3365] "[AUTOTEST] camscan-toggles-off=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140051.301858:INFO:CONSOLE:3365] "[AUTOTEST] camscan-back-on=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140051.301963:INFO:CONSOLE:3365] "[AUTOTEST] sb-hidden-without-command=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140051.302071:INFO:CONSOLE:3365] "[AUTOTEST] sb-shown-for-command=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140051.302107:INFO:CONSOLE:3365] "[AUTOTEST] sb-net-label=UEES TIBER", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140051.302179:INFO:CONSOLE:3365] "[AUTOTEST] sb-hidden-on-nonship=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140051.302472:INFO:CONSOLE:3365] "[AUTOTEST] normfreq=250->250.000 290.5->290.500 118.25->118.250 290,500->290.500 junk->- ->-", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140051.303054:INFO:CONSOLE:3365] "[AUTOTEST] edit-dialog-open=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140051.303094:INFO:CONSOLE:3365] "[AUTOTEST] edit-dialog-prefilled=COMMAND NET", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140053.806567:INFO:CONSOLE:3365] "[AUTOTEST] apply-renamed=COMMAND NET", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140053.806623:INFO:CONSOLE:3365] "[AUTOTEST] apply-freq=121.850", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140053.806654:INFO:CONSOLE:3365] "[AUTOTEST] apply-err=(none)", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140053.806688:INFO:CONSOLE:3365] "[AUTOTEST] apply-dialog-closed=false", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140058.808228:INFO:CONSOLE:3365] "[AUTOTEST] apply-restored=false", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3365)
+[2:0903/140058.808284:INFO:CONSOLE:3962] "[AUTOTEST] v09-checks-done", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3962)
+[2:0903/140100.950791:INFO:CONSOLE:3278] "[AUTOTEST] shot-stage=UEES TIBER tuned=true lsnall=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3278)
+[2:0903/140100.951086:INFO:CONSOLE:3279] "[AUTOTEST] ship-count-live=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3279)
+[2:0903/140100.951149:INFO:CONSOLE:3280] "[AUTOTEST] ship-no-stray-cnt=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3280)
+[2:0903/140100.957230:INFO:CONSOLE:3286] "[AUTOTEST] onair-shown-while-tx=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3286)
+[2:0903/140100.957275:INFO:CONSOLE:3288] "[AUTOTEST] onair-hidden-when-quiet=true", source: file:///app/lib/space.fleetcomm.app/resources/app.asar/renderer/app.js (3288)

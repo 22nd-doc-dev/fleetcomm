@@ -1,0 +1,50 @@
+Downloading sources
+Initializing build dir
+Committing stage init to cache
+Starting build of space.fleetcomm.app
+========================================================================
+Building module fleetcomm in /home/runner/work/fleetcomm/fleetcomm/.flatpak-builder/build/fleetcomm-1
+========================================================================
+Running: mkdir -p /app/lib/space.fleetcomm.app
+Running: cp -a app/. /app/lib/space.fleetcomm.app/
+Running: install -Dm755 fleetcomm-launch /app/bin/fleetcomm-launch
+Running: install -Dm644 space.fleetcomm.app.desktop /app/share/applications/space.fleetcomm.app.desktop
+Running: install -Dm644 icon-512.png /app/share/icons/hicolor/512x512/apps/space.fleetcomm.app.png
+Running: install -Dm644 icon-256.png /app/share/icons/hicolor/256x256/apps/space.fleetcomm.app.png
+compressing debuginfo in: /tmp/fleetcomm-flatpak-build/files/lib/space.fleetcomm.app/libvulkan.so.1
+processing: /tmp/fleetcomm-flatpak-build/files/lib/space.fleetcomm.app/libvulkan.so.1
+[30] .debug_abbrev compressed -> .zdebug_abbrev (1950 => 119 6.10%)
+[31] .debug_info compressed -> .zdebug_info (3440 => 2001 58.17%)
+[32] .debug_ranges compressed -> .zdebug_ranges (132560 => 22801 17.20%)
+[33] .debug_str compressed -> .zdebug_str (2288 => 198 8.65%)
+[34] .debug_addr compressed -> .zdebug_addr (254632 => 58845 23.11%)
+[35] .debug_line compressed -> .zdebug_line (379116 => 114060 30.09%)
+[36] .debug_frame compressed -> .zdebug_frame (46376 => 6844 14.76%)
+[39] Updating section string table
+stripping /tmp/fleetcomm-flatpak-build/files/lib/space.fleetcomm.app/libvulkan.so.1 to /tmp/fleetcomm-flatpak-build/files/lib/debug/lib/space.fleetcomm.app/libvulkan.so.1.debug
+Committing stage build-fleetcomm to cache
+Cleaning up
+Committing stage cleanup to cache
+Finishing app
+Exporting share/applications/space.fleetcomm.app.desktop
+Exporting share/icons/hicolor/256x256/apps/space.fleetcomm.app.png
+Exporting share/icons/hicolor/512x512/apps/space.fleetcomm.app.png
+Please review the exported files and the metadata
+Committing stage finish to cache
+Exporting space.fleetcomm.app to repo
+Commit: b56b68ecbb3c6d580dfbbf861f1b1d035f6ed450271fa76d6895eb3ef6992b64
+Metadata Total: 425
+Metadata Written: 205
+Content Total: 317
+Content Written: 298
+Content Bytes Written: 309457690 (309.5 MB)
+Exporting space.fleetcomm.app.Debug to repo
+Commit: 1ab8699c4f940842dd05d14e3340153172bd4c711c03cc1f32239aaa1dd574cf
+Metadata Total: 11
+Metadata Written: 5
+Content Total: 2
+Content Written: 2
+Content Bytes Written: 1219882 (1.2 MB)
+Pruning cache
+-rw-r--r-- 1 runner runner 91746504 Sep  3 13:59 dist/FleetComm-1.4.1-linux-x86_64.flatpak
+built dist/FleetComm-1.4.1-linux-x86_64.flatpak from build/flatpak/space.fleetcomm.app.yml

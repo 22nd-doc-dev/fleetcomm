@@ -1,0 +1,80 @@
+/run/user/1001/app/space.fleetcomm.app:
+total 0
+drwx------  4 runner runner  80 Sep  3 14:00 .
+drwx------  3 runner runner  60 Sep  3 14:00 ..
+drwx------ 14 runner runner 560 Sep  3 14:00 fleetcomm-autotest-7jBi7o
+drwx------  2 runner runner  80 Sep  3 14:00 scoped_dirgprL7E
+
+/run/user/1001/app/space.fleetcomm.app/fleetcomm-autotest-7jBi7o:
+total 140
+drwx------ 14 runner runner   560 Sep  3 14:00 .
+drwx------  4 runner runner    80 Sep  3 14:00 ..
+drwx------  4 runner runner    80 Sep  3 14:00 Cache
+drwx------  4 runner runner    80 Sep  3 14:00 Code Cache
+drwx------  2 runner runner    60 Sep  3 14:00 Crashpad
+-rw-------  1 runner runner  4096 Sep  3 14:00 DIPS
+-rw-------  1 runner runner 45352 Sep  3 14:00 DIPS-wal
+drwx------  2 runner runner   140 Sep  3 14:00 DawnGraphiteCache
+drwx------  2 runner runner   140 Sep  3 14:00 DawnWebGPUCache
+drwx------  2 runner runner    60 Sep  3 14:00 Dictionaries
+drwx------  2 runner runner   140 Sep  3 14:00 GPUCache
+-rw-------  1 runner runner    57 Sep  3 14:00 Local State
+drwx------  3 runner runner    60 Sep  3 14:00 Local Storage
+-rw-------  1 runner runner    59 Sep  3 14:00 Network Persistent State
+-rw-------  1 runner runner   132 Sep  3 14:00 Preferences
+drwx------  2 runner runner   140 Sep  3 14:00 Session Storage
+drwx------  3 runner runner   100 Sep  3 14:00 Shared Dictionary
+lrwxrwxrwx  1 runner runner    20 Sep  3 14:00 SingletonCookie -> 11627023428911939051
+lrwxrwxrwx  1 runner runner    15 Sep  3 14:00 SingletonLock -> runnervmejwal-2
+lrwxrwxrwx  1 runner runner    71 Sep  3 14:00 SingletonSocket -> /run/user/1001/app/space.fleetcomm.app/scoped_dirgprL7E/SingletonSocket
+-rw-------  1 runner runner 36864 Sep  3 14:00 Trust Tokens
+-rw-------  1 runner runner     0 Sep  3 14:00 Trust Tokens-journal
+drwx------  3 runner runner    60 Sep  3 14:00 blob_storage
+-rw-------  1 runner runner 32768 Sep  3 14:00 declarative_performance_observer.db
+-rw-------  1 runner runner     0 Sep  3 14:00 declarative_performance_observer.db-journal
+-rw-------  1 runner runner  2862 Sep  3 14:00 fleetcomm-identity.json
+drwxr-xr-x  2 runner runner    40 Sep  3 14:00 sounds
+-rw-------  1 runner runner     2 Sep  3 14:00 update-state.json
+
+/run/user/1001/app/space.fleetcomm.app/fleetcomm-autotest-7jBi7o/Cache:
+total 0
+/home/runner/.var/app/space.fleetcomm.app:
+total 28
+drwxr-xr-x 7 runner runner 4096 Sep  3 14:00 .
+drwxr-xr-x 3 runner runner 4096 Sep  3 14:00 ..
+drwxr-xr-x 2 runner runner 4096 Sep  3 14:00 .ld.so
+drwxr-xr-x 3 runner runner 4096 Sep  3 14:00 .local
+drwxr-xr-x 5 runner runner 4096 Sep  3 14:00 cache
+drwxr-xr-x 4 runner runner 4096 Sep  3 14:00 config
+drwxr-xr-x 3 runner runner 4096 Sep  3 14:00 data
+
+/home/runner/.var/app/space.fleetcomm.app/.ld.so:
+total 56
+drwxr-xr-x 2 runner runner  4096 Sep  3 14:00 .
+drwxr-xr-x 7 runner runner  4096 Sep  3 14:00 ..
+lrwxrwxrwx 1 runner runner    64 Sep  3 14:00 active -> cab4a17d6d0bdd9fbf42fa5368fbce61026786b775b7529152393d2dcdd8f501
+-rw-r--r-- 1 runner runner 41303 Sep  3 14:00 cab4a17d6d0bdd9fbf42fa5368fbce61026786b775b7529152393d2dcdd8f501
+
+/home/runner/.var/app/space.fleetcomm.app/.local:
+total 12
+drwxr-xr-x 3 runner runner 4096 Sep  3 14:00 .
+drwxr-xr-x 7 runner runner 4096 Sep  3 14:00 ..
+drwxr-xr-x 2 runner runner 4096 Sep  3 14:00 state
+
+/home/runner/.var/app/space.fleetcomm.app/.local/state:
+total 8
+drwxr-xr-x 2 runner runner 4096 Sep  3 14:00 .
+drwxr-xr-x 3 runner runner 4096 Sep  3 14:00 ..
+
+/home/runner/.var/app/space.fleetcomm.app/cache:
+total 20
+drwxr-xr-x  5 runner runner 4096 Sep  3 14:00 .
+drwxr-xr-x  7 runner runner 4096 Sep  3 14:00 ..
+drwxr-xr-x  2 runner runner 4096 Sep  3 14:00 fontconfig
+drwx------ 10 runner runner 4096 Sep  3 14:00 mesa_shader_cache
+drwxr-xr-x  2 runner runner 4096 Sep  3 14:00 tmp
+
+/home/runner/.var/app/space.fleetcomm.app/cache/fontconfig:
+total 488
+drwxr-xr-x 2 runner runner  4096 Sep  3 14:00 .
+drwxr-xr-x 5 runner runner  4096 Sep  3 14:00 ..
