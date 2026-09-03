@@ -2051,9 +2051,10 @@ function applyLogin(r) {
   }
   $("pendingBox").style.display = "none";
   $("csRow2").style.display = "flex"; $("connectBtn").style.display = "block";
-  /* last one used first — the site's callsign is the fallback for a first
+  /* last one used first — the site's name is the fallback for a first
      session, not the default for every op */
   $("csIn").value = callsign || r.account.callsign || "";
+  loadIdentity();
   $("discordBtn").textContent = "✓ " + r.account.discordName.toUpperCase() + " — " + r.account.role.toUpperCase();
   $("discordBtn").disabled = true;
 }
@@ -2084,7 +2085,7 @@ $("disconnBtn").addEventListener("click", () => {
   camTeardownAll();      /* cams and their peer links die with the session */
   clearTxState(); ipcRenderer.send("disconnect"); connected = false;
   if (discordMode) {
-    acct = null; cmdToken = ""; refreshSounds();
+    acct = null; cmdToken = ""; refreshSounds(); showSignedAs(null);
     $("discordBtn").disabled = false; $("discordBtn").textContent = "SIGN IN WITH DISCORD ▸";
     $("pendingBox").style.display = "none"; $("bootstrapRow").style.display = "none";
     $("csRow2").style.display = "none"; $("connectBtn").style.display = "none";
@@ -2567,7 +2568,8 @@ function markHits(text, terms) {
 async function refreshAccts() {
   const [ra, rn] = await Promise.all([
     ipcRenderer.invoke("acct", { method: "GET", path: "/api/accounts" }),
-    ipcRenderer.invoke("acct", { method: "GET", path: "/api/nets/access" })
+    ipcRenderer.invoke("acct", { method: "GET", path: "/api/nets/access" }),
+    loadRoster()
   ]);
   if (!ra.ok) { $("acctList").innerHTML = '<span class="hint">' + esc(ra.error || "unavailable") + "</span>"; $("acctCount").textContent = ""; return; }
   acctData = { accounts: ra.accounts, access: (rn.ok && rn.access) || {} };
@@ -2579,7 +2581,7 @@ function renderAccts(data) {
   const pend = d.accounts.filter(x => x.role === "pending").length;
   $("acctPending").textContent = pend ? pend + " AWAITING APPROVAL" : "";
   const order = { pending: 0, command: 1, element: 2, member: 3, revoked: 4 };
-  const shownAccts = d.accounts.filter(x => acctHits(terms, [x.callsign, x.discordName, x.role, x.discordId, x.onAir].map(v => String(v || "")).join(" ").toLowerCase()));
+  const shownAccts = d.accounts.filter(x => acctHits(terms, [fleetName(x), x.callsign, x.discordName, x.role, x.discordId, x.onAir].map(v => String(v || "")).join(" ").toLowerCase()));
   const html = shownAccts.sort((x, y) => ((order[x.role] ?? 9) - (order[y.role] ?? 9)) || String(x.discordName).localeCompare(String(y.discordName))).map(x => {
     const btns =
       (x.role === "pending" ? '<button class="ann lit-g" data-role="member">APPROVE</button>' : "") +
@@ -2589,8 +2591,7 @@ function renderAccts(data) {
       (x.role === "command" ? '<button class="ann" data-role="member">DEMOTE</button>' : "") +
       (x.role !== "revoked" ? '<button class="ann" style="border-color:var(--red);color:var(--red)" data-role="revoked">REVOKE</button>'
                             : '<button class="ann lit-g" data-role="member">REINSTATE</button>');
-    return '<div class="acctrow" data-id="' + escAttr(x.discordId) + '"><div class="nm"><b data-cs="' + escAttr(x.callsign || "") + '">' + markHits(x.callsign || "(no callsign yet)", terms) +
-      '</b><button class="csbtn" data-setcs title="Set the callsign the fleet site carries for this member">SET CALLSIGN</button>' +
+    return '<div class="acctrow" data-id="' + escAttr(x.discordId) + '"><div class="nm"><b>' + markHits(fleetName(x), terms) + '</b>' +
       '<span>discord: ' + markHits(x.discordName, terms) + " · " + (x.lastSeen ? "seen " + new Date(x.lastSeen).toLocaleString() : "never seen") +
       (x.onAir ? ' · <span class="onair">on air as ' + markHits(x.onAir, terms) + "</span>" : "") + "</span></div>" +
       '<span class="ann rolelbl ' + (x.role === "command" ? "lit-a" : x.role === "member" || x.role === "element" ? "lit-g" : "") + '">' + (x.role === "element" ? "ELEMENT LEADER" : esc(String(x.role).toUpperCase())) + "</span>" + btns + "</div>";
@@ -2614,37 +2615,44 @@ $("acctSearch").addEventListener("keydown", (e) => {
   if (e.key === "Escape") { e.preventDefault(); $("acctSearch").value = ""; renderAccts(); }
   e.stopPropagation();                            /* typing here must never reach the bind engine */
 });
-/* ── the site's callsign, set from the app ──
-   The callsign an operator types at sign-in is that session's (a tactical
-   name); the one the fleet site carries is management's to set — and the
-   one to REPAIR wherever an older app renamed someone. Inline: the name
-   becomes a box, Enter saves, Esc puts it back. */
-async function acctSetCallsign(id, cs) {
-  const r = await ipcRenderer.invoke("acct", { method: "POST", path: "/api/personnel/" + id + "/callsign", body: { callsign: cs } });
-  if (!r.ok) toast(r.error || "couldn't set the callsign"); else { toast("Callsign set: " + (r.profile && r.profile.callsign || cs)); refreshAccts(); }
-  return r;
+/* ── fleet identity ──
+   Three different things wear the word "callsign": the NAME (Jack Sheridan —
+   the site's, never written from here), the RANK or rated form (GM1 — the
+   site's), and the OP CALLSIGN (TIBER ACTUAL — this session's, typed at
+   sign-in, gone with it). FleetComm shows the first two the way the fleet
+   says them and only ever writes the third. The roster comes from the site's
+   personnel API; without it (older service) the rows fall back to the name. */
+let acctRoster = new Map();                       /* discordId → { rank:{abbr}, rating, callsign } */
+function fleetName(x) {
+  const p = acctRoster.get(String(x.discordId)) || {};
+  const rank = p.rating || (p.rank && p.rank.abbr) || "";
+  const name = x.callsign || p.callsign || x.discordName || "(no name yet)";
+  return ((rank && rank !== "—" ? rank + " " : "") + name).toUpperCase();
 }
-function acctEditCallsign(row) {
-  const b = row.querySelector(".nm b"); if (!b || row.querySelector(".csedit")) return;
-  const box = document.createElement("input");
-  box.className = "csedit"; box.value = b.dataset.cs || ""; box.placeholder = "CALLSIGN"; box.spellcheck = false; box.maxLength = 40;
-  b.hidden = true; b.after(box); box.focus(); box.select();
-  const done = () => { box.remove(); b.hidden = false; };
-  box.addEventListener("keydown", (e) => {
-    e.stopPropagation();                          /* typing here must never reach the bind engine */
-    if (e.key === "Escape") { e.preventDefault(); done(); }
-    if (e.key === "Enter") {
-      e.preventDefault();
-      const cs = box.value.trim().toUpperCase();
-      if (!cs) { done(); return; }
-      done(); b.textContent = cs; acctSetCallsign(row.dataset.id, cs);
-    }
-  });
-  box.addEventListener("blur", () => setTimeout(() => { if (box.isConnected) done(); }, 120));
+async function loadRoster() {
+  try {
+    const r = await ipcRenderer.invoke("acct", { method: "GET", path: "/api/personnel" });
+    if (r && r.ok && Array.isArray(r.roster)) acctRoster = new Map(r.roster.map(p => [String(p.discordId), p]));
+  } catch (e) { /* an older service has no roster — names alone */ }
+}
+/* the sign-in card's answer to "who does the fleet think I am": the site's
+   rank + name, beside the box where the op callsign goes */
+function showSignedAs(profile) {
+  const rank = profile && (profile.rating || (profile.rank && profile.rank.abbr)) || "";
+  const name = profile && (profile.callsign || profile.discordName) || "";
+  const txt = ((rank && rank !== "—" ? rank + " " : "") + name).trim().toUpperCase();
+  $("signedAsV").textContent = txt;
+  $("signedAs").style.display = txt ? "" : "none";
+  return txt;
+}
+async function loadIdentity() {
+  try {
+    const r = await ipcRenderer.invoke("acct", { method: "GET", path: "/api/personnel/me" });
+    if (r && r.ok && r.profile) { acct.identity = r.profile; showSignedAs(r.profile); return; }
+  } catch (e) { /* no personnel API on an older service */ }
+  showSignedAs(null);
 }
 $("acctList").addEventListener("click", async (e) => {
-  const sc = e.target.closest("[data-setcs]");
-  if (sc) { acctEditCallsign(sc.closest(".acctrow")); return; }
   const b = e.target.closest("[data-role]"); if (!b) return;
   const id = b.closest(".acctrow").dataset.id;
   const r = await ipcRenderer.invoke("acct", { method: "POST", path: "/api/accounts/" + id + "/role", body: { role: b.dataset.role } });
@@ -3988,27 +3996,25 @@ if (bridge.autotestHost) {
       audioClockSample(1000, 1000); audioClockSample(1000, 1000); audioClockSample(1000, 1000);
       L("audio-clock-recovers", !clockWatch.ailing && /back on rate/.test(logFeed.textContent));
     }
-    /* SET CALLSIGN on an ACCOUNTS row: inline box, Esc restores, Enter posts */
+    /* fleet identity: ACCOUNTS rows read rank + name from the roster, the sign-in
+       card says who the fleet thinks you are, and nothing on this page can edit a name */
     {
       $("acctSearch").value = "";
-      showPage("pgAcct");                          /* focus only lands on a visible page */
-      renderAccts({ accounts: [{ discordId: "424242", discordName: "nailo", callsign: "TIBER DOC 2", role: "member" }], access: {} });
-      const row = $("acctList").querySelector(".acctrow");
-      if (!row) L("acct-set-callsign", "skipped(no-rows)");
-      else {
-        row.querySelector("[data-setcs]").click();
-        const box = row.querySelector(".csedit");
-        const opened = !!box && row.querySelector(".nm b").hidden && document.activeElement === box;
-        box.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-        const restored = !row.querySelector(".csedit") && !row.querySelector(".nm b").hidden;
-        row.querySelector("[data-setcs]").click();
-        const box2 = row.querySelector(".csedit"); box2.value = "Old Salt";
-        const r = await acctSetCallsign(row.dataset.id, "OLD SALT").catch(e => ({ threw: e.message }));
-        box2.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-        L("acct-set-callsign", opened && restored && r && !r.threw && typeof r.ok === "boolean");
-        if (!(opened && restored && r && !r.threw && typeof r.ok === "boolean")) L("acct-set-callsign-detail", JSON.stringify({ opened, restored, r }));
-        showPage("pgComms");
-      }
+      acctRoster = new Map([["424242", { discordId: "424242", rank: { abbr: "PO1" }, rating: "GM1", callsign: "Jack Sheridan" }]]);
+      const fixture = { accounts: [{ discordId: "424242", discordName: "GM1 Jack Sheridan", callsign: "Jack Sheridan", role: "member", onAir: "TIBER TAC 2" },
+        { discordId: "424243", discordName: "nailo", callsign: "Nailo", role: "member" }], access: {} };
+      renderAccts(fixture);
+      const rows = [...$("acctList").querySelectorAll(".acctrow .nm b")].map(b => b.textContent);
+      const onAir = /on air as TIBER TAC 2/.test($("acctList").textContent);
+      $("acctSearch").value = "gm1"; renderAccts(fixture);        /* the rig never fetched acctData — hand it the fixture */
+      const bySearch = $("acctList").querySelectorAll(".acctrow").length;
+      $("acctSearch").value = ""; acctRoster = new Map();
+      const identityOk = rows[0] === "GM1 JACK SHERIDAN" && rows[1] === "NAILO" && bySearch === 1 && !$("acctList").querySelector("[data-setcs]") && onAir;
+      L("acct-fleet-identity", identityOk);
+      if (!identityOk) L("acct-fleet-identity-detail", JSON.stringify({ rows, bySearch, onAir }));
+      const line = showSignedAs({ rating: "CDRE", rank: { abbr: "CDRE" }, callsign: "Travis Barnes" });
+      L("signed-as-line", line === "CDRE TRAVIS BARNES" && $("signedAs").style.display === "" && $("signedAsV").textContent === "CDRE TRAVIS BARNES");
+      showSignedAs(null);
     }
     /* the streamer's source card */
     {

@@ -659,12 +659,6 @@
   .acctrow .nm b{font-family:var(--font-display);font-weight:600;font-size:1rem;letter-spacing:.04em;
     text-transform:uppercase}
   .acctrow .nm span{display:block;font-family:var(--font-mono);font-size:.68rem;color:var(--muted)}
-  .acctrow .csbtn{font-family:var(--font-mono);font-size:.58rem;letter-spacing:.14em;color:var(--muted);background:transparent;
-    border:1px solid var(--line);padding:2px 6px;margin-left:8px;cursor:pointer;vertical-align:middle}
-  .acctrow .csbtn:hover{color:var(--gold);border-color:var(--gold)}
-  .acctrow .csedit{font-family:var(--font-display);font-weight:600;font-size:1rem;letter-spacing:.04em;text-transform:uppercase;
-    background:var(--bez);border:1px solid var(--gold);color:var(--ink);padding:2px 6px;width:16em;max-width:100%}
-  .acctrow .csedit:focus{outline:none;box-shadow:0 0 0 3px var(--holo-tint)}
   .acctrow .rolelbl{margin-left:auto}
   .acctrow .ann{cursor:pointer}
   .narow{display:flex;align-items:center;gap:10px;border:1px solid var(--line);
@@ -1206,8 +1200,10 @@
         <p class="hint">Your sign-in is registered. A COMMAND operator must clear you before the relay will accept you.</p>
         <button class="btn" id="recheckBtn">RE-CHECK STATUS</button>
       </div>
-      <div class="kv" id="csRow2" style="display:none;margin-top:12px"><label>CALLSIGN FOR THIS SESSION</label>
-        <input id="csIn" class="mono" placeholder="e.g. TIBER DOC 1" list="csList" style="font-size:1.05rem;letter-spacing:1px"><datalist id="csList"></datalist></div>
+      <div class="kv" id="signedAs" style="display:none;margin-top:12px"><label>THE FLEET KNOWS YOU AS</label><span class="v mono" id="signedAsV" style="font-size:1rem;letter-spacing:.06em"></span></div>
+      <div class="kv" id="csRow2" style="display:none;margin-top:12px"><label>OP CALLSIGN — THIS SESSION ONLY</label>
+        <input id="csIn" class="mono" placeholder="e.g. TIBER ACTUAL" list="csList" style="font-size:1.05rem;letter-spacing:1px"><datalist id="csList"></datalist>
+        <p class="hint" style="margin:6px 0 0;text-align:left">Tiber Actual tonight, Warrior Tac 4 tomorrow — it is what the net hears. It never changes your name or rank on the fleet site.</p></div>
       <button class="btn big" id="connectBtn" style="display:none;margin-top:10px">CONNECT ▸</button>
     </div>
     <div id="signLegacy" style="display:none">
