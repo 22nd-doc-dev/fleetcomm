@@ -2205,6 +2205,8 @@ module.exports = function createPortalApi(deps) {
       audit("event", "struck: " + pdb.events[m[1]].title);
       if (pdb.events[m[1]].discordEventId)
         enqueue("discord-event", { eventId: m[1], op: "cancel", discordEventId: pdb.events[m[1]].discordEventId });
+      if (pdb.events[m[1]].discordMsg)
+        enqueue("event-strike", { eventId: m[1], discordMsg: pdb.events[m[1]].discordMsg });
       delete pdb.events[m[1]];
       persist("events");
       send(res, 200, { ok: true });

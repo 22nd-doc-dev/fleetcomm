@@ -1037,6 +1037,21 @@ const rsiServer = http.createServer((req, res) => {
      "…and Discord is told to close the scheduled event");
   r = await api("POST", "/api/events/" + oakEv + "/end", {}, oak);
   ok(r.status === 400, "an event is only secured once");
+  /* striking one takes its Discord card with it */
+  r = await api("POST", "/api/events", { title: "Struck Patrol", at: Date.now() + 864e5 }, oak);
+  const strickenId = r.body.id;
+  {
+    const jobs = (await api("GET", "/api/bot/outbox", null, "Bot bot-secret-test")).body.jobs;
+    const post = jobs.find(j => j.type === "event" && j.eventId === strickenId);
+    await api("POST", "/api/bot/outbox/ack", { id: post.id, result: { channelId: "555", messageId: "666" } }, "Bot bot-secret-test");
+  }
+  r = await api("POST", "/api/events/" + strickenId + "/delete", {}, plain);
+  ok(r.status === 403, "a bystander cannot strike someone else's event");
+  r = await api("POST", "/api/events/" + strickenId + "/delete", {}, oak);
+  ok(r.status === 200, "the poster strikes their own event");
+  r = await api("GET", "/api/bot/outbox", null, "Bot bot-secret-test");
+  ok(r.body.jobs.some(j => j.type === "event-strike" && j.discordMsg && j.discordMsg.messageId === "666"),
+     "…and the Discord card is queued for removal with it");
   r = await api("POST", "/api/policy", { eventMinRank: "Nonesuch" }, doc);
   ok(r.status === 400, "an unknown rank is refused as the bar");
   r = await api("POST", "/api/policy", { eventMinRank: "LT" }, oak);

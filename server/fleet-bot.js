@@ -326,6 +326,15 @@ async function handleJob(job) {
       { embeds: [eventEmbed(event)], components: eventComponents(job.eventId) });
     return {};
   }
+  /* the board's card follows the event off the board */
+  if (job.type === "event-strike") {
+    const d = job.discordMsg;
+    if (!d || !d.channelId || !d.messageId) return {};
+    try { await dapi("DELETE", "/channels/" + d.channelId + "/messages/" + d.messageId, null,
+      { "X-Audit-Log-Reason": "22EF event struck" }); log("event card removed"); }
+    catch (e) { log("event card already gone:", e.message); }
+    return {};
+  }
   if (job.type === "announce") {
     const kind = job.kind === "assignment" ? "assignments" : "announce";
     const chan = channelFor(kind);
