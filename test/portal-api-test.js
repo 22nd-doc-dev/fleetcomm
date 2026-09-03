@@ -180,8 +180,10 @@ const rsiServer = http.createServer((req, res) => {
   ok(r.status === 200 && /^[a-f0-9]{16}$/.test(eventId), "COMMAND schedules an event");
   r = await api("POST", "/api/events/" + eventId + "/rsvp", { answer: "going" }, oak);
   ok(r.body.rsvp["2002"] === "going", "members RSVP");
+  await api("POST", "/api/personnel/bulk", { ids: ["2002"], action: { type: "rank", rank: "SR" } }, doc);
   r = await api("POST", "/api/events", { title: "x", at: Date.now() }, oak);
-  ok(r.status === 403, "members cannot schedule events");
+  ok(r.status === 403, "a member below the rank bar cannot schedule events");
+  await api("POST", "/api/personnel/bulk", { ids: ["2002"], action: { type: "rank", rank: "LTJG" } }, doc);
 
   /* ── leave of absence ── */
   r = await api("POST", "/api/loa/start", { reason: "Fleet week at grandma's" }, oak);
@@ -1006,6 +1008,64 @@ const rsiServer = http.createServer((req, res) => {
   ok(r.body.routine.tz === "America/Chicago" && r.body.routine.slots.includes(43), "shipmates read the routine to convert it to their own clock");
   r = await api("GET", "/api/availability/me", null, oak);
   ok(r.body.routine && r.body.routine.tz === "America/Chicago", "…and the owner gets it back with their days");
+
+  /* ── who may call a muster: a rank privilege the fleet sets ── */
+  r = await api("GET", "/api/policy", null, oak);
+  ok(r.body.policy.eventMinRank === "PO3" && r.body.ranks.length > 10, "the fleet's policy names the lowest rank that may post an event");
+  r = await api("POST", "/api/personnel/bulk", { ids: ["2002"], action: { type: "rank", rank: "SR" } }, doc);
+  r = await api("POST", "/api/events", { title: "Starman's Muster", at: Date.now() + 864e5 }, oak);
+  ok(r.status === 403 && /PO3|Petty Officer/i.test(r.body.error), "a starman is told the rank a muster call needs");
+  r = await api("POST", "/api/personnel/bulk", { ids: ["2002"], action: { type: "rank", rank: "PO3" } }, doc);
+  r = await api("GET", "/api/me/permissions", null, oak);
+  ok(r.body.canPostEvent === true, "…and at PO3 the board opens to them");
+  r = await api("POST", "/api/events", { title: "Oak's Patrol", at: Date.now() + 864e5, location: "Yela" }, oak);
+  ok(r.status === 200, "a PO3 posts an event");
+  const oakEv = r.body.id;
+  r = await api("GET", "/api/bot/outbox", null, "Bot bot-secret-test");
+  const schedJob = r.body.jobs.find(j => j.type === "discord-event" && j.eventId === oakEv && j.op === "create");
+  ok(schedJob, "…and a Discord scheduled event is queued with it");
+  await api("POST", "/api/bot/outbox/ack", { id: schedJob.id, result: { discordEventId: "999888777" } }, "Bot bot-secret-test");
+  /* ending it: the poster or COMMAND, nobody else */
+  r = await api("POST", "/api/events/" + oakEv + "/end", {}, plain);
+  ok(r.status === 403, "a bystander cannot secure someone else's event");
+  r = await api("POST", "/api/events/" + oakEv + "/end", {}, oak);
+  ok(r.status === 200 && r.body.endedAt, "the poster secures their own event");
+  r = await api("GET", "/api/events", null, oak);
+  ok(r.body.events.find(e => e.id === oakEv).endedAt, "…and the board shows it secured");
+  r = await api("GET", "/api/bot/outbox", null, "Bot bot-secret-test");
+  ok(r.body.jobs.some(j => j.type === "discord-event" && j.op === "end" && j.discordEventId === "999888777"),
+     "…and Discord is told to close the scheduled event");
+  r = await api("POST", "/api/events/" + oakEv + "/end", {}, oak);
+  ok(r.status === 400, "an event is only secured once");
+  r = await api("POST", "/api/policy", { eventMinRank: "Nonesuch" }, doc);
+  ok(r.status === 400, "an unknown rank is refused as the bar");
+  r = await api("POST", "/api/policy", { eventMinRank: "LT" }, oak);
+  ok(r.status === 403, "the bar is management's to move");
+  r = await api("POST", "/api/policy", { eventMinRank: "LT" }, doc);
+  r = await api("GET", "/api/me/permissions", null, oak);
+  ok(r.body.canPostEvent === false && r.body.eventMinRank === "LT", "…and raising it closes the board to a PO3");
+  await api("POST", "/api/policy", { eventMinRank: "PO3" }, doc);
+
+  /* ── requisitions carry a number Logistics can call them by ── */
+  r = await api("POST", "/api/logistics/orders", { items: [{ name: "MedPen", qty: 4 }], justification: "corpsman kit" }, oak);
+  ok(r.status === 200 && /^REQ-\d{4}$/.test(r.body.order.no), "a requisition is filed with a ticket number");
+  const reqA = r.body.order.no;
+  r = await api("POST", "/api/logistics/orders", { items: [{ name: "P4-AR", qty: 2 }] }, oak);
+  ok(r.body.order.no !== reqA && +r.body.order.no.slice(4) === +reqA.slice(4) + 1, "…and the next one takes the next number");
+  r = await api("GET", "/api/logistics", null, oak);
+  ok(r.body.orders.length >= 2 && r.body.orders.every(o => /^REQ-\d{4}$/.test(o.no || "")), "every requisition on the books carries one");
+
+  /* ── the 2965 sweep: dates a fleet year adrift ── */
+  r = await api("POST", "/api/personnel/bulk", { ids: ["2002"], action: { type: "note", text: "Boarded 12JUN2965 off Yela" } }, doc);
+  r = await api("POST", "/api/admin/repair-dates", {}, doc);
+  ok(r.status === 200 && r.body.dryRun === true, "the date sweep is a dry run until it is confirmed");
+  const strayCount = r.body.count;
+  r = await api("POST", "/api/admin/repair-dates", { confirm: "REPAIR" }, doc);
+  ok(r.body.dryRun === false && r.body.count === strayCount, "…and confirmed it moves every stray date");
+  r = await api("POST", "/api/admin/repair-dates", {}, doc);
+  ok(r.body.count === 0, "…leaving none behind");
+  r = await api("POST", "/api/admin/repair-dates", {}, oak);
+  ok(r.status === 403, "the sweep is management's alone");
 
   /* the treasury ledger as a spreadsheet */
   r = await api("POST", "/api/logistics/contributions", { kind: "auec", amount: 40000, proof: "shot-9" }, doc);

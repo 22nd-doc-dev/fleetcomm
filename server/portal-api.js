@@ -50,8 +50,11 @@ module.exports = function createPortalApi(deps) {
     logistics: record(load("logistics.json", {}), "logistics.json"),     // {catalog[], inventory[], orders[], contributions[], claims[], blueprints[]}
     docs: record(load("docs.json", {}), "docs.json"),                    // {files:[{id,name,ext,size,tag,ref,rate,by,at}]} — bytes under DATA/docs
     content: record(load("content.json", {}), "content.json"),           // the public site's editable copy: {blocks{key:{html,page,orig,at,by,v}}, history[]}
-    activity: record(load("activity.json", {}), "activity.json")         // the activity tracker: {reports[]}
+    activity: record(load("activity.json", {}), "activity.json"),        // the activity tracker: {reports[]}
+    policy: record(load("policy.json", {}), "policy.json")               // who may do what: {eventMinRank}
   };
+  /* the fleet's standing policy — the ranks at which a privilege opens */
+  if (typeof pdb.policy.eventMinRank !== "string") pdb.policy.eventMinRank = "PO3";
   if (!Array.isArray(pdb.activity.reports)) pdb.activity.reports = [];
   const persist = (name) => save(name + ".json", pdb[name]);
   const SHIP_STATUS = ["active", "reserve", "refit", "lost", "decommissioned"];
@@ -373,6 +376,18 @@ module.exports = function createPortalApi(deps) {
      the library starts empty and says so; Logistics fills it by hand */
   if (!pdb.fleet.treasury) pdb.fleet.treasury = "Keleus_Harper";
   const lgId = () => crypto.randomBytes(6).toString("hex");
+  /* every requisition carries a number Logistics can call it by — REQ-0001,
+     issued in the order they were filed and never reused */
+  if (!LG.seq || typeof LG.seq !== "object") LG.seq = {};
+  if (!Number.isFinite(LG.seq.req)) LG.seq.req = 0;
+  {
+    let backfilled = 0;
+    for (const o of [...LG.orders].sort((a, b2) => (a.at || 0) - (b2.at || 0)))
+      if (!o.no) { o.no = "REQ-" + String(++LG.seq.req).padStart(4, "0"); backfilled++; }
+    for (const o of LG.orders) { const n = /^REQ-(\d+)$/.exec(o.no || ""); if (n && +n[1] > LG.seq.req) LG.seq.req = +n[1]; }
+    if (backfilled) persist("logistics");
+  }
+  const reqNo = () => "REQ-" + String(++LG.seq.req).padStart(4, "0");
   const ORDER_STATES = ["submitted", "logistics", "command", "approved", "fulfilled", "rejected"];
   /* Logistics approvers: anyone holding the LOGRON-88 purview, plus — by
      standing rule — the senior officer and senior enlisted of LOGRON-88 */
@@ -647,6 +662,19 @@ module.exports = function createPortalApi(deps) {
   }
 
   const rankIdx = (abbr) => pdb.catalog.ranks.findIndex(r => r.abbr === abbr);
+  /* posting an event is a rank privilege, not a COMMAND one: the fleet sets the
+     lowest rank that may call a muster, and management always may */
+  function mayPostEvent(actor) {
+    if (!actor || actor.bot) return !!(actor && actor.bot);
+    if (isAdmin(actor)) return true;
+    if (!actor.member) return false;
+    const min = pdb.policy.eventMinRank;
+    if (!min || min === "*") return true;
+    const bar = rankIdx(min);
+    if (bar < 0) return true;
+    const mine = rankIdx(((pdb.personnel[actor.id] || {}).rank) || "");
+    return mine >= 0 && mine >= bar;
+  }
   const rankByAbbr = (abbr) => pdb.catalog.ranks[rankIdx(abbr)] || null;
   /* a promotion steps along the member's OWN ladder: a Marine rank (branch
      "marine") moves to the next Marine rank even though the Fleet Office
@@ -992,7 +1020,7 @@ module.exports = function createPortalApi(deps) {
     /* everything below needs an operator session or the bot secret */
     const actor = actorOf(req);
     const need = (ok, code, msg) => { if (!ok) { send(res, code, { ok: false, error: msg }); return true; } return false; };
-    if (!/^\/api\/(catalog|personnel|coc|availability|events|sso|activity|loa|roster|squadrons|record|export|bot|cam-viewers|audit|fleet|mast|logistics|uex|docs|rsi|backups|content|admin|me\/permissions)/.test(p)) return false;
+    if (!/^\/api\/(catalog|personnel|coc|availability|events|sso|activity|loa|roster|squadrons|record|export|bot|cam-viewers|audit|fleet|mast|logistics|uex|docs|rsi|backups|content|admin|policy|me\/permissions)/.test(p)) return false;
     if (need(actor, 401, "unauthorized")) return true;
     /* pending accounts can see nothing but their own approval state */
     if (need(actor.bot || actor.member, 403, actor.acc && actor.acc.role === "allied"
@@ -1025,6 +1053,11 @@ module.exports = function createPortalApi(deps) {
             channelId: String(b.result.channelId), messageId: String(b.result.messageId) };
           persist("events");
         }
+        if (job.type === "discord-event" && b.result && pdb.events[job.eventId]) {
+          if (b.result.discordEventId) pdb.events[job.eventId].discordEventId = String(b.result.discordEventId);
+          else if (b.result.cleared) delete pdb.events[job.eventId].discordEventId;
+          persist("events");
+        }
         persist("discord");
         send(res, 200, { ok: true });
         return true;
@@ -1037,6 +1070,7 @@ module.exports = function createPortalApi(deps) {
           if (lists[ans]) lists[ans].push(displayName(id2));
         send(res, 200, { ok: true, event: {
           id: m[1], title: ev.title, at: ev.at, endAt: ev.endAt || null, tier: ev.tier,
+          endedAt: ev.endedAt || null, endedBy: ev.endedBy || null, discordEventId: ev.discordEventId || null,
           brief: ev.brief, location: ev.location || "", uniform: ev.uniform || "",
           attention: (ev.attention || []).map(sid => (squadronOf(sid) || {}).name).filter(Boolean),
           discordMsg: ev.discordMsg || null, reminded: ev.reminded || {},
@@ -1452,11 +1486,11 @@ module.exports = function createPortalApi(deps) {
       const items = (Array.isArray(b.items) ? b.items : []).map(x => ({ itemId: x.itemId ? String(x.itemId) : null,
         name: String(x.name || "").trim().slice(0, 100), qty: Math.max(1, Math.floor(Number(x.qty) || 1)) })).filter(x => x.name).slice(0, 30);
       if (need(items.length, 400, "list at least one item")) return true;
-      const o = { id: lgId(), at: Date.now(), by: actor.id, items, justification: String(b.justification || "").trim().slice(0, 1000),
+      const o = { id: lgId(), no: reqNo(), at: Date.now(), by: actor.id, items, justification: String(b.justification || "").trim().slice(0, 1000),
         status: "submitted", approvals: {}, log: [{ at: Date.now(), by: actor.id, text: "Submitted" }] };
       LG.orders.push(o); persist("logistics");
-      audit("requisition", "filed: " + items.map(x => x.qty + "× " + x.name).join(", "));
-      for (const id2 of logronSeniors()) enqueue("dm", { discordId: id2, text: "📦 **Requisition** filed by " + displayName(actor.id) + ": " +
+      audit("requisition", o.no + " filed: " + items.map(x => x.qty + "× " + x.name).join(", "));
+      for (const id2 of logronSeniors()) enqueue("dm", { discordId: id2, text: "📦 **Requisition " + o.no + "** filed by " + displayName(actor.id) + ": " +
         items.map(x => x.qty + "× " + x.name).join(", ") + "\nReview it on the portal: " + (PORTAL_URL || "") + "logistics.html" });
       send(res, 200, { ok: true, order: orderView(o) }); return true;
     }
@@ -1510,7 +1544,7 @@ module.exports = function createPortalApi(deps) {
         o.status = "fulfilled";
       }
       persist("logistics");
-      audit("requisition", m[2] + ": " + o.items.map(x => x.qty + "× " + x.name).join(", "));
+      audit("requisition", (o.no ? o.no + " " : "") + m[2] + ": " + o.items.map(x => x.qty + "× " + x.name).join(", "));
       send(res, 200, { ok: true, order: orderView(o) }); return true;
     }
     /* contributions: aUEC or items into the fleet; Logistics verifies against proof */
@@ -2143,7 +2177,8 @@ module.exports = function createPortalApi(deps) {
       return true;
     }
     if (p === "/api/events" && req.method === "POST") {
-      if (need(isAdmin(actor), 403, "management access required")) return true;
+      if (need(mayPostEvent(actor), 403, "posting an event needs " +
+        ((pdb.catalog.ranks[rankIdx(pdb.policy.eventMinRank)] || {}).name || pdb.policy.eventMinRank) + " or above")) return true;
       const b = await body(req);
       const at = Number(b.at);
       if (need(String(b.title || "").trim() && Number.isFinite(at), 400, "title + at (ms) required")) return true;
@@ -2156,20 +2191,40 @@ module.exports = function createPortalApi(deps) {
         uniform: String(b.uniform || "").slice(0, 120),
         attention: (Array.isArray(b.attention) ? b.attention.map(String).slice(0, 12) : [])
           .filter(sid => squadronOf(sid)),
-        by: actor.name, rsvp: {} };
+        by: actor.name, byId: actor.id, rsvp: {} };
       persist("events");
       audit("event", "posted: " + pdb.events[id].title);
       enqueue("event", { eventId: id });
+      enqueue("discord-event", { eventId: id, op: "create" });
       send(res, 200, { ok: true, id });
       return true;
     }
     if ((m = /^\/api\/events\/([a-f0-9]{16})\/delete$/.exec(p)) && req.method === "POST") {
-      if (need(isAdmin(actor), 403, "management access required")) return true;
       if (need(pdb.events[m[1]], 404, "no such event")) return true;
+      if (need(isAdmin(actor) || pdb.events[m[1]].byId === actor.id, 403, "the event's poster or COMMAND strikes an event")) return true;
       audit("event", "struck: " + pdb.events[m[1]].title);
+      if (pdb.events[m[1]].discordEventId)
+        enqueue("discord-event", { eventId: m[1], op: "cancel", discordEventId: pdb.events[m[1]].discordEventId });
       delete pdb.events[m[1]];
       persist("events");
       send(res, 200, { ok: true });
+      return true;
+    }
+    /* SECURE FROM the operation: an event with no end time runs until someone
+       calls it. Its poster or COMMAND ends it; the board and Discord follow. */
+    if ((m = /^\/api\/events\/([a-f0-9]{16})\/end$/.exec(p)) && req.method === "POST" && !actor.bot) {
+      const ev = pdb.events[m[1]];
+      if (need(ev, 404, "no such event")) return true;
+      if (need(isAdmin(actor) || ev.byId === actor.id, 403, "the event's poster or COMMAND ends an event")) return true;
+      if (need(!ev.endedAt, 400, "this one is already secured")) return true;
+      ev.endedAt = Date.now();
+      ev.endedBy = actor.name;
+      if (!ev.endAt || ev.endAt > ev.endedAt) ev.endAt = ev.endedAt;
+      persist("events");
+      audit("event", "secured: " + ev.title);
+      enqueue("event-update", { eventId: m[1] });
+      if (ev.discordEventId) enqueue("discord-event", { eventId: m[1], op: "end", discordEventId: ev.discordEventId });
+      send(res, 200, { ok: true, endedAt: ev.endedAt });
       return true;
     }
     /* send the Discord card again — a dropped job, a deleted message */
@@ -2493,12 +2548,67 @@ module.exports = function createPortalApi(deps) {
       send(res, 200, { ok: true, profile: profile(m[1]) });
       return true;
     }
+    /* the fleet's policy: everyone reads it (the board hides what you cannot do),
+       management sets it */
+    if (p === "/api/policy" && req.method === "GET") {
+      send(res, 200, { ok: true, policy: { eventMinRank: pdb.policy.eventMinRank },
+        ranks: pdb.catalog.ranks.map((r, i) => ({ abbr: r.abbr, name: r.name, grade: r.grade, i })) });
+      return true;
+    }
+    if (p === "/api/policy" && req.method === "POST" && !actor.bot) {
+      if (need(isAdmin(actor), 403, "management access required")) return true;
+      const b = await body(req);
+      if (typeof b.eventMinRank === "string") {
+        const v = b.eventMinRank.trim();
+        if (need(v === "*" || rankIdx(v) >= 0, 400, "unknown rank: " + v)) return true;
+        pdb.policy.eventMinRank = v;
+      }
+      persist("policy");
+      audit("policy", "events may be posted by " + pdb.policy.eventMinRank + " and above");
+      send(res, 200, { ok: true, policy: { eventMinRank: pdb.policy.eventMinRank } });
+      return true;
+    }
+    /* ── the 2965 sweep ── the old site carried dates a fleet year adrift (2965
+       where the fleet meant 2956). This walks the records and moves them back. */
+    if (p === "/api/admin/repair-dates" && req.method === "POST" && !actor.bot) {
+      if (need(isAdmin(actor), 403, "management access required")) return true;
+      const b = await body(req);
+      const dry = b.confirm !== "REPAIR";
+      const FROM = Number.isFinite(Number(b.fleetYear)) ? Number(b.fleetYear) : 2965;
+      const TO = Number.isFinite(Number(b.toFleetYear)) ? Number(b.toFleetYear) : 2956;
+      const fromY = FROM - 930, toY = TO - 930;
+      const found = [];
+      const shift = (t) => { const d = new Date(t); d.setUTCFullYear(d.getUTCFullYear() - (fromY - toY)); return d.getTime(); };
+      const walk = (o, path, depth) => {
+        if (!o || typeof o !== "object" || depth > 8) return;
+        for (const [k, v] of Object.entries(o)) {
+          if (typeof v === "number" && v > 1e12 && v < 4e12 && new Date(v).getUTCFullYear() === fromY) {
+            found.push({ path: path + "." + k, was: fleetDate(v), now: fleetDate(shift(v)) });
+            if (!dry) o[k] = shift(v);
+          } else if (typeof v === "string" && v.length < 200 && new RegExp("\\\\b" + FROM + "\\\\b").test(v)) {
+            const next = v.replace(new RegExp("\\\\b" + FROM + "\\\\b", "g"), String(TO));
+            found.push({ path: path + "." + k, was: v, now: next });
+            if (!dry) o[k] = next;
+          } else if (v && typeof v === "object") walk(v, path + "." + k, depth + 1);
+        }
+      };
+      for (const [id2, rec] of Object.entries(pdb.personnel)) walk(rec, displayName(id2), 0);
+      walk(pdb.events, "events", 0);
+      walk(pdb.logistics, "logistics", 0);
+      walk(pdb.coc, "chain", 0);
+      if (!dry && found.length) { persist("personnel"); persist("events"); persist("logistics"); persist("coc"); }
+      if (!dry && found.length) audit("repair", found.length + " dates moved from " + FROM + " to " + TO);
+      send(res, 200, { ok: true, dryRun: dry, count: found.length, changes: found.slice(0, 200) });
+      return true;
+    }
     if (p === "/api/me/permissions" && req.method === "GET" && !actor.bot) {
       const admin = isAdmin(actor);
       const scopes = actorScopes(actor);
       send(res, 200, { ok: true, admin, itAdmin: !!(actor.acc && actor.acc.itAdmin),
         command: !!actor.command, scopes, logistics: isLogistics(actor),
         canApprove: admin || scopes.length > 0,
+        canPostEvent: mayPostEvent(actor),
+        eventMinRank: pdb.policy.eventMinRank,
         manage: {
           ships: admin ? "*" : scopes.filter(s => s.startsWith("ship:")).map(s => s.slice(5)),
           squadrons: admin ? "*" : scopes.filter(s => s.startsWith("squadron:")).map(s => s.slice(9)),

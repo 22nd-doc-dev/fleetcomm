@@ -273,6 +273,52 @@ async function handleJob(job) {
     log("event posted:", event.title);
     return { channelId: chan, messageId: msg.id };
   }
+  /* ── a real event on the Discord server, beside the board's card ──
+     Discord wants an external event to carry a location and an end time, so an
+     open-ended muster gets a nominal two hours and is corrected when it ends. */
+  if (job.type === "discord-event") {
+    if (!GUILD) { log("no guild — skipping the scheduled event"); return {}; }
+    const iso = (t) => new Date(t).toISOString();
+    if (job.op === "cancel" || job.op === "end") {
+      const id = job.discordEventId;
+      if (!id) return {};
+      let cur = null;
+      try { cur = await dapi("GET", "/guilds/" + GUILD + "/scheduled-events/" + id); }
+      catch (e) { log("scheduled event gone:", e.message); return { cleared: true }; }
+      /* ACTIVE (2) may be completed; anything still SCHEDULED (1) can only be cancelled */
+      const status = cur.status === 2 ? 3 : 4;
+      try { await dapi("PATCH", "/guilds/" + GUILD + "/scheduled-events/" + id, { status },
+        { "X-Audit-Log-Reason": "22EF event secured" }); }
+      catch (e) { log("could not close the scheduled event:", e.message); }
+      log("scheduled event", status === 3 ? "completed" : "cancelled");
+      return { cleared: true };
+    }
+    const { event } = await papi("GET", "/api/bot/event/" + job.eventId);
+    if (!event) return {};
+    const start = Math.max(Date.now() + 60000, event.at);          /* Discord refuses a start in the past */
+    const end = event.endAt && event.endAt > start ? event.endAt : start + 2 * 3600e3;
+    const payload = {
+      name: String(event.title).slice(0, 100),
+      description: [event.tier, event.brief].filter(Boolean).join(" — ").slice(0, 1000) || undefined,
+      scheduled_start_time: iso(start), scheduled_end_time: iso(end),
+      privacy_level: 2, entity_type: 3,
+      entity_metadata: { location: (event.location || "22nd Expeditionary Fleet").slice(0, 100) },
+    };
+    if (job.op === "update" && event.discordEventId) {
+      try {
+        await dapi("PATCH", "/guilds/" + GUILD + "/scheduled-events/" + event.discordEventId, payload,
+          { "X-Audit-Log-Reason": "22EF event updated" });
+        log("scheduled event updated:", event.title);
+        return { discordEventId: event.discordEventId };
+      } catch (e) { log("scheduled event update failed, posting a fresh one:", e.message); }
+    }
+    let made;
+    try { made = await dapi("POST", "/guilds/" + GUILD + "/scheduled-events", payload,
+      { "X-Audit-Log-Reason": "22EF event posted" }); }
+    catch (e) { log("could not create the scheduled event (needs Manage Events):", e.message); return {}; }
+    log("scheduled event created:", event.title);
+    return { discordEventId: made.id };
+  }
   if (job.type === "event-update") {
     const { event } = await papi("GET", "/api/bot/event/" + job.eventId).catch(() => ({ event: null }));
     if (!event || !event.discordMsg) return {};        /* deleted or never posted */
