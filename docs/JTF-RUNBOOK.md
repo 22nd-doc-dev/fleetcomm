@@ -4,11 +4,13 @@ For the 22nd COMMAND operator who sets the radio up, and for LT Kyle3089 (SENTIN
 OIC, 12th Battle Group) who runs the op. Everything here is done inside FleetComm
 (ACCOUNTS & ACCESS) or is a message to send. Nothing needs Andy or the droplet on the day.
 
-**Who can do what.** Adding organizations, creating nets and setting net levels are 22nd
-COMMAND actions — a 22nd account with COMMAND standing must do the setup (Andy before he
-leaves, or Barnes / Keleus). An allied operator, including the OIC, signs in as ALLIED and
-cannot administer; that is by design. Do the setup before Saturday and have one 22nd COMMAND
-operator reachable during the op.
+**Who can do what.** Adding organizations, setting net levels and flagging leads are 22nd
+COMMAND actions — a 22nd account with COMMAND standing does the setup (Andy before he leaves,
+or Barnes / Keleus). An allied operator signs in as ALLIED and cannot administer — EXCEPT an
+**ORG LEAD**: an allied operator COMMAND flags on the roster (MAKE ORG LEAD) may create,
+rename and delete nets inside their own organization's nets, and nowhere else; the relay
+enforces it. Make LT Kyle3089 the lead of the 12th (and one lead per organization) and they
+run their own nets on the day. Keep one 22nd COMMAND operator reachable for the rest.
 
 ## The plan (from OPORD 26-09 and fleet command)
 
@@ -55,7 +57,11 @@ count 30–80.
    task-force nets to *JOINT — allied task force too*, each command net to its organization's
    *… ONLY (+ COMMAND)* entry (those entries appear once the org is on the list). A nest that
    holds allied nets needs the same level as its nets.
-4. **Send each organization the briefing below** and test with one volunteer from each:
+4. **Flag the leads** — once each organization's lead has signed in once (they appear on the
+   roster as ALLIED · <org>), press MAKE ORG LEAD on their row. From then on they can add
+   nets under their organization's command net themselves (right-click ▸ new net); a new
+   subnet inherits its parent's access, so it is theirs automatically.
+5. **Send each organization the briefing below** and test with one volunteer from each:
    sign in, tune TASK FORCE AEGIS COMMAND, radio check.
 
 ## Briefing to send each organization
@@ -85,6 +91,8 @@ count 30–80.
 - **A net says RESTRICTED for someone who should have it**: its level is wrong (or its nest's).
   Fix the dropdown; they re-TUNE — no relaunch.
 - **Someone must go**: roster ▸ REVOKE. Off the relay at once; REINSTATE brings them back.
+- **An org lead cannot create a net**: they are creating it outside their organization's nets
+  (the relay refuses) — a new net goes under their own command net, or a 22nd COMMAND creates it.
 - **Voice stretched or doubled for one person**: their headset changed format (Bluetooth is
   the classic). The app re-opens its audio within seconds and says so under SETTINGS ▸ SYSTEM
   LOG; if it keeps happening, restart the app.
@@ -103,5 +111,6 @@ task-force nets back to OPEN or delete them. The 22nd's own nets were never touc
 ## Droplet checklist (Andy, before leaving — the only part outside the app)
 
 Relay (`/etc/mumble-server.ini`, then restart when nobody is on): `users=600`,
-`autobanSuccessfulConnections=false`, `autobanAttempts=30`. Accounts service at v1.4.6 or later
-(ALLIED standing, JOINT and per-org levels), pulled from the tag — one file, backup kept.
+`autobanSuccessfulConnections=false`, `autobanAttempts=30`. Accounts service at v1.4.7 or later
+(ALLIED standing, JOINT and per-org levels, org leads, the first-sign-in ACL sync), pulled from
+the tag — one file, backup kept.

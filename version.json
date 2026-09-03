@@ -1,4 +1,4 @@
 {
-  "version": "1.4.6",
-  "notes": "FleetComm 1.4.6 — joint task force, complete. COMMAND: ACCOUNTS & ACCESS has ALLIED ORGANIZATIONS — add an allied group by its Discord server id and its people sign in with their own Discord as ALLIED, no approval queue. NET ACCESS gains two kinds of level: JOINT (everyone in the task force) and one entry per allied organization (that org plus the 22nd COMMAND only) — the relay enforces both. Allied operators see only their nets, with a banner naming their org. Also: technical lines now live under SETTINGS ▸ SYSTEM LOG with COPY; the COMM LOG keeps radio traffic. The runbook for Operation IMPERIAL HARVEST is docs/JTF-RUNBOOK.md in the repo."
+  "version": "1.4.7",
+  "notes": "FleetComm 1.4.7 — joint task force, field-tested. An allied operator now gets relay access the moment they first sign in (the previous build could show a net and then refuse it). COMMAND: MAKE ORG LEAD on an allied row lets that organization’s lead create, rename and delete nets inside their own organization’s nets, and nowhere else — the relay enforces it. Allied operators see subnets under their nets as they are added."
 }
