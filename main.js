@@ -545,7 +545,8 @@ ipcMain.handle("acct", async (ev, request) => {
   const allowed = verb === "GET"
     ? ["/api/me", "/api/accounts", "/api/nets/access", "/api/sounds", "/api/cam-viewers"].includes(p) || /^\/api\/sounds\/[a-f0-9]{16}$/.test(p)
     : p === "/api/callsign" || p === "/api/nets/access" || p === "/api/sounds"
-      || /^\/api\/sounds\/[a-f0-9]{16}\/delete$/.test(p) || /^\/api\/accounts\/\d+\/role$/.test(p);
+      || /^\/api\/sounds\/[a-f0-9]{16}\/delete$/.test(p) || /^\/api\/accounts\/\d+\/role$/.test(p)
+      || /^\/api\/personnel\/[A-Za-z0-9-]{1,40}\/callsign$/.test(p);
   if (!allowed) return { ok: false, error: "unsupported account operation" };
   /* clip payloads are base64 audio — megabytes, not the usual JSON kilobytes */
   const soundBytes = p.startsWith("/api/sounds") ? 8 * 1024 * 1024 : undefined;

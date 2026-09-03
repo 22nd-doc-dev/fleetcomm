@@ -2589,7 +2589,8 @@ function renderAccts(data) {
       (x.role === "command" ? '<button class="ann" data-role="member">DEMOTE</button>' : "") +
       (x.role !== "revoked" ? '<button class="ann" style="border-color:var(--red);color:var(--red)" data-role="revoked">REVOKE</button>'
                             : '<button class="ann lit-g" data-role="member">REINSTATE</button>');
-    return '<div class="acctrow" data-id="' + escAttr(x.discordId) + '"><div class="nm"><b>' + markHits(x.callsign || "(no callsign yet)", terms) + '</b>' +
+    return '<div class="acctrow" data-id="' + escAttr(x.discordId) + '"><div class="nm"><b data-cs="' + escAttr(x.callsign || "") + '">' + markHits(x.callsign || "(no callsign yet)", terms) +
+      '</b><button class="csbtn" data-setcs title="Set the callsign the fleet site carries for this member">SET CALLSIGN</button>' +
       '<span>discord: ' + markHits(x.discordName, terms) + " · " + (x.lastSeen ? "seen " + new Date(x.lastSeen).toLocaleString() : "never seen") +
       (x.onAir ? ' · <span class="onair">on air as ' + markHits(x.onAir, terms) + "</span>" : "") + "</span></div>" +
       '<span class="ann rolelbl ' + (x.role === "command" ? "lit-a" : x.role === "member" || x.role === "element" ? "lit-g" : "") + '">' + (x.role === "element" ? "ELEMENT LEADER" : esc(String(x.role).toUpperCase())) + "</span>" + btns + "</div>";
@@ -2613,7 +2614,37 @@ $("acctSearch").addEventListener("keydown", (e) => {
   if (e.key === "Escape") { e.preventDefault(); $("acctSearch").value = ""; renderAccts(); }
   e.stopPropagation();                            /* typing here must never reach the bind engine */
 });
+/* ── the site's callsign, set from the app ──
+   The callsign an operator types at sign-in is that session's (a tactical
+   name); the one the fleet site carries is management's to set — and the
+   one to REPAIR wherever an older app renamed someone. Inline: the name
+   becomes a box, Enter saves, Esc puts it back. */
+async function acctSetCallsign(id, cs) {
+  const r = await ipcRenderer.invoke("acct", { method: "POST", path: "/api/personnel/" + id + "/callsign", body: { callsign: cs } });
+  if (!r.ok) toast(r.error || "couldn't set the callsign"); else { toast("Callsign set: " + (r.profile && r.profile.callsign || cs)); refreshAccts(); }
+  return r;
+}
+function acctEditCallsign(row) {
+  const b = row.querySelector(".nm b"); if (!b || row.querySelector(".csedit")) return;
+  const box = document.createElement("input");
+  box.className = "csedit"; box.value = b.dataset.cs || ""; box.placeholder = "CALLSIGN"; box.spellcheck = false; box.maxLength = 40;
+  b.hidden = true; b.after(box); box.focus(); box.select();
+  const done = () => { box.remove(); b.hidden = false; };
+  box.addEventListener("keydown", (e) => {
+    e.stopPropagation();                          /* typing here must never reach the bind engine */
+    if (e.key === "Escape") { e.preventDefault(); done(); }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const cs = box.value.trim().toUpperCase();
+      if (!cs) { done(); return; }
+      done(); b.textContent = cs; acctSetCallsign(row.dataset.id, cs);
+    }
+  });
+  box.addEventListener("blur", () => setTimeout(() => { if (box.isConnected) done(); }, 120));
+}
 $("acctList").addEventListener("click", async (e) => {
+  const sc = e.target.closest("[data-setcs]");
+  if (sc) { acctEditCallsign(sc.closest(".acctrow")); return; }
   const b = e.target.closest("[data-role]"); if (!b) return;
   const id = b.closest(".acctrow").dataset.id;
   const r = await ipcRenderer.invoke("acct", { method: "POST", path: "/api/accounts/" + id + "/role", body: { role: b.dataset.role } });
@@ -3956,6 +3987,28 @@ if (bridge.autotestHost) {
       L("audio-clock-heal-logged", logFeed.children.length >= logs0 + 2 && /re-opened/.test(logFeed.textContent));
       audioClockSample(1000, 1000); audioClockSample(1000, 1000); audioClockSample(1000, 1000);
       L("audio-clock-recovers", !clockWatch.ailing && /back on rate/.test(logFeed.textContent));
+    }
+    /* SET CALLSIGN on an ACCOUNTS row: inline box, Esc restores, Enter posts */
+    {
+      $("acctSearch").value = "";
+      showPage("pgAcct");                          /* focus only lands on a visible page */
+      renderAccts({ accounts: [{ discordId: "424242", discordName: "nailo", callsign: "TIBER DOC 2", role: "member" }], access: {} });
+      const row = $("acctList").querySelector(".acctrow");
+      if (!row) L("acct-set-callsign", "skipped(no-rows)");
+      else {
+        row.querySelector("[data-setcs]").click();
+        const box = row.querySelector(".csedit");
+        const opened = !!box && row.querySelector(".nm b").hidden && document.activeElement === box;
+        box.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        const restored = !row.querySelector(".csedit") && !row.querySelector(".nm b").hidden;
+        row.querySelector("[data-setcs]").click();
+        const box2 = row.querySelector(".csedit"); box2.value = "Old Salt";
+        const r = await acctSetCallsign(row.dataset.id, "OLD SALT").catch(e => ({ threw: e.message }));
+        box2.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        L("acct-set-callsign", opened && restored && r && !r.threw && typeof r.ok === "boolean");
+        if (!(opened && restored && r && !r.threw && typeof r.ok === "boolean")) L("acct-set-callsign-detail", JSON.stringify({ opened, restored, r }));
+        showPage("pgComms");
+      }
     }
     /* the streamer's source card */
     {
