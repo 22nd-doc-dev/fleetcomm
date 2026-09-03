@@ -2425,7 +2425,10 @@ module.exports = function createPortalApi(deps) {
           const rk = rankGiven ? findRank(mm.rank) : null;
           if (rankGiven && !rk) { out.errors.push(label + ": no such rank " + mm.rank); continue; }
           const chg = [], err = [];
-          let id = did && db.accounts[did] ? did : (callsign ? byCallsign.get(callsign) : null);
+          /* the loader may name the exact record to update (a stand-in matched by
+             hand or by fuzzy name); otherwise the Discord id, then the name */
+          const matchId = mm.matchId != null && db.accounts[String(mm.matchId)] ? String(mm.matchId) : null;
+          let id = did && db.accounts[did] ? did : (matchId || (callsign ? byCallsign.get(callsign) : null));
           let created = false;
           if (!id) {
             if (!callsign) { out.errors.push(did + ": no account by that Discord id and no callsign to file a record"); continue; }

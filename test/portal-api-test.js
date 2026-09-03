@@ -848,6 +848,15 @@ const rsiServer = http.createServer((req, res) => {
   ok(oldHand && oldHand.rank.abbr === "—" && oldHand.status === "reserve", "an unranked reservist stays honest");
   r = await api("GET", "/api/loa", null, doc);
   ok(r.body.active.some(l => l.discordId === oldHand.discordId && l.reason === "Deployed IRL"), "…and arrives on leave with the reason");
+  /* a stand-in record named by matchId is re-filed under the Discord id and renamed */
+  r = await api("POST", "/api/personnel/add", { callsign: "[HOA] Wren Kestrel (She/Her)", rank: "SM" }, doc);
+  const wrenManual = r.body.profile.discordId;
+  r = await api("POST", "/api/personnel/import", { source: "22nd.space crawl", members: [{ discordId: "9010", matchId: wrenManual, callsign: "Wren Kestrel", rank: "LSM" }] }, doc);
+  ok(r.status === 200 && r.body.updated === 1 && r.body.created === 0 && /filed under Discord id 9010/.test(r.body.changes[0]), "a matched stand-in is re-filed under its Discord id, not duplicated");
+  r = await api("GET", "/api/personnel/9010", null, doc);
+  ok(r.status === 200 && r.body.profile.callsign === "WREN KESTREL" && r.body.profile.rank.abbr === "LSM" && r.body.profile.record.some(e => /Discord account linked/.test(e.text)), "…renamed, re-ranked, its record intact");
+  r = await api("GET", "/api/personnel/" + wrenManual, null, doc);
+  ok(r.status === 404, "…and the stand-in is gone");
   r = await api("POST", "/api/login", { mockId: "9009", mockName: "Sheridan" });
   ok(r.status === 200 && r.body.account.role === "member" && r.body.account.callsign === "JACK SHERIDAN",
      "when that Discord id signs in, the record is already theirs — no queue, no merge");
