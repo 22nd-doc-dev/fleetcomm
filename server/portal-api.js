@@ -655,6 +655,7 @@ module.exports = function createPortalApi(deps) {
       rank: rankByAbbr(rec.rank) || { grade: "?", name: rec.rank, abbr: rec.rank },
       /* the rated form of the rank (BMMC, GM1, QMSC…) — display trumps ladder */
       rating: rec.rating || null, serviceNo: rec.serviceNo || null, orders: rec.orders || [],
+      duties: rec.duties || [], designators: rec.designators || [],
       awards: rec.awards, certs: rec.certs, ribbons: rec.ribbons || [], record: rec.record
     };
   }
@@ -2439,6 +2440,19 @@ module.exports = function createPortalApi(deps) {
             }
             chg.push("added to the rolls");
           }
+          /* a name-matched stand-in record with a Discord id in hand is re-filed
+             under that id, so the arrival walks straight into it */
+          if (!created && did && /^\d{4,22}$/.test(did) && id !== did && !db.accounts[did] && String(id).startsWith("m-")) {
+            chg.push("filed under Discord id " + did);
+            if (!dryRun) {
+              const old = db.accounts[id];
+              db.accounts[did] = { discordName: String(mm.discordName || old.discordName || callsign).slice(0, 80), callsign: old.callsign || callsign,
+                role: old.role || "member", manual: true, createdAt: old.createdAt || Date.now() };
+              mergeAccounts(id, did, byDefault);
+              byCallsign.set(String(db.accounts[did].callsign || callsign).toUpperCase(), did);
+              id = did;
+            }
+          }
           const acc = created && dryRun ? { callsign } : db.accounts[id];
           const rec = created && dryRun ? { rank: "—", awards: [], certs: [], ribbons: [], record: [], orders: [] } : recFor(id);
           if (!Array.isArray(rec.orders)) rec.orders = [];
@@ -2470,6 +2484,17 @@ module.exports = function createPortalApi(deps) {
           if (mm.status != null) {
             const to = /reserve|inactive/i.test(String(mm.status)) ? "reserve" : "active";
             if (to !== (rec.status === "reserve" ? "reserve" : "active")) { chg.push("status → " + to); if (!dryRun) rec.status = to; }
+          }
+          /* collateral duties and officer designators: plain lists on the record */
+          for (const [k, what] of [["duties", "duties"], ["designators", "designators"]]) {
+            if (!Array.isArray(mm[k])) continue;
+            const list = mm[k].map(x => String(x || "").trim().slice(0, 60)).filter(Boolean).slice(0, 20);
+            if (JSON.stringify(list) !== JSON.stringify(rec[k] || [])) { chg.push(what + " → " + (list.join(", ") || "none")); if (!dryRun) rec[k] = list; }
+          }
+          /* the old site's own RSI verification carries over as verified-by-source */
+          if (mm.rsiVerified === true && !acc.rsiVerified && (mm.rsiHandle || acc.rsiHandle)) {
+            chg.push("RSI verified (by " + source + ")");
+            if (!dryRun) acc.rsiVerified = { at: Date.now(), citizen: null, via: source };
           }
           /* leave: true, {since, reason}, or absent = not on leave (a carried-over leave ends) */
           {
