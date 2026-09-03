@@ -1,4 +1,4 @@
 {
-  "version": "1.4.4",
-  "notes": "FleetComm 1.4.4 — who you are, and who you are tonight. The sign-in card now shows THE FLEET KNOWS YOU AS (your rank and name from the fleet site) above the OP CALLSIGN box; the callsign you type there is for this session only — Tiber Actual tonight, Warrior Tac 4 tomorrow — and never changes your name or rank on the site. COMMAND: ACCOUNTS & ACCESS rows read rank + name the way the fleet says it (GM1 JACK SHERIDAN), searchable by rate; names are edited on the fleet site, so SET CALLSIGN is gone."
+  "version": "1.4.5",
+  "notes": "FleetComm 1.4.5 — joint task force. COMMAND: ACCOUNTS & ACCESS has an ALLIED ORGANIZATIONS block — add an allied group by its Discord server id and its people sign in with their own Discord as ALLIED, no approval queue; mark the joint nets JOINT in NET ACCESS and that is all they can reach — the relay enforces it. Allied operators see only the joint nets, with a banner naming their org. Also: technical lines (audio engine, microphone, hooks, cam links) now live under SETTINGS ▸ SYSTEM LOG with a COPY button; the COMM LOG keeps radio traffic. Runbook for the day: docs/JTF-RUNBOOK.md in the repo."
 }
