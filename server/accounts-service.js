@@ -258,9 +258,14 @@ function accessAcls(level) {
   /* "open" = anyone the fleet approved; allied operators are NOT that — the
      root already denies them Enter, and an open net inherits it */
   if (level === "open") return [];
+  const org = /^org:(\d{5,25})$/.exec(String(level));
+  const leadGrant = CHANNEL_ACCESS | PERM.Write | PERM.MakeChannel | PERM.MakeTempChannel;
   return [{ applyHere: true, applySubs: true, group: "all", deny: CHANNEL_ACCESS }]
     .concat(allowedAccounts(level).map(account => ({ applyHere: true, applySubs: true,
-      group: "#" + account.relayToken, grant: CHANNEL_ACCESS })));
+      group: "#" + account.relayToken,
+      /* an ORG LEAD may create, rename and delete nets inside its own org's
+         channels — Write + MakeChannel here, inherited by every subchannel */
+      grant: (org && account.role === "allied" && account.orgLead === true && account.orgGuild === org[1]) ? leadGrant : CHANNEL_ACCESS })));
 }
 function rootAcls() {
   const commandGrant = PERM.Write | PERM.MakeChannel | PERM.MakeTempChannel;
@@ -336,7 +341,18 @@ function tokensFor(acc) {
   return [acc.relayToken];
 }
 function pub(acc, id) {
-  return { discordId: id, discordName: acc.discordName, callsign: acc.callsign || null, onAir: liveCallsign(id), role: acc.role, org: acc.org || null, lastSeen: acc.lastSeen || null, createdAt: acc.createdAt };
+  return { discordId: id, discordName: acc.discordName, callsign: acc.callsign || null, onAir: liveCallsign(id), role: acc.role, org: acc.org || null, orgLead: acc.orgLead === true, lastSeen: acc.lastSeen || null, createdAt: acc.createdAt };
+}
+/* what an allied client needs to draw its board: the nets it may enter (JOINT
+   + its org's), its org's own nets (what an org lead may edit), and the flag */
+function alliedView(acc) {
+  if (acc.role !== "allied") return {};
+  const mine = "org:" + acc.orgGuild;
+  return {
+    jointNets: Object.entries(db.netAccess).filter(([, l]) => l === "joint" || l === mine).map(([n]) => n),
+    orgNets: Object.entries(db.netAccess).filter(([, l]) => l === mine).map(([n]) => n),
+    orgLead: acc.orgLead === true
+  };
 }
 function relayFor(acc) {
   if (acc.role === "pending" || acc.role === "revoked") return null;
@@ -434,8 +450,18 @@ const server = http.createServer(async (req, res) => {
          a fleet record: standing ALLIED from the first sign-in, org attached.
          A fleet member who is ALSO in an allied Discord stays a fleet member. */
       if (gate.allied && (!acc || acc.role === "pending" || acc.role === "allied")) {
+        const fresh = !acc || acc.role !== "allied" || !acc.relayToken;
         if (!acc) acc = db.accounts[who.id] = { discordName: who.username, role: "allied", createdAt: Date.now() };
         acc.role = "allied"; acc.org = gate.allied.name; acc.orgGuild = gate.allied.id;
+        /* A NEW token is worthless until the relay's ACLs list it — the first
+           allied sign-in used to answer instantly and the operator met
+           RESTRICTED on their own org's net. Sync before answering; a few
+           seconds once, and the board works the moment it opens. */
+        if (fresh) {
+          tokensFor(acc); persist();
+          try { await serializeMutation(() => syncRelayAclsWithRetry()); }
+          catch (error) { console.error("[allied] first sign-in ACL sync failed:", error.message); return send(res, 503, { ok: false, error: "the relay did not accept the new account yet \u2014 try again in a minute" }); }
+        }
       }
       const initialized = hasCommand();
       if (!initialized) {
@@ -472,7 +498,7 @@ const server = http.createServer(async (req, res) => {
       db.sessions[token] = { discordId: who.id, createdAt: Date.now(), expiresAt: Date.now() + SESSION_TTL_MS };
       cleanSessions();
       persist();
-      return send(res, 200, { ok: true, token, account: pub(acc, who.id), relay: relayFor(acc) });
+      return send(res, 200, { ok: true, token, account: Object.assign(pub(acc, who.id), alliedView(acc)), relay: relayFor(acc) });
     }
 
     const a = auth(req);
@@ -480,8 +506,7 @@ const server = http.createServer(async (req, res) => {
 
     if (p === "/api/me" && req.method === "GET") {
       if (Date.now() - (a.acc.lastSeen || 0) > 60000) { a.acc.lastSeen = Date.now(); persist(); }
-      const me = Object.assign(pub(a.acc, a.id), { sessionCallsign: a.session.callsign || null });
-      if (a.acc.role === "allied") me.jointNets = Object.entries(db.netAccess).filter(([, l]) => l === "joint" || l === "org:" + a.acc.orgGuild).map(([n]) => n);
+      const me = Object.assign(pub(a.acc, a.id), { sessionCallsign: a.session.callsign || null }, alliedView(a.acc));
       return send(res, 200, { ok: true, account: me, relay: relayFor(a.acc) });
     }
     /* sign out: the presenting session dies server-side, not just in the
@@ -508,6 +533,22 @@ const server = http.createServer(async (req, res) => {
     /* command-only below */
     if (a.acc.role !== "command") return send(res, 403, { ok: false, error: "COMMAND role required" });
 
+    const leadRoute = /^\/api\/accounts\/([A-Za-z0-9-]{1,40})\/orglead$/.exec(p);
+    if (leadRoute && req.method === "POST") {
+      const b = await body(req);
+      const target = db.accounts[leadRoute[1]];
+      if (!target) return send(res, 404, { ok: false, error: "no such account" });
+      if (target.role !== "allied") return send(res, 400, { ok: false, error: "only an ALLIED account can lead an organization" });
+      const lead = b.lead === true;
+      await serializeMutation(async () => {
+        const was = target.orgLead === true;
+        target.orgLead = lead; tokensFor(target); persist();
+        try { await syncRelayAcls(); }
+        catch (error) { target.orgLead = was; persist(); throw error; }
+      });
+      audit(a.acc.callsign || a.acc.discordName, a.id, "standing", (target.callsign || target.discordName || leadRoute[1]) + ": org lead " + (lead ? "granted" : "removed") + " (" + (target.org || "?") + ")");
+      return send(res, 200, { ok: true, account: pub(target, leadRoute[1]) });
+    }
     if (p === "/api/allied" && req.method === "GET") {
       return send(res, 200, { ok: true, allied: Object.entries(db.allied).map(([id, g]) => ({ guildId: id, name: g.name, addedAt: g.addedAt || null,
         accounts: Object.values(db.accounts).filter(x => x.role === "allied" && x.orgGuild === id).length })) });
@@ -636,6 +677,7 @@ const server = http.createServer(async (req, res) => {
           persist();
           await applyNetAccess(netName, b.level);
         } catch (error) {
+          console.error("[netaccess] " + netName + " -> " + b.level + " failed: " + error.message);
           if (hadPrevious) db.netAccess[netName] = previous; else delete db.netAccess[netName];
           try { persist(); } catch (persistError) {}
           throw error;

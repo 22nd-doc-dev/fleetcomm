@@ -1343,7 +1343,7 @@ async function tuneNet(i, silent) {
     if (!cmdToken) { if (!silent) toast("Net \"" + n.cfg.name + "\" doesn't exist on the relay yet — command authority required to create it."); return false; }
     const parent = n.parent || pkg.rootChannel;
     const made = await ipcRenderer.invoke("create-net", { name: n.cfg.name, rootChannel: parent, freq: n.cfg.freq, ship: !!n.cfg.ship });
-    if (!made.ok) { if (!silent) toast(/PermissionDenied/.test(made.error) ? "The relay refused: your command token doesn't grant net creation." : "Create failed: " + made.error); return false; }
+    if (!made.ok) { if (!silent) toast(/PermissionDenied/.test(made.error) ? "The relay refused net creation here \u2014 COMMAND may create anywhere; an organization lead only inside their own organization's nets." : "Create failed: " + made.error); return false; }
     if (made.name && made.name !== n.cfg.name) {
       renameLocal(n.cfg.name, made.name); n.cfg.name = made.name; cfg.name = made.name; cfg.channel = made.name;
     }
@@ -2596,6 +2596,7 @@ function renderAccts(data) {
     const btns =
       (x.role === "pending" ? '<button class="ann lit-g" data-role="member">APPROVE</button>' : "") +
       (x.role === "member" ? '<button class="ann lit-g" data-role="element" title="May watch helmet cams; no COMMAND powers">ELEMENT LEAD</button>' : "") +
+      (x.role === "allied" ? '<button class="ann' + (x.orgLead ? " lit-a" : "") + '" data-orglead="' + (x.orgLead ? "0" : "1") + '" title="An organization lead may create, rename and delete nets inside their own organization\u2019s nets">' + (x.orgLead ? "ORG LEAD ✓" : "MAKE ORG LEAD") + '</button>' : "") +
       (x.role === "element" || x.role === "allied" ? '<button class="ann" data-role="member">TO MEMBER</button>' : "") +
       (x.role === "member" || x.role === "element" ? '<button class="ann lit-c" data-role="command">PROMOTE</button>' : "") +
       (x.role === "command" ? '<button class="ann" data-role="member">DEMOTE</button>' : "") +
@@ -2604,7 +2605,7 @@ function renderAccts(data) {
     return '<div class="acctrow" data-id="' + escAttr(x.discordId) + '"><div class="nm"><b>' + markHits(fleetName(x), terms) + '</b>' +
       '<span>discord: ' + markHits(x.discordName, terms) + " · " + (x.lastSeen ? "seen " + new Date(x.lastSeen).toLocaleString() : "never seen") +
       (x.onAir ? ' · <span class="onair">on air as ' + markHits(x.onAir, terms) + "</span>" : "") + "</span></div>" +
-      '<span class="ann rolelbl ' + (x.role === "command" ? "lit-a" : x.role === "member" || x.role === "element" ? "lit-g" : "") + '">' + (x.role === "element" ? "ELEMENT LEADER" : x.role === "allied" ? "ALLIED" + (x.org ? " · " + esc(x.org) : "") : esc(String(x.role).toUpperCase())) + "</span>" + btns + "</div>";
+      '<span class="ann rolelbl ' + (x.role === "command" ? "lit-a" : x.role === "member" || x.role === "element" ? "lit-g" : "") + '">' + (x.role === "element" ? "ELEMENT LEADER" : x.role === "allied" ? (x.orgLead ? "ALLIED LEAD" : "ALLIED") + (x.org ? " · " + esc(x.org) : "") : esc(String(x.role).toUpperCase())) + "</span>" + btns + "</div>";
   }).join("");
   $("acctList").innerHTML = html || '<span class="hint">No operator matches “' + esc($("acctSearch").value) + '”.</span>';
   /* one option per allied organisation as well: that org's operators + the fleet's COMMAND */
@@ -2665,18 +2666,29 @@ $("alliedList").addEventListener("click", async (e) => {
    naming the org. Refreshed from every /api/me so a net COMMAND marks JOINT
    mid-op appears without a relaunch. */
 function applyAlliedMode(account) {
-  const next = account && account.role === "allied" ? { org: account.org || "allied", joint: new Set(account.jointNets || []) } : null;
-  const changed = JSON.stringify(next && { o: next.org, j: [...next.joint].sort() }) !== JSON.stringify(alliedMode && { o: alliedMode.org, j: [...alliedMode.joint].sort() });
+  const next = account && account.role === "allied"
+    ? { org: account.org || "allied", joint: new Set(account.jointNets || []), lead: account.orgLead === true } : null;
+  const key = (x) => x && JSON.stringify({ o: x.org, j: [...x.joint].sort(), l: x.lead });
+  const changed = key(next) !== key(alliedMode);
   alliedMode = next;
   $("alliedBanner").style.display = alliedMode ? "" : "none";
-  $("alliedBannerV").textContent = alliedMode ? alliedMode.org.toUpperCase() + " · JOINT NETS ONLY" : "";
+  $("alliedBannerV").textContent = alliedMode ? alliedMode.org.toUpperCase() + (alliedMode.lead ? " · ORG LEAD" : " · JOINT NETS ONLY") : "";
+  /* an ORG LEAD may create, rename and delete nets inside their org's nets —
+     the UI keys edit controls on cmdToken; the relay decides what is theirs */
+  if (alliedMode && alliedMode.lead) cmdToken = "org-lead";
+  else if (cmdToken === "org-lead") cmdToken = "";
   if (changed && nets.length) renderNets();
   return changed;
 }
 function alliedVisibleNames() {
   const vis = new Set();
+  const named = (n) => alliedMode.joint.has(n.cfg.name);
+  /* a net is visible if it is named, or sits under a named net (a subnet an
+     org lead created inherits its parent's access on the relay), and every
+     ancestor of a visible net is shown for structure */
+  const under = (n) => { let cur = n; while (cur) { if (named(cur)) return true; cur = cur.parent ? nets.find(x => x.cfg.name === cur.parent) : null; } return false; };
   for (const n of nets) {
-    if (!alliedMode.joint.has(n.cfg.name)) continue;
+    if (!under(n)) continue;
     let cur = n;
     while (cur) { vis.add(cur.cfg.name); cur = cur.parent ? nets.find(x => x.cfg.name === cur.parent) : null; }
   }
@@ -2744,6 +2756,13 @@ async function loadIdentity() {
   showSignedAs(null);
 }
 $("acctList").addEventListener("click", async (e) => {
+  const lb = e.target.closest("[data-orglead]");
+  if (lb) {
+    const id = lb.closest(".acctrow").dataset.id;
+    const r = await ipcRenderer.invoke("acct", { method: "POST", path: "/api/accounts/" + id + "/orglead", body: { lead: lb.dataset.orglead === "1" } });
+    if (!r.ok) toast(r.error); else { toast(lb.dataset.orglead === "1" ? "Organization lead granted." : "Organization lead removed."); refreshAccts(); }
+    return;
+  }
   const b = e.target.closest("[data-role]"); if (!b) return;
   const id = b.closest(".acctrow").dataset.id;
   const r = await ipcRenderer.invoke("acct", { method: "POST", path: "/api/accounts/" + id + "/role", body: { role: b.dataset.role } });
@@ -4122,7 +4141,10 @@ if (bridge.autotestHost) {
       const label = row && row.querySelector(".rolelbl").textContent;
       const sel = $("netAccess").querySelector('.narow[data-net="COMMAND NET"] select');
       L("acct-joint-level", !!sel && sel.value === "joint" && [...sel.options].some(o => o.value === "joint"));
-      L("acct-allied-row", label === "ALLIED · Blue Fleet" && !!row.querySelector('[data-role="member"]') && !!row.querySelector('[data-role="revoked"]'));
+      L("acct-allied-row", label === "ALLIED · Blue Fleet" && !!row.querySelector('[data-role="member"]') && !!row.querySelector('[data-role="revoked"]') && !!row.querySelector('[data-orglead="1"]'));
+      renderAccts({ accounts: [{ discordId: "424251", discordName: "Blue Lead", callsign: "Blue Lead", role: "allied", org: "Blue Fleet", orgLead: true }], access: {} });
+      const leadRow = $("acctList").querySelector(".acctrow");
+      L("acct-org-lead-row", !!leadRow && leadRow.querySelector(".rolelbl").textContent === "ALLIED LEAD · Blue Fleet" && !!leadRow.querySelector('[data-orglead="0"]'));
       renderAllied([{ guildId: "90000000000000002", name: "Blue Fleet", accounts: 3 }]);
       L("allied-org-row", /Blue Fleet/.test($("alliedList").textContent) && /3 ON THE ROLLS/.test($("alliedList").textContent) && !!$("alliedList").querySelector("[data-gremove]"));
       renderAccts({ accounts: [], access: { "COMMAND NET": "org:90000000000000002" } });
@@ -4134,6 +4156,17 @@ if (bridge.autotestHost) {
     /* the allied view: only JOINT nets (and their nests) on the board, banner up */
     {
       const total = nets.length;
+      /* a nest: naming the parent must show its children too (an org lead's new subnets) */
+      const nest = nets.find(n => nets.some(k => k.parent === n.cfg.name));
+      if (nest) {
+        const cmdWas = cmdToken;
+        applyAlliedMode({ role: "allied", org: "Blue Fleet", jointNets: [nest.cfg.name], orgLead: true });
+        const shownNest = [...netlist.querySelectorAll(".net")].map(el => nets[+el.dataset.i].cfg.name);
+        const kids = nets.filter(k => k.parent === nest.cfg.name).map(k => k.cfg.name);
+        L("allied-view-descendants", shownNest.includes(nest.cfg.name) && kids.every(k => shownNest.includes(k)) && cmdToken === "org-lead" && /ORG LEAD/.test($("alliedBannerV").textContent));
+        applyAlliedMode(null);
+        L("allied-lead-token-cleared", cmdToken === "" ); cmdToken = cmdWas;
+      } else L("allied-view-descendants", "skipped(no-nest)");
       const target = nets.find(n => n.parent) || nets[0];
       const changed = applyAlliedMode({ role: "allied", org: "Blue Fleet", jointNets: [target.cfg.name] });
       const shown = [...netlist.querySelectorAll(".net")].map(el => nets[+el.dataset.i].cfg.name);

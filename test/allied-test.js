@@ -67,6 +67,7 @@ function stop() {
   ok(r.status === 200 && r.body.account.role === "allied" && r.body.account.org === "Blue Fleet", "an allied Discord member signs in as ALLIED, auto-approved, org attached");
   ok(r.body.relay && r.body.relay.password === "relay-test" && r.body.relay.tokens.length === 1, "ALLIED standing carries relay credentials");
   const blue = r.body.token;
+  ok(Array.isArray(r.body.account.jointNets) && r.body.account.orgLead === false, "the sign-in answer already carries the allied view (no empty board until the first heartbeat)");
   r = await api("POST", "/api/login", { mockId: "stranger", mockName: "Stranger", mockAllied: "90000000000000009" });
   ok(r.status === 403, "a member of an unlisted Discord is refused before any account exists");
   r = await api("GET", "/api/accounts", null, doc);
@@ -105,6 +106,18 @@ function stop() {
   ok(r.status === 200 && r.body.account.org === "Seeded Squadron", "a second org's operator signs in");
   r = await api("GET", "/api/me", null, r.body.token);
   ok(!r.body.account.jointNets.includes("BLUE FLEET COMMAND") && r.body.account.jointNets.includes("JTF COORD"), "another org's operator does not see Blue Fleet's own net");
+
+  /* ORG LEAD: COMMAND flags an allied operator; they may manage their org's nets (relay-enforced) */
+  r = await api("POST", "/api/accounts/blue-1/orglead", { lead: true }, doc);
+  ok(r.status === 200 && r.body.account.orgLead === true, "COMMAND makes an allied operator an organization lead");
+  r = await api("GET", "/api/me", null, blue);
+  ok(r.body.account.orgLead === true && r.body.account.orgNets.includes("BLUE FLEET COMMAND") && !r.body.account.orgNets.includes("JTF COORD"), "the lead's /api/me lists its org's own nets apart from the JOINT ones");
+  r = await api("POST", "/api/accounts/oak/orglead", { lead: true }, doc);
+  ok(r.status === 400, "only an ALLIED account can lead an organization");
+  r = await api("POST", "/api/accounts/blue-1/orglead", { lead: true }, blue);
+  ok(r.status === 403, "an allied operator cannot grant leads");
+  r = await api("POST", "/api/accounts/blue-1/orglead", { lead: false }, doc);
+  ok(r.status === 200 && r.body.account.orgLead === false, "COMMAND removes the lead again");
 
   /* what ALLIED may not do */
   r = await api("POST", "/api/nets/access", { net: "JTF COORD", level: "open" }, blue);
