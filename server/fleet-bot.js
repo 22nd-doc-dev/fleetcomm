@@ -311,9 +311,12 @@ async function handleJob(job) {
     const lines = ["**DATE**: " + job.date, "**MISSION**: " + job.mission,
       "**PERSONNEL**: " + (job.personnel || []).join(", "), "**SHIP(S)**: " + (job.ships || "N/A"),
       "**SYNOPSIS**: " + (job.synopsis || "—"), "**REPORTED BY**: " + job.reportedBy];
+    /* a silent post names people; a normal one pings the listed personnel too */
+    const mentions = (job.mentions || []).map(String).filter(x => /^\d{5,25}$/.test(x)).slice(0, 50);
+    const content = lines.join("\n").slice(0, 1800) + (mentions.length ? "\n" + mentions.map(x => "<@" + x + ">").join(" ") : "");
     await dapi("POST", "/channels/" + chan + "/messages",
-      { content: lines.join("\n").slice(0, 2000), allowed_mentions: { parse: [] } });
-    log("after-action posted:", job.mission);
+      { content: content.slice(0, 2000), allowed_mentions: mentions.length ? { users: mentions } : { parse: [] } });
+    log("activity report posted:", job.mission, mentions.length ? "(" + mentions.length + " pinged)" : "(silent)");
     return {};
   }
   if (job.type === "status") {

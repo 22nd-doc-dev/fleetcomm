@@ -49,8 +49,10 @@ module.exports = function createPortalApi(deps) {
     mast: record(load("mast.json", {}), "mast.json"),                    // {cases[]} — Request Mast
     logistics: record(load("logistics.json", {}), "logistics.json"),     // {catalog[], inventory[], orders[], contributions[], claims[], blueprints[]}
     docs: record(load("docs.json", {}), "docs.json"),                    // {files:[{id,name,ext,size,tag,ref,rate,by,at}]} — bytes under DATA/docs
-    content: record(load("content.json", {}), "content.json")            // the public site's editable copy: {blocks{key:{html,page,orig,at,by,v}}, history[]}
+    content: record(load("content.json", {}), "content.json"),           // the public site's editable copy: {blocks{key:{html,page,orig,at,by,v}}, history[]}
+    activity: record(load("activity.json", {}), "activity.json")         // the activity tracker: {reports[]}
   };
+  if (!Array.isArray(pdb.activity.reports)) pdb.activity.reports = [];
   const persist = (name) => save(name + ".json", pdb[name]);
   const SHIP_STATUS = ["active", "reserve", "refit", "lost", "decommissioned"];
   /* awards of the quarter and the standard-issue kit: Command's lists,
@@ -110,6 +112,31 @@ module.exports = function createPortalApi(deps) {
   const isFleet = (acc) => !!acc && acc.role !== "allied";
   const fleetAccount = (id) => (isFleet(db.accounts[id]) ? db.accounts[id] : null);
   const fleetEntries = () => Object.entries(db.accounts).filter(([, a]) => isFleet(a));
+
+  /* the activity tracker's way with a name: rated prefix or rank, first initial,
+     the nickname in quotes, last name — CDR M. "Hat Rack" Edwards */
+  const titleCase = (s) => String(s || "").toLowerCase().replace(/(^|[^a-z0-9])([a-z])/g, (m0, a, b2) => a + b2.toUpperCase());
+  const properName = (id) => { const acc = db.accounts[id] || {}; return titleCase(String(acc.callsign || acc.discordName || id).replace(/[“”]/g, '"')); };
+  function reportName(id) {
+    const acc = db.accounts[id] || {}; const rec = pdb.personnel[id] || {};
+    const raw = String(acc.callsign || acc.discordName || id).replace(/[“”]/g, '"').replace(/\s+/g, " ").trim();
+    const nick = (/"([^"]+)"/.exec(raw) || [])[1];
+    const words = raw.replace(/"[^"]*"/g, " ").replace(/\s+/g, " ").trim().split(" ").filter(Boolean).map(w => titleCase(w));
+    const name = words.length > 1 ? words[0].charAt(0) + ". " + (nick ? '"' + titleCase(nick) + '" ' : "") + words.slice(1).join(" ") : (words[0] || String(id));
+    const prefix = rec.rating || (rec.rank && rec.rank !== "—" ? rec.rank : "");
+    return (prefix ? prefix + " " : "") + name;
+  }
+  /* the newest operation a record shows them at: activity reports, after-actions, deployments */
+  function lastActiveOf(rec) {
+    let t = null;
+    for (const e of (rec && rec.record) || []) if (["activity", "event", "deployment"].includes(e.kind) && (!e.state || e.state === "approved") && (t == null || e.at > t)) t = e.at;
+    return t;
+  }
+  function reportText(rep) {
+    return ["**DATE**: " + fleetDate(rep.at), "**MISSION**: " + rep.mission, "**PERSONNEL**: " + rep.personnel.map(reportName).join(", "),
+      "**SHIP(S)**: " + (rep.ships || "N/A"), "**SYNOPSIS**: " + (rep.synopsis || "—"), "**REPORTED BY**: " + rep.byName].join("\n");
+  }
+  const reportView = (rep) => Object.assign({}, rep, { fleetDate: fleetDate(rep.at), personnelNames: rep.personnel.map(reportName), text: reportText(rep) });
 
   /* how the fleet says a name: rated prefix or rank abbr, then callsign */
   function displayName(id) {
@@ -423,7 +450,7 @@ module.exports = function createPortalApi(deps) {
      names the columns in any order, unknown columns are ignored, a blank
      cell leaves that field alone. ── */
   const CSV_COLS = ["id", "callsign", "discord_name", "discord_user", "rank", "rating", "status", "squadron", "element",
-    "billet", "tac_callsign", "element_lead", "ship", "station", "certs", "ribbons", "insignia", "rsi_handle", "timezone", "enlisted", "last_seen", "note"];
+    "billet", "tac_callsign", "element_lead", "ship", "station", "certs", "ribbons", "insignia", "rsi_handle", "timezone", "enlisted", "last_seen", "last_active", "note"];
   const csvCell = (v) => { const s = String(v == null ? "" : v); return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
   function parseCsv(text) {
     const rows = []; let row = [], cell = "", q = false;
@@ -466,7 +493,8 @@ module.exports = function createPortalApi(deps) {
       (rec.certs || []).map(c => (pdb.catalog.certs.find(x => x.id === c.certId) || { name: c.certId }).name).join("; "),
       (rec.ribbons || []).map(c => ((pdb.catalog.ribbons || []).find(x => x.id === c.ribbonId) || { name: c.ribbonId }).name).join("; "),
       (rec.insignia || []).map(c => ((pdb.catalog.insignia || []).find(x => x.id === c.insigniaId) || { name: c.insigniaId }).name).join("; "),
-      acc.rsiHandle || "", acc.timezone || "", acc.createdAt ? fleetDate(acc.createdAt) : "", acc.lastSeen ? fleetDate(acc.lastSeen) : "", ""];
+      acc.rsiHandle || "", acc.timezone || "", acc.createdAt ? fleetDate(acc.createdAt) : "", acc.lastSeen ? fleetDate(acc.lastSeen) : "",
+      lastActiveOf(rec) ? fleetDate(lastActiveOf(rec)) : "", ""];
   }
 
   /* ── RSI account verification: a one-time code the member pastes into
@@ -668,6 +696,7 @@ module.exports = function createPortalApi(deps) {
       rsiPending: acc.rsiVerify ? { handle: acc.rsiVerify.handle, code: acc.rsiVerify.code, at: acc.rsiVerify.at } : null,
       status: rec.status === "reserve" ? "reserve" : "active",
       billet: currentBillet(id), department: currentDepartment(id),
+      lastActive: lastActiveOf(rec),
       units: (() => { const u = memberUnits(id); return { ships: u.ships, squadrons: u.squadrons }; })(),
       rank: rankByAbbr(rec.rank) || { grade: "?", name: rec.rank, abbr: rec.rank },
       /* the rated form of the rank (BMMC, GM1, QMSC…) — display trumps ladder */
@@ -1112,6 +1141,66 @@ module.exports = function createPortalApi(deps) {
       if (need(isAdmin(actor), 403, "management access required")) return true;
       const limit = Math.min(500, Math.max(1, Number(url.searchParams.get("limit")) || 200));
       send(res, 200, { ok: true, entries: deps.auditTail(limit) });
+      return true;
+    }
+
+    /* ── the activity tracker: one report → #activity-tracker and every listed
+       service record, in LT Crunch's format. Anyone aboard files one. ── */
+    if (p === "/api/activity/report" && req.method === "POST" && !actor.bot) {
+      const b = await body(req, 262144);
+      const mission = String(b.mission || "").trim().slice(0, 120);
+      const synopsis = String(b.synopsis || "").trim().slice(0, 4000);
+      const ships = String(b.ships || "").trim().slice(0, 300);
+      const at = b.at != null && b.at !== "" ? parseWhen(b.at) : Date.now();
+      if (need(mission && at != null, 400, "mission name and a readable date required")) return true;
+      const ids = [...new Set((Array.isArray(b.personnel) ? b.personnel.map(String) : []).filter(x => fleetAccount(x)))].slice(0, 200);
+      if (need(ids.length, 400, "list the personnel")) return true;
+      const ev = b.eventId ? pdb.events[String(b.eventId)] : null;
+      if (b.eventId && need(ev, 404, "no such event")) return true;
+      const silent = b.silent === true;
+      const when = fleetDate(at);
+      const rep = { id: crypto.randomBytes(6).toString("hex"), at, filedAt: Date.now(), by: actor.id, byName: properName(actor.id),
+        mission, ships, synopsis, personnel: ids, eventId: ev ? String(b.eventId) : null, silent };
+      for (const id2 of ids) {
+        const rec = recFor(id2);
+        if (ev) {
+          if (!rec.record.some(e => e.kind === "event" && e.eventId === rep.eventId))
+            rec.record.push({ at, by: rep.byName, kind: "event", eventId: rep.eventId, reportId: rep.id, text: "Attended: " + ev.title + " (" + when + ")" });
+        } else rec.record.push({ at, by: rep.byName, kind: "activity", reportId: rep.id, text: "Activity: " + mission + " (" + when + ")" + (ships ? " — " + ships : "") });
+        rec.record.sort((x, y) => x.at - y.at);
+        if (rec.record.length > 500) rec.record.splice(0, rec.record.length - 500);
+      }
+      if (ev) ev.aar = { at: Date.now(), by: actor.name, attendees: ids, ships, synopsis, reportId: rep.id };
+      pdb.activity.reports.unshift(rep);
+      if (pdb.activity.reports.length > 2000) pdb.activity.reports.length = 2000;
+      persist("activity"); persist("personnel"); if (ev) persist("events");
+      audit("activity", mission + " — " + ids.length + " personnel" + (ev ? " (event: " + ev.title + ")" : ""));
+      enqueue("aar", { eventId: rep.eventId, reportId: rep.id, date: when, mission, personnel: ids.map(reportName), ships: ships || "N/A",
+        synopsis, reportedBy: rep.byName, silent, mentions: silent ? [] : ids.filter(x => /^\d{4,25}$/.test(String(x))) });
+      send(res, 200, { ok: true, report: reportView(rep) });
+      return true;
+    }
+    if (p === "/api/activity/reports" && req.method === "GET") {
+      const limit = Math.min(200, Math.max(1, Number(url.searchParams.get("limit")) || 50));
+      send(res, 200, { ok: true, reports: pdb.activity.reports.slice(0, limit).map(reportView) });
+      return true;
+    }
+    /* ── enlistment date: management, or whoever holds authority over the member ── */
+    if ((m = /^\/api\/personnel\/([A-Za-z0-9-]{1,40})\/enlisted$/.exec(p)) && req.method === "POST" && !actor.bot) {
+      const acc = fleetAccount(m[1]);
+      if (need(acc, 404, "no such member")) return true;
+      if (need(isAdmin(actor) || canApproveFor(actor, m[1]), 403, "no authority over this member")) return true;
+      const b = await body(req);
+      const t = parseWhen(b.at);
+      if (need(t != null, 400, "enlistment date unreadable (DDMONYYYY, YYYY-MM-DD or MM/DD/YYYY)")) return true;
+      const rec = recFor(m[1]);
+      acc.createdAt = t;
+      const en = rec.record.find(e => e.kind === "enlist");
+      if (en) { en.at = t; en.text = "Enlisted in the 22nd Expeditionary Fleet — " + fleetDate(t); rec.record.sort((x, y) => x.at - y.at); }
+      else ensureEnlisted(m[1], t);
+      audit("enlisted", displayName(m[1]) + " → " + fleetDate(t));
+      deps.persist(); persist("personnel");
+      send(res, 200, { ok: true, profile: profile(m[1]) });
       return true;
     }
 
@@ -1560,7 +1649,7 @@ module.exports = function createPortalApi(deps) {
       const template = url.searchParams.get("template") === "1";
       const lines = [CSV_COLS.join(",")];
       if (template) lines.push(["", "EXAMPLE - DELETE THIS ROW", "", "", "SR", "", "active", "MG-212", "Reaper 1-1", "Marine",
-        "Reaper 1-1 C", "no", "", "", "Hospital Corpsman", "", "", "", "", "15AUG2956", "", "Phase 1 complete"].map(csvCell).join(","));
+        "Reaper 1-1 C", "no", "", "", "Hospital Corpsman", "", "", "", "", "15AUG2956", "", "", "Phase 1 complete"].map(csvCell).join(","));
       else {
         const ids = fleetEntries().map(([id2]) => id2).filter(id2 => db.accounts[id2].role !== "revoked")
           .sort((a, b2) => rankIdx((pdb.personnel[b2] || {}).rank) - rankIdx((pdb.personnel[a] || {}).rank));
@@ -1741,7 +1830,7 @@ module.exports = function createPortalApi(deps) {
           if (v.enlisted) {
             const when = parseWhen(v.enlisted);
             if (!when) rowErr.push("enlisted date unreadable: " + v.enlisted + " (DDMONYYYY, YYYY-MM-DD or MM/DD/YYYY)");
-            else if (!adm) rowErr.push("enlisted date is management's to set");
+            else if (!mayPerson) rowErr.push("enlisted date: no authority over this member");
             else if (Math.abs((acc.createdAt || 0) - when) > 864e5) {
               rowChg.push("enlisted → " + fleetDate(when));
               if (!dryRun) {
@@ -2001,21 +2090,38 @@ module.exports = function createPortalApi(deps) {
 
     /* ── availability: painted per-day, a year at a time ── */
     if (p === "/api/availability/me" && req.method === "GET" && !actor.bot) {
-      send(res, 200, { ok: true, days: (pdb.availability[actor.id] || {}).days || {} });
+      const mine = pdb.availability[actor.id] || {};
+      send(res, 200, { ok: true, days: mine.days || {}, routine: mine.routine || null });
+      return true;
+    }
+    /* a shipmate's weekly routine, kept in their own time zone — the reader converts */
+    if ((m = /^\/api\/availability\/routine\/([A-Za-z0-9-]{1,40})$/.exec(p)) && req.method === "GET") {
+      if (need(fleetAccount(m[1]), 404, "no such member")) return true;
+      send(res, 200, { ok: true, routine: (pdb.availability[m[1]] || {}).routine || null });
       return true;
     }
     if (p === "/api/availability" && req.method === "POST" && !actor.bot) {
       const b = await body(req);
       const patch = b.days && typeof b.days === "object" ? b.days : {};
       const mine = pdb.availability[actor.id] || (pdb.availability[actor.id] = { days: {} });
+      if (!mine.days) mine.days = {};
       let touched = 0;
       for (const [day, code] of Object.entries(patch)) {
         if (!DAY.test(day) || ++touched > 400) continue;
         if (code === null || code === "") delete mine.days[day];
         else if (CODES.has(code)) mine.days[day] = code;
       }
+      /* the weekly routine: hours of a normal week (slot = day*24 + hour, Monday = 0),
+         kept in the member's own IANA time zone so every reader can convert */
+      if (b.routine && typeof b.routine === "object") {
+        const tz = String(b.routine.tz || "UTC").slice(0, 60);
+        let tzOk = true; try { new Intl.DateTimeFormat("en-US", { timeZone: tz }); } catch (e) { tzOk = false; }
+        if (need(tzOk, 400, "unknown time zone: " + tz)) return true;
+        const slots = [...new Set((Array.isArray(b.routine.slots) ? b.routine.slots : []).map(Number).filter(n => Number.isInteger(n) && n >= 0 && n < 168))].sort((x, y) => x - y);
+        mine.routine = { tz, slots, at: Date.now() };
+      } else if (b.routine === null) delete mine.routine;
       persist("availability");
-      send(res, 200, { ok: true, days: mine.days });
+      send(res, 200, { ok: true, days: mine.days, routine: mine.routine || null });
       return true;
     }
     if (p === "/api/availability/all" && req.method === "GET") {
@@ -2023,7 +2129,7 @@ module.exports = function createPortalApi(deps) {
       const all = {};
       for (const [id, a2] of Object.entries(pdb.availability)) {
         const acc = fleetAccount(id);
-        if (acc) all[id] = { callsign: acc.callsign || acc.discordName, days: a2.days || {} };
+        if (acc) all[id] = { callsign: acc.callsign || acc.discordName, days: a2.days || {}, routine: a2.routine || null };
       }
       send(res, 200, { ok: true, availability: all });
       return true;
@@ -2756,6 +2862,7 @@ module.exports = function createPortalApi(deps) {
         logistics: { orders: LG.orders.length, contributions: LG.contributions.length, claims: LG.claims.length,
           inventory: LG.inventory.length, catalog: LG.catalog.length, blueprints: LG.blueprints.length },
         mast: pdb.mast.cases.length,
+        activity: pdb.activity.reports.length,
         outbox: pdb.discord.outbox.length,
         scopes: fleetEntries().filter(([, a]) => Array.isArray(a.scopes) && a.scopes.length)
           .map(([id2, a]) => (a.callsign || a.discordName || id2) + " (" + a.scopes.length + ")"),
@@ -2780,7 +2887,7 @@ module.exports = function createPortalApi(deps) {
       if (apply) {
         await serializeMutation(async () => {
           for (const k of ["orders", "contributions", "claims", "inventory", "catalog", "blueprints"]) LG[k] = [];
-          pdb.mast.cases = []; pdb.discord.outbox = [];
+          pdb.mast.cases = []; pdb.discord.outbox = []; pdb.activity.reports = [];
           for (const a of Object.values(db.accounts)) if (Array.isArray(a.scopes) && a.scopes.length) a.scopes = [];
           for (const rec of Object.values(pdb.personnel)) {
             rec.record = (rec.record || []).filter(x => x.kind === "enlist" || kept(x));
@@ -2793,7 +2900,7 @@ module.exports = function createPortalApi(deps) {
           for (const k of Object.keys(pdb.availability)) delete pdb.availability[k];
           if (withEvents) for (const k of Object.keys(pdb.events)) delete pdb.events[k];
           if (withChain) for (const n of (pdb.coc.nodes || [])) n.assignee = null;
-          for (const s of ["logistics", "mast", "discord", "personnel", "roster", "squadrons", "availability", "events", "coc"]) persist(s);
+          for (const s of ["logistics", "mast", "discord", "activity", "personnel", "roster", "squadrons", "availability", "events", "coc"]) persist(s);
           deps.persist();
         });
         audit("reset-baseline", "logistics " + Object.values(inv.logistics).reduce((s, n) => s + n, 0) + ", mast " + inv.mast +

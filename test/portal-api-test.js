@@ -965,6 +965,48 @@ const rsiServer = http.createServer((req, res) => {
     ok(!r.body.arrivals.some(a => a.id === "8008"), "…nor does the merge desk list them");
   } else console.log("  (allied standing not in this accounts service — guest checks skipped: " + r.status + " " + (r.body.error || "") + ")");
 
+  /* ── the activity tracker: one report → the channel and every listed record ── */
+  for (let i = 0; i < 30; i++) {
+    const jobs = (await api("GET", "/api/bot/outbox", null, "Bot bot-secret-test")).body.jobs;
+    if (!jobs.length) break;
+    for (const jb of jobs) await api("POST", "/api/bot/outbox/ack", { id: jb.id }, "Bot bot-secret-test");
+  }
+  r = await api("POST", "/api/activity/report", { at: "2026-09-01", mission: "Stanton Combat Patrol", ships: "UEES Tiber, IF-55 fighters",
+    personnel: ["2002", "1001"], synopsis: "Swept the Aaron Halo.", silent: false }, oak);
+  ok(r.status === 200 && r.body.report.id && /\*\*DATE\*\*: 01SEP2956/.test(r.body.report.text) && /\*\*MISSION\*\*: Stanton Combat Patrol/.test(r.body.report.text) &&
+     /\*\*REPORTED BY\*\*: Oak/.test(r.body.report.text), "a member files an activity report in the tracker's format");
+  const actRep = r.body.report;
+  ok(/^[A-Z0-9]+ [A-Z]\. /.test(actRep.personnelNames[0]), "personnel are written rank, initial, last name — the old tracker's way");
+  r = await api("GET", "/api/personnel/2002", null, doc);
+  ok(r.body.profile.record.some(e => e.kind === "activity" && e.reportId === actRep.id && /Stanton Combat Patrol/.test(e.text)) &&
+     r.body.profile.lastActive === Date.UTC(2026, 8, 1, 12), "…and it lands on each listed service record, dating their last active operation");
+  r = await api("GET", "/api/bot/outbox", null, "Bot bot-secret-test");
+  const aarJob = r.body.jobs.find(j => j.type === "aar" && j.reportId === actRep.id);
+  ok(aarJob && aarJob.mentions.includes("2002") && aarJob.mentions.includes("1001") && aarJob.silent === false, "…and goes to #activity-tracker with the listed personnel pinged");
+  r = await api("POST", "/api/activity/report", { mission: "Quiet one", personnel: ["2002"], silent: true }, oak);
+  r = await api("GET", "/api/bot/outbox", null, "Bot bot-secret-test");
+  ok(r.body.jobs.some(j => j.type === "aar" && j.mission === "Quiet one" && j.mentions.length === 0), "a silent post pings nobody");
+  r = await api("GET", "/api/activity/reports", null, oak);
+  ok(r.body.reports.length >= 2 && r.body.reports[0].mission === "Quiet one", "the tracker lists recent reports, newest first");
+  r = await api("POST", "/api/activity/report", { mission: "x", personnel: [] }, oak);
+  ok(r.status === 400, "a report with nobody on it is refused");
+  /* enlistment dates: management or whoever has authority over the member */
+  r = await api("POST", "/api/personnel/2002/enlisted", { at: "2025-02-01" }, plain);
+  ok(r.status === 403, "an enlistment date needs authority over the member");
+  r = await api("POST", "/api/personnel/2002/enlisted", { at: "2025-02-01" }, doc);
+  r = await api("GET", "/api/personnel/2002", null, doc);
+  ok(r.body.profile.joinedAt === Date.UTC(2025, 1, 1, 12) && r.body.profile.record.find(e => e.kind === "enlist").at === Date.UTC(2025, 1, 1, 12),
+     "…and moves the enlistment entry with it");
+  /* the weekly routine, kept in the member's own time zone */
+  r = await api("POST", "/api/availability", { routine: { tz: "America/Chicago", slots: [24 + 19, 24 + 20, 5 * 24 + 14] } }, oak);
+  ok(r.status === 200 && r.body.routine && r.body.routine.slots.length === 3, "a member keeps a weekly routine in their own time zone");
+  r = await api("POST", "/api/availability", { routine: { tz: "Mars/Olympus", slots: [1] } }, oak);
+  ok(r.status === 400, "an unknown time zone is refused");
+  r = await api("GET", "/api/availability/routine/2002", null, doc);
+  ok(r.body.routine.tz === "America/Chicago" && r.body.routine.slots.includes(43), "shipmates read the routine to convert it to their own clock");
+  r = await api("GET", "/api/availability/me", null, oak);
+  ok(r.body.routine && r.body.routine.tz === "America/Chicago", "…and the owner gets it back with their days");
+
   /* the treasury ledger as a spreadsheet */
   r = await api("POST", "/api/logistics/contributions", { kind: "auec", amount: 40000, proof: "shot-9" }, doc);
   await api("POST", "/api/logistics/contributions/" + r.body.contribution.id + "/verify", {}, doc);
