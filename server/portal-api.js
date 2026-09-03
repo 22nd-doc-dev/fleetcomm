@@ -2570,7 +2570,7 @@ module.exports = function createPortalApi(deps) {
     }
     /* ── the 2965 sweep ── the old site carried dates a fleet year adrift (2965
        where the fleet meant 2956). This walks the records and moves them back. */
-    if (p === "/api/admin/repair-dates" && req.method === "POST" && !actor.bot) {
+    if (p === "/api/admin/repair-dates" && req.method === "POST") {
       if (need(isAdmin(actor), 403, "management access required")) return true;
       const b = await body(req);
       const dry = b.confirm !== "REPAIR";
