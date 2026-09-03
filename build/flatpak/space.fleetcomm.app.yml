@@ -25,6 +25,9 @@ finish-args:
   - --device=all               # the flight stick: Chromium reads /dev/input directly. `--device=input` is the
                                # precise grant but needs flatpak >= 1.15.6 on the builder AND the user's box;
                                # the Ubuntu 24.04 builder ships 1.14. Narrow it when the runner catches up.
+  - --filesystem=/run/udev:ro  # Chromium recognises a joystick through the udev database, not by opening
+                               # /dev/input alone: without this the stick is invisible inside the sandbox
+                               # (the AppImage never needed it - it runs outside). Read-only.
   - --filesystem=xdg-download  # hand-installed updates land here
   - --talk-name=org.freedesktop.Notifications
 modules:
