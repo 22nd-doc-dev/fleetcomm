@@ -1226,7 +1226,7 @@ module.exports = function createPortalApi(deps) {
       const b = await body(req);
       const from = String(b.manualId || ""), to = String(b.discordId || "");
       if (need(db.accounts[from] && db.accounts[from].manual, 404, "manual record not found")) return true;
-      if (need(db.accounts[to] && !db.accounts[to].manual, 404, "discord account not found")) return true;
+      if (need(db.accounts[to] && !String(to).startsWith("m-"), 404, "discord account not found")) return true;
       const label = db.accounts[from].callsign;
       await serializeMutation(async () => { mergeAccounts(from, to, actor.name); });
       audit("merge", label + " → " + displayName(to));
@@ -1266,6 +1266,34 @@ module.exports = function createPortalApi(deps) {
           .map(([id2, amt]) => ({ id: id2, name: displayName(id2), amount: amt })).sort((a, b2) => b2.amount - a.amount).slice(0, 10),
         blueprints: LG.blueprints,
         approvers: { logistics: logronSeniors().map(displayName) } });
+      return true;
+    }
+    /* the treasury ledger, banking-style: every contribution and claim in date
+       order with a running balance of verified aUEC in against paid claims out */
+    if (p === "/api/logistics/ledger.csv" && req.method === "GET" && !actor.bot) {
+      if (need(isLogistics(actor) || isAdmin(actor), 403, "logistics standing required")) return true;
+      const rows = [];
+      for (const c of LG.contributions) rows.push({ at: c.at, type: c.kind === "auec" ? "contribution" : "contribution (items)",
+        who: displayName(c.by), id: c.by, amount: c.kind === "auec" ? Number(c.amount) || 0 : 0, dir: "in", status: c.status,
+        counts: c.status === "verified" && c.kind === "auec", detail: c.kind === "auec" ? "" : (c.items || []).map(x => x.qty + "× " + x.name).join("; "),
+        proof: c.proof || "", by: c.verifiedBy || "" });
+      for (const c of LG.claims) rows.push({ at: c.at, type: c.orderId ? "reimbursement (requisition " + c.orderId + ")" : "reimbursement",
+        who: displayName(c.by), id: c.by, amount: Number(c.amount) || 0, dir: "out", status: c.status, counts: c.status === "paid",
+        detail: c.purpose || "", proof: c.proof || "", by: (c.log || []).slice(-1).map(l => l.by === "bot" ? "bot" : displayName(l.by))[0] || "" });
+      rows.sort((a, b2) => a.at - b2.at);
+      let bal = 0;
+      const lines = ["date,fleet_date,type,member,discord_id,amount_auec,direction,counts_toward_balance,running_balance,status,detail,proof,handled_by"];
+      for (const r of rows) {
+        if (r.counts) bal += r.dir === "in" ? r.amount : -r.amount;
+        lines.push([new Date(r.at).toISOString(), fleetDate(r.at), r.type, r.who, r.id, r.amount, r.dir, r.counts ? "yes" : "no", bal, r.status, r.detail, r.proof, r.by].map(csvCell).join(","));
+      }
+      const t = treasuryLedger();
+      lines.push("", ["TOTAL VERIFIED IN", "", "", "", "", t.inflow].map(csvCell).join(","), ["TOTAL PAID OUT", "", "", "", "", t.paid].map(csvCell).join(","),
+        ["APPROVED, NOT YET PAID", "", "", "", "", t.owed].map(csvCell).join(","), ["BALANCE", "", "", "", "", t.balance].map(csvCell).join(","),
+        ["TREASURY HANDLE", "", "", "", "", pdb.fleet.treasury || ""].map(csvCell).join(","));
+      res.writeHead(200, { "Content-Type": "text/csv; charset=utf-8", "Cache-Control": "no-store",
+        "Content-Disposition": "attachment; filename=\"22ef-treasury-ledger-" + fleetDate() + ".csv\"" });
+      res.end("\uFEFF" + lines.join("\r\n") + "\r\n");
       return true;
     }
     /* catalog: fleet-defined items, or a UEX pick pinned into the fleet's list */

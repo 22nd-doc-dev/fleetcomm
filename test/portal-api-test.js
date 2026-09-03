@@ -919,6 +919,15 @@ const rsiServer = http.createServer((req, res) => {
   r = await api("GET", "/api/docs", null, oak);
   ok(!r.body.files.some(f => f.tag === "public"), "public images stay out of the course library");
 
+  /* the treasury ledger as a spreadsheet */
+  r = await api("POST", "/api/logistics/contributions", { kind: "auec", amount: 40000, proof: "shot-9" }, doc);
+  await api("POST", "/api/logistics/contributions/" + r.body.contribution.id + "/verify", {}, doc);
+  r = await rawGet("/api/logistics/ledger.csv", plain);
+  ok(r.status === 403, "the ledger is Logistics' and Command's to read");
+  r = await rawGet("/api/logistics/ledger.csv", doc);
+  ok(r.status === 200 && /running_balance/.test(r.text) && /contribution,.*40000,in,yes,40000,verified/.test(r.text) && /BALANCE,,,,,40000/.test(r.text),
+     "the ledger lists every movement with a running balance and totals");
+
   await stop();
   fs.rmSync(dataDir, { recursive: true, force: true });
   console.log("\n✔ PORTAL API PASS — profiles, bulk actions, CoC, availability, events, SSO and the bot door hold their gates");
