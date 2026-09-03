@@ -873,10 +873,16 @@ module.exports = function createPortalApi(deps) {
        has no wire identity to match (and a discordName fallback could
        collide with someone else's callsign). ── */
     if (p === "/api/cam-viewers" && req.method === "GET") {
-      const viewers = Object.values(db.accounts)
-        .filter(a2 => ["element", "command"].includes(a2.role) && a2.callsign)
-        .map(a2 => a2.callsign);
-      send(res, 200, { ok: true, viewers });
+      /* the wire name a cleared operator is using RIGHT NOW is their session
+         callsign (the app files it per session); the account's own callsign
+         stays in the list for anyone on the air under it */
+      const now = Date.now(), viewers = new Set();
+      const cleared = (id2) => { const a2 = db.accounts[id2]; return !!a2 && ["element", "command"].includes(a2.role); };
+      for (const [id2, a2] of Object.entries(db.accounts)) if (cleared(id2) && a2.callsign) viewers.add(a2.callsign);
+      for (const sess of Object.values(db.sessions || {})) {
+        if (sess && sess.callsign && sess.expiresAt > now && cleared(sess.discordId)) viewers.add(sess.callsign);
+      }
+      send(res, 200, { ok: true, viewers: [...viewers] });
       return true;
     }
 
@@ -1829,6 +1835,26 @@ module.exports = function createPortalApi(deps) {
        tie-in. They can never sign in (no session, no relay token, so the ACL
        sync never grants them the relay) — pure personnel records, flagged for
        a future Discord merge. ── */
+    /* ── the site's callsign for a record: management sets it here; the app
+       never touches it (its callsigns are per session). Also the repair path
+       for accounts the app renamed before 2026-09-03. ── */
+    let mcs;
+    if ((mcs = /^\/api\/personnel\/([^/]+)\/callsign$/.exec(p)) && req.method === "POST") {
+      if (need(isAdmin(actor), 403, "management access required")) return true;
+      const acc = db.accounts[mcs[1]];
+      if (need(acc, 404, "no such record")) return true;
+      const b = await body(req);
+      const callsign = String(b.callsign || "").trim().toUpperCase()
+        .replace(/[^ A-Z0-9_.\-'"()[\]]+/g, "").slice(0, 40);
+      if (need(callsign, 400, "callsign required")) return true;
+      const was = acc.callsign || null;
+      acc.callsign = callsign;
+      logEntry(recFor(mcs[1]), actor.name, "note", "Callsign set to " + callsign + (was ? " (was " + was + ")" : ""));
+      audit("muster", "callsign: " + (was || "\u2014") + " -> " + callsign);
+      deps.persist(); persist("personnel");
+      send(res, 200, { ok: true, profile: profile(mcs[1]) });
+      return true;
+    }
     if (p === "/api/personnel/add" && req.method === "POST") {
       if (need(isAdmin(actor), 403, "management access required")) return true;
       const b = await body(req);

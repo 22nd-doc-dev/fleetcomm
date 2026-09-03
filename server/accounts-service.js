@@ -305,7 +305,7 @@ function tokensFor(acc) {
   return [acc.relayToken];
 }
 function pub(acc, id) {
-  return { discordId: id, discordName: acc.discordName, callsign: acc.callsign || null, role: acc.role, lastSeen: acc.lastSeen || null, createdAt: acc.createdAt };
+  return { discordId: id, discordName: acc.discordName, callsign: acc.callsign || null, onAir: liveCallsign(id), role: acc.role, lastSeen: acc.lastSeen || null, createdAt: acc.createdAt };
 }
 function relayFor(acc) {
   if (acc.role === "pending" || acc.role === "revoked") return null;
@@ -329,7 +329,18 @@ function auth(req) {
     persist();
   }
   const id = session.discordId;
-  return id && db.accounts[id] ? { id, acc: db.accounts[id] } : null;
+  return id && db.accounts[id] ? { id, acc: db.accounts[id], session } : null;
+}
+/* the callsign an account is on the air under right now — its newest live
+   session's, or null when it is not signed into the app */
+function liveCallsign(id) {
+  const now = Date.now();
+  let best = null;
+  for (const sess of Object.values(db.sessions)) {
+    if (!sess || sess.discordId !== id || !sess.callsign || !(sess.expiresAt > now)) continue;
+    if (!best || (sess.createdAt || 0) > (best.createdAt || 0)) best = sess;
+  }
+  return best ? best.callsign : null;
 }
 function body(req, limit) {
   const max = limit || 65536;   /* only the clip upload route asks for more */
@@ -426,7 +437,7 @@ const server = http.createServer(async (req, res) => {
 
     if (p === "/api/me" && req.method === "GET") {
       if (Date.now() - (a.acc.lastSeen || 0) > 60000) { a.acc.lastSeen = Date.now(); persist(); }
-      return send(res, 200, { ok: true, account: pub(a.acc, a.id), relay: relayFor(a.acc) });
+      return send(res, 200, { ok: true, account: Object.assign(pub(a.acc, a.id), { sessionCallsign: a.session.callsign || null }), relay: relayFor(a.acc) });
     }
     /* sign out: the presenting session dies server-side, not just in the
        browser — a shared machine can't resurrect it from a saved token */
@@ -435,12 +446,18 @@ const server = http.createServer(async (req, res) => {
       if (tok && db.sessions[tok]) { delete db.sessions[tok]; persist(); }
       return send(res, 200, { ok: true });
     }
+    /* The app's callsign is a TACTICAL name for this session — TIBER DOC 1
+       tonight, WARRIOR TAC 4 tomorrow — not who the operator is. It is filed
+       on the presenting session and dies with it; the account's callsign is
+       the site's (personnel records, the muster) and the app never writes it.
+       Until 2026-09-03 this overwrote the account, so every op renamed people
+       on the portal. */
     if (p === "/api/callsign" && req.method === "POST") {
       const b = await body(req);
       const cs = String(b.callsign || "").trim().toUpperCase().replace(/[^ A-Z0-9_.\-'"()[\]]+/g, "").slice(0, 40);
       if (!cs) return send(res, 400, { ok: false, error: "empty callsign" });
-      a.acc.callsign = cs; persist();
-      return send(res, 200, { ok: true, account: pub(a.acc, a.id) });
+      a.session.callsign = cs; persist();
+      return send(res, 200, { ok: true, account: Object.assign(pub(a.acc, a.id), { sessionCallsign: cs }) });
     }
 
     /* command-only below */

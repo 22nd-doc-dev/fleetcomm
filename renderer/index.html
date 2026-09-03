@@ -434,6 +434,14 @@
   #camStop{color:var(--tx);border-color:var(--tx)}
   #camStop:hover{background:var(--tx);color:#0C141C}
   #camHint{text-align:left;font-size:.78rem;margin-bottom:10px}
+  /* what is being sent: the source's name + thumbnail while on air */
+  .camsrc{display:flex;align-items:center;gap:10px;border:1px solid var(--tx);background:var(--panel);padding:6px 8px;margin:0 0 10px;min-width:0}
+  .camsrc img{width:64px;height:40px;object-fit:cover;object-position:top;background:#000;flex:none}
+  .camsrc>div{min-width:0}
+  .camsrc .k{display:block;font-family:var(--font-mono);font-size:.6rem;letter-spacing:.18em;color:var(--tx)}
+  .camsrc b{display:block;font-family:var(--font-display);font-weight:600;font-size:1rem;letter-spacing:.04em;text-transform:uppercase;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .acctrow .onair{color:var(--grn)}
   #camPick{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0}
   #camPick .src{min-width:0;border:1px solid var(--line);background:var(--panel);cursor:pointer;padding:0 0 4px;
     transition:border-color .2s,transform .2s var(--ease-out)}
@@ -999,6 +1007,7 @@
           </div>
           <div class="hint" id="camHint">Streams your Star Citizen window to shipmates over peer-to-peer video.
             Borderless-window mode captures best; up to 4 watchers per cam.</div>
+          <div id="camSrc" class="camsrc" hidden><img id="camSrcThumb" alt=""><div><span class="k">STREAMING</span><b id="camSrcName"></b></div></div>
           <div id="camPick" hidden></div>
         </div>
         <div class="miniheading">FLEET CAMS <button class="icobtn" id="camRefresh" title="Re-scan for live cams">↻ SCAN</button></div>

@@ -461,8 +461,19 @@ const pause = ms => new Promise(r => setTimeout(r, ms));
      "the role plan names each member's due roles inside a managed namespace");
 
   /* ── Element Leader: member everywhere, helmet-cam viewer to the app ── */
-  r = await api("POST", "/api/callsign", { callsign: "Oak Morcroft" }, oak);
-  ok(r.status === 200, "Oak takes a callsign for the cam-viewer test");
+  r = await api("GET", "/api/me", null, oak);
+  const oakSiteCallsign = r.body.account.callsign;
+  r = await api("POST", "/api/callsign", { callsign: "Tiber Tac 2" }, oak);
+  ok(r.status === 200 && r.body.account.sessionCallsign === "TIBER TAC 2", "Oak takes a tactical callsign for this session");
+  r = await api("GET", "/api/me", null, oak);
+  ok(r.body.account.sessionCallsign === "TIBER TAC 2" && r.body.account.callsign === oakSiteCallsign && r.body.account.onAir === "TIBER TAC 2",
+     "the session callsign rides the session; the account's (the site's) callsign is untouched");
+  r = await api("POST", "/api/personnel/2002/callsign", { callsign: "Oak Morcroft" }, oak);
+  ok(r.status === 403, "a member cannot set a record's site callsign");
+  r = await api("POST", "/api/personnel/2002/callsign", { callsign: "Oak Morcroft" }, doc);
+  ok(r.status === 200 && r.body.profile.callsign === "OAK MORCROFT", "management sets the site callsign");
+  r = await api("GET", "/api/me", null, oak);
+  ok(r.body.account.callsign === "OAK MORCROFT" && r.body.account.sessionCallsign === "TIBER TAC 2", "site and session callsigns are separate things");
   r = await api("POST", "/api/accounts/2002/role", { role: "element" }, doc);
   ok(r.status === 200, "COMMAND grants Element Leader standing");
   r = await api("GET", "/api/personnel", null, oak);
@@ -470,8 +481,8 @@ const pause = ms => new Promise(r => setTimeout(r, ms));
   r = await api("POST", "/api/personnel/bulk", { ids: ["2002"], action: { type: "note", text: "x" } }, oak);
   ok(r.status === 403, "Element Leader carries no COMMAND powers");
   r = await api("GET", "/api/cam-viewers", null, oak);
-  ok(r.status === 200 && r.body.viewers.some(v => /OAK/i.test(v)),
-     "cam-viewers lists Element Leaders by raw callsign");
+  ok(r.status === 200 && r.body.viewers.some(v => /OAK/i.test(v)) && r.body.viewers.includes("TIBER TAC 2"),
+     "cam-viewers lists Element Leaders by site callsign AND the session callsign they are on the air under");
   ok(!r.body.viewers.some(v => /TRAVIS/i.test(v)),
      "a callsign-less or member-tier account never reaches the viewer list");
   r = await api("GET", "/api/cam-viewers");

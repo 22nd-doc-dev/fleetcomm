@@ -746,24 +746,81 @@ function playFrame(n, session, opusBuf) {
   if (d.cursor > ctx.currentTime + 0.75) { d.dropped = (d.dropped || 0) + 1; audioDrops++; return; }
   src.start(d.cursor); d.cursor += cnt / 48000;
 }
-let audioDrops = 0;
+let audioDrops = 0, audioHeals = 0;
 /* ── audio-clock watchdog ──
-   The context clock should track wall time. When the render thread is
-   starved (a freshly-unpacked exe being scanned, a disk storm, a game
-   loading) it falls behind and every scheduled frame lands late — the first-
-   launch garble. One COMM LOG line per episode WITH NUMBERS, so the next field
-   report carries evidence instead of adjectives. */
-const clockWatch = { t: performance.now(), c: ctx.currentTime, said: 0, drops: 0 };
+   currentTime is frames RENDERED ÷ sample rate, and the output device is what
+   pulls the frames — so the context clock tracks wall time exactly as long as
+   the output stream was opened for the format the device actually runs. The
+   2026-09-03 field log settled what "first-launch garble" is: the clock ran
+   at a FLAT 65% of wall time for an hour (~2/3 — a 32 kHz device consuming
+   audio rendered for 48 kHz), which is a stale stream format, not a busy
+   machine (starvation is erratic, never a flat ratio). A headset that changes
+   format underneath a running stream — Bluetooth dropping to its headset
+   profile when the mic opens — is the classic. Voice stretches
+   ("rrraaadio check"), frames arrive faster than they play, the backlog
+   drops syllables; a relaunch fixed it because a fresh stream negotiates the
+   device's CURRENT format. The heal does exactly that without the relaunch:
+   route the context to the silent sink and back, which forces the output
+   stream to be re-created (setSinkId to the SAME sink is a spec no-op). */
+const clockWatch = { t: performance.now(), c: ctx.currentTime, drops: 0, off: 0, ok: 0, healed: 0, lastHeal: 0, said: 0, saidDrops: 0, ailing: false };
+function audioClockSample(audioMs, wallMs) {
+  const ratio = audioMs / wallMs, pct = Math.round(ratio * 100);
+  const off = ctx.state === "running" && (ratio < 0.85 || ratio > 1.15);
+  if (!off) {
+    clockWatch.off = 0;
+    if (clockWatch.ailing && ++clockWatch.ok >= 3) {
+      clockWatch.ailing = false; clockWatch.healed = 0;
+      addLog("sys", "", "audio engine clock back on rate (" + pct + "%)");
+    }
+    return null;
+  }
+  clockWatch.ok = 0;
+  if (++clockWatch.off < 3) return null;          /* three flat seconds, not one hiccup */
+  const now = Date.now();
+  if (!clockWatch.ailing) {
+    clockWatch.ailing = true;
+    addLog("sys", "", "audio engine clock off rate \u2014 advanced " + Math.round(audioMs) + " ms in " + Math.round(wallMs) + " ms (" + pct + "%): the output device is taking audio " +
+      (ratio < 1 ? "slower" : "faster") + " than the engine renders it, so voice sounds " + (ratio < 1 ? "stretched" : "rushed") +
+      " (a headset that changed format \u2014 Bluetooth switching to its headset profile is the classic) \u2014 re-opening the output");
+  }
+  if (clockWatch.healed >= 3) {
+    if (now - clockWatch.said > 300000) {
+      clockWatch.said = now;
+      addLog("sys", "", "audio engine clock still off rate (" + pct + "%) after re-opening the output three times \u2014 restart FleetComm; if it comes back, set the output device to 48000 Hz in Windows sound settings");
+    }
+    return null;
+  }
+  if (now - clockWatch.lastHeal < 20000) return null;
+  clockWatch.lastHeal = now; clockWatch.healed++; clockWatch.off = 0;
+  return healAudioClock(pct);
+}
+async function healAudioClock(pct) {
+  audioHeals++;
+  try {
+    if (typeof ctx.setSinkId === "function") {
+      await ctx.setSinkId({ type: "none" });        /* off the device entirely ... */
+      await ctx.setSinkId(outDevice || "");         /* ... and back: a NEW stream, today's format */
+    } else { await ctx.suspend(); }
+    if (ctx.state !== "running") await ctx.resume();
+  } catch (e) { addLog("sys", "", "couldn't re-open the audio output: " + e.message); try { await ctx.resume(); } catch (e2) {} }
+  for (const d of decoders.values()) d.cursor = 0;  /* schedule fresh against the healed clock */
+  if (capNode) {                                    /* re-pair echo cancellation with the new output stream */
+    try { capNode.disconnect(); } catch (e) {}
+    capNode = null; await ensureMic();
+  }
+  clockWatch.t = performance.now(); clockWatch.c = ctx.currentTime;
+  addLog("sys", "", "audio output re-opened \u2014 engine " + ctx.state + " @ " + ctx.sampleRate + " Hz, output latency " +
+    Math.round((ctx.outputLatency || ctx.baseLatency || 0) * 1000) + " ms (clock was at " + pct + "%; watching)");
+}
 setInterval(() => {
   const nowT = performance.now(), nowC = ctx.currentTime;
   const wall = nowT - clockWatch.t, audio = (nowC - clockWatch.c) * 1000;
   clockWatch.t = nowT; clockWatch.c = nowC;
   const newDrops = audioDrops - clockWatch.drops; clockWatch.drops = audioDrops;
-  const starved = ctx.state === "running" && wall > 900 && audio < wall * 0.7;
-  if ((starved || newDrops > 10) && Date.now() - clockWatch.said > 30000) {
-    clockWatch.said = Date.now();
-    addLog("sys", "", "audio engine " + (starved ? "starved \u2014 clock advanced " + Math.round(audio) + " ms in " + Math.round(wall) + " ms" : "backlog \u2014 dropped " + newDrops + " frames") +
-      " (machine busy; voice smears until it clears \u2014 a fresh install being scanned is the usual cause)");
+  if (wall > 900 && wall < 3000) audioClockSample(audio, wall);   /* a late tick is not a slow clock */
+  if (newDrops > 10 && Date.now() - clockWatch.saidDrops > 300000) {
+    clockWatch.saidDrops = Date.now();
+    addLog("sys", "", "audio backlog \u2014 dropped " + newDrops + " frames in the last second (they arrived faster than the engine played them: a network burst, or the machine busy)");
   }
 }, 1000);
 setInterval(() => {
@@ -1949,7 +2006,12 @@ async function doConnect(cs, btn) {
    tuned. Arriving tuned to nothing is a normal, successful connection. */
 async function afterConnect(cs) {
   connected = true;
-  if (acct && cs !== acct.account.callsign) ipcRenderer.invoke("acct", { method: "POST", path: "/api/callsign", body: { callsign: cs } });
+  /* the callsign is THIS session's (a tactical name — TIBER DOC 1 — not the
+     operator's identity): the service files it on the session, never on the
+     account, so the site's callsign is left alone. Older services returned
+     no sessionCallsign and stored it on the account; comparing against the
+     account field there keeps the old behaviour until the droplet is updated. */
+  if (acct && cs !== (acct.account.sessionCallsign !== undefined ? acct.account.sessionCallsign : acct.account.callsign)) ipcRenderer.invoke("acct", { method: "POST", path: "/api/callsign", body: { callsign: cs } });
   await syncTreeFromRelay();
   const firstTuned = nets.findIndex(n => n.tuned);
   selectedI = firstTuned >= 0 ? firstTuned : 0;
@@ -1989,7 +2051,9 @@ function applyLogin(r) {
   }
   $("pendingBox").style.display = "none";
   $("csRow2").style.display = "flex"; $("connectBtn").style.display = "block";
-  $("csIn").value = r.account.callsign || callsign || "";
+  /* last one used first — the site's callsign is the fallback for a first
+     session, not the default for every op */
+  $("csIn").value = callsign || r.account.callsign || "";
   $("discordBtn").textContent = "✓ " + r.account.discordName.toUpperCase() + " — " + r.account.role.toUpperCase();
   $("discordBtn").disabled = true;
 }
@@ -2515,7 +2579,7 @@ function renderAccts(data) {
   const pend = d.accounts.filter(x => x.role === "pending").length;
   $("acctPending").textContent = pend ? pend + " AWAITING APPROVAL" : "";
   const order = { pending: 0, command: 1, element: 2, member: 3, revoked: 4 };
-  const shownAccts = d.accounts.filter(x => acctHits(terms, [x.callsign, x.discordName, x.role, x.discordId].map(v => String(v || "")).join(" ").toLowerCase()));
+  const shownAccts = d.accounts.filter(x => acctHits(terms, [x.callsign, x.discordName, x.role, x.discordId, x.onAir].map(v => String(v || "")).join(" ").toLowerCase()));
   const html = shownAccts.sort((x, y) => ((order[x.role] ?? 9) - (order[y.role] ?? 9)) || String(x.discordName).localeCompare(String(y.discordName))).map(x => {
     const btns =
       (x.role === "pending" ? '<button class="ann lit-g" data-role="member">APPROVE</button>' : "") +
@@ -2526,7 +2590,8 @@ function renderAccts(data) {
       (x.role !== "revoked" ? '<button class="ann" style="border-color:var(--red);color:var(--red)" data-role="revoked">REVOKE</button>'
                             : '<button class="ann lit-g" data-role="member">REINSTATE</button>');
     return '<div class="acctrow" data-id="' + escAttr(x.discordId) + '"><div class="nm"><b>' + markHits(x.callsign || "(no callsign yet)", terms) + '</b>' +
-      '<span>discord: ' + markHits(x.discordName, terms) + " · " + (x.lastSeen ? "seen " + new Date(x.lastSeen).toLocaleString() : "never seen") + "</span></div>" +
+      '<span>discord: ' + markHits(x.discordName, terms) + " · " + (x.lastSeen ? "seen " + new Date(x.lastSeen).toLocaleString() : "never seen") +
+      (x.onAir ? ' · <span class="onair">on air as ' + markHits(x.onAir, terms) + "</span>" : "") + "</span></div>" +
       '<span class="ann rolelbl ' + (x.role === "command" ? "lit-a" : x.role === "member" || x.role === "element" ? "lit-g" : "") + '">' + (x.role === "element" ? "ELEMENT LEADER" : esc(String(x.role).toUpperCase())) + "</span>" + btns + "</div>";
   }).join("");
   $("acctList").innerHTML = html || '<span class="hint">No operator matches “' + esc($("acctSearch").value) + '”.</span>';
@@ -2725,6 +2790,7 @@ async function camGoLive(source) {
     });
   } catch (e) { toast("Couldn't capture " + source.name + ": " + e.message); return; }
   cam.pub = { stream, quality: q, viewers: new Map(), srcName: source.name };
+  camShowSource(source);
   stream.getVideoTracks()[0].addEventListener("ended", camStopPub); /* source window closed */
   $("camStart").hidden = true; $("camStop").hidden = false;
   $("camStatus").textContent = "ON AIR · 0 WATCHING"; $("camStatus").classList.add("live");
@@ -2736,6 +2802,16 @@ async function camGoLive(source) {
      WHO only when they open the page */
   cam.announceTimer = setInterval(camAnnounce, 60000);
 }
+/* the streamer's own answer to "which window am I sending?" — the source's
+   name and its picker thumbnail, pinned under MY CAM for the whole stream */
+function camShowSource(source) {
+  const box = $("camSrc");
+  $("camSrcName").textContent = source.name || "window";
+  $("camSrcThumb").src = source.thumb || "";
+  $("camSrcThumb").hidden = !source.thumb;
+  box.hidden = false;
+}
+function camHideSource() { $("camSrc").hidden = true; $("camSrcThumb").src = ""; }
 async function camAnnounce() {
   if (!cam.pub) return;
   await camRefreshPeers();
@@ -2762,6 +2838,7 @@ function camStopPub() {
   for (const pc of cam.pub.viewers.values()) { try { pc.close(); } catch (e) {} }
   try { cam.pub.stream.getTracks().forEach(t => t.stop()); } catch (e) {}
   cam.pub = null;
+  camHideSource();
   camDropTile("self");
   $("camStart").hidden = false; $("camStop").hidden = true;
   $("camStatus").textContent = "OFF AIR"; $("camStatus").classList.remove("live");
@@ -3319,6 +3396,10 @@ if (bridge.autotestHost) {
         };
         draw(); feeds.push(f); return c.captureStream(15);
       };
+      /* the streamer's source card rides the live-wall shot */
+      { const c = document.createElement("canvas"); c.width = 160; c.height = 90; const x = c.getContext("2d");
+        x.fillStyle = "#101820"; x.fillRect(0, 0, 160, 90); x.fillStyle = "#C9A96A"; x.fillRect(60, 30, 40, 30);
+        camShowSource({ name: "Star Citizen", thumb: c.toDataURL() }); }
       const tA = camMountTile(9001, "TIBER DOC 2", fakeFeed("HANGAR DECK 2"), false, { cs: "TIBER DOC 2", who: "Test Operator", since: Date.now() - 754000 });
       const tB = camMountTile(9002, "WARRIOR TAC 4", fakeFeed("FLIGHT DECK"), false, { cs: "WARRIOR TAC 4", who: "Second Operator", since: Date.now() - 128000 });
       tA.classList.add("talking"); camTick(); await wait(800); await shot("cam-live");
@@ -3859,6 +3940,29 @@ if (bridge.autotestHost) {
         L("audio-drop-not-reset", audioDrops === d0 + 1 && d.cursor >= ctx.currentTime + 4.5);
         try { d.dec.delete(); } catch (e) {} decoders.delete(key);
       }
+    }
+    /* audio-clock watchdog: three flat seconds trigger a heal that re-opens
+       the output and keeps the graph playable; a hiccup does not */
+    {
+      const h0 = audioHeals, logs0 = logFeed.children.length;
+      audioClockSample(650, 1000); audioClockSample(1000, 1000);
+      L("audio-clock-hiccup-ignored", audioHeals === h0 && !clockWatch.ailing);
+      const micWasOpen = !!capNode;
+      audioClockSample(650, 1000); audioClockSample(640, 1000); const p = audioClockSample(661, 1000);
+      L("audio-clock-heal-fires", audioHeals === h0 + 1 && clockWatch.ailing && p instanceof Promise);
+      await p; await new Promise(r => setTimeout(r, 1200));
+      const drift = Math.abs((ctx.currentTime - clockWatch.c) * 1000 / (performance.now() - clockWatch.t) - 1);
+      L("audio-clock-heal-playable", ctx.state === "running" && drift < 0.15 && (!micWasOpen || !!capNode));
+      L("audio-clock-heal-logged", logFeed.children.length >= logs0 + 2 && /re-opened/.test(logFeed.textContent));
+      audioClockSample(1000, 1000); audioClockSample(1000, 1000); audioClockSample(1000, 1000);
+      L("audio-clock-recovers", !clockWatch.ailing && /back on rate/.test(logFeed.textContent));
+    }
+    /* the streamer's source card */
+    {
+      camShowSource({ name: "Star Citizen", thumb: "" });
+      const shown = !$("camSrc").hidden && /Star Citizen/.test($("camSrcName").textContent) && $("camSrcThumb").hidden;
+      camHideSource();
+      L("cam-src-indicator", shown && $("camSrc").hidden);
     }
     /* my own voice on another of my connections is dropped, not played */
     {
