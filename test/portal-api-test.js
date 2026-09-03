@@ -936,6 +936,35 @@ const rsiServer = http.createServer((req, res) => {
   r = await api("GET", "/api/docs", null, oak);
   ok(!r.body.files.some(f => f.tag === "public"), "public images stay out of the course library");
 
+  /* ── allied guests: radio-only standing, never a fleet record ── */
+  r = await api("POST", "/api/login", { mockId: "8008", mockName: "Guest Pilot" });
+  const guest = r.body.token;
+  r = await api("POST", "/api/accounts/8008/role", { role: "allied" }, doc);
+  if (r.status === 200) {
+    r = await api("GET", "/api/personnel", null, guest);
+    ok(r.status === 403 && /allied guest/.test(r.body.error), "an allied guest is told the portal is for fleet members");
+    r = await api("GET", "/api/personnel", null, doc);
+    ok(!r.body.roster.some(p => p.discordId === "8008"), "allied guests are not on the roster");
+    r = await api("GET", "/api/personnel/8008", null, doc);
+    ok(r.status === 404, "…have no profile");
+    r = await api("GET", "/api/public");
+    const soulsBefore = r.body.fleet.souls;
+    await api("POST", "/api/login", { mockId: "8009", mockName: "Guest Two" });
+    await api("POST", "/api/accounts/8009/role", { role: "allied" }, doc);
+    r = await api("GET", "/api/public");
+    ok(r.body.fleet.souls === soulsBefore, "…and do not count on the public site");
+    r = await api("POST", "/api/personnel/bulk", { ids: ["8008"], action: { type: "note", text: "x" } }, doc);
+    ok(r.body.results["8008"].ok === false, "…cannot be given orders");
+    r = await api("POST", "/api/roster/assign", { stationId: engSt.id, memberId: "8008" }, doc);
+    ok(r.status === 404, "…cannot be seated");
+    r = await api("POST", "/api/squadrons/mg-212/assign", { memberId: "8008", billet: "Guest" }, doc);
+    ok(r.status === 404, "…cannot be mustered");
+    r = await api("POST", "/api/bot/muster", { members: [{ id: "8008", username: "Guest Pilot", handle: "guest", roles: [] }] }, "Bot bot-secret-test");
+    ok(r.status === 200 && r.body.linked === 0, "…and the muster passes them by");
+    r = await api("GET", "/api/personnel/unmatched", null, doc);
+    ok(!r.body.arrivals.some(a => a.id === "8008"), "…nor does the merge desk list them");
+  } else console.log("  (allied standing not in this accounts service — guest checks skipped: " + r.status + " " + (r.body.error || "") + ")");
+
   /* the treasury ledger as a spreadsheet */
   r = await api("POST", "/api/logistics/contributions", { kind: "auec", amount: 40000, proof: "shot-9" }, doc);
   await api("POST", "/api/logistics/contributions/" + r.body.contribution.id + "/verify", {}, doc);

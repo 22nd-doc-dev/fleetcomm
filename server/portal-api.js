@@ -102,6 +102,15 @@ module.exports = function createPortalApi(deps) {
     if (!pdb.discord.outbox.some(j => j.type === "roles" && j.discordId === discordId))
       enqueue("roles", { discordId });
   }
+  /* ── allied guests ── a standing the accounts service grants to members of a
+     listed allied task-force Discord for joint operations: radio access only.
+     They are not fleet records: no roster, no profile, no seat, no muster, no
+     chain, no count on the public site. Every enumeration below runs through
+     these two. ── */
+  const isFleet = (acc) => !!acc && acc.role !== "allied";
+  const fleetAccount = (id) => (isFleet(db.accounts[id]) ? db.accounts[id] : null);
+  const fleetEntries = () => Object.entries(db.accounts).filter(([, a]) => isFleet(a));
+
   /* how the fleet says a name: rated prefix or rank abbr, then callsign */
   function displayName(id) {
     const acc = db.accounts[id]; const rec = pdb.personnel[id] || {};
@@ -153,7 +162,7 @@ module.exports = function createPortalApi(deps) {
   function chainAssignees() {
     const seen = new Set(), out = [];
     for (const n of (Array.isArray(pdb.coc.nodes) ? pdb.coc.nodes : []))
-      if (n.assignee && !seen.has(n.assignee) && db.accounts[n.assignee]) {
+      if (n.assignee && !seen.has(n.assignee) && fleetAccount(n.assignee)) {
         seen.add(n.assignee); out.push({ id: n.assignee, name: displayName(n.assignee), title: n.title });
       }
     return out;
@@ -904,11 +913,11 @@ module.exports = function createPortalApi(deps) {
        The static pages hydrate from this so a rename in the Fleet Office is
        live on the public site on the next load. ── */
     if (p === "/api/public" && req.method === "GET") {
-      const aboard = Object.values(db.accounts).filter(a => a.role !== "revoked");
+      const aboard = Object.values(db.accounts).filter(a => a.role !== "revoked" && isFleet(a));
       send(res, 200, {
         ok: true,
         fleet: { souls: aboard.length, contractors: aboard.filter(a => a.contractor).length,
-          reserve: Object.entries(db.accounts).filter(([id2, a]) => a.role !== "revoked" && (pdb.personnel[id2] || {}).status === "reserve").length,
+          reserve: fleetEntries().filter(([id2, a]) => a.role !== "revoked" && (pdb.personnel[id2] || {}).status === "reserve").length,
           aor: pdb.fleet.aor, dutyStation: pdb.fleet.dutyStation, battlegroup: pdb.fleet.battlegroup },
         ships: pdb.roster.ships.map(s => ({
           id: s.id, name: s.name, classification: s.classification || "",
@@ -957,7 +966,8 @@ module.exports = function createPortalApi(deps) {
     if (!/^\/api\/(catalog|personnel|coc|availability|events|sso|activity|loa|roster|squadrons|record|export|bot|cam-viewers|audit|fleet|mast|logistics|uex|docs|rsi|backups|content|admin|me\/permissions)/.test(p)) return false;
     if (need(actor, 401, "unauthorized")) return true;
     /* pending accounts can see nothing but their own approval state */
-    if (need(actor.bot || actor.member, 403, "awaiting COMMAND approval")) return true;
+    if (need(actor.bot || actor.member, 403, actor.acc && actor.acc.role === "allied"
+      ? "allied guest — the portal is for fleet members; your radio access is on FleetComm" : "awaiting COMMAND approval")) return true;
     const audit = (action, detail) => { try { deps.audit(actor.name, actor.id, action, detail); } catch (e) {} };
 
     let m;
@@ -1034,7 +1044,7 @@ module.exports = function createPortalApi(deps) {
         if (need(members, 400, "members[] required")) return true;
         let linked = 0;
         for (const mm of members) {
-          const acc = db.accounts[String(mm.id || "")];
+          const acc = fleetAccount(String(mm.id || ""));
           if (!acc) continue;
           acc.discordName = String(mm.nick || mm.username || acc.discordName).slice(0, 80);
           acc.guildRoles = Array.isArray(mm.roles) ? mm.roles.map(String).slice(0, 100) : [];
@@ -1138,7 +1148,7 @@ module.exports = function createPortalApi(deps) {
       const ev = pdb.events[m[1]];
       if (need(ev, 404, "no such event")) return true;
       const b = await body(req);
-      const attendees = (Array.isArray(b.attendees) ? b.attendees.map(String) : []).filter(x => db.accounts[x]).slice(0, 200);
+      const attendees = (Array.isArray(b.attendees) ? b.attendees.map(String) : []).filter(x => fleetAccount(x)).slice(0, 200);
       if (need(attendees.length, 400, "no attendees marked")) return true;
       const when = fleetDate(ev.at);
       for (const id2 of attendees) {
@@ -1166,7 +1176,7 @@ module.exports = function createPortalApi(deps) {
       const subject = String(b.subject || "").trim().slice(0, 120), text = String(b.body || "").trim().slice(0, 2000);
       if (need(subject && text, 400, "subject and body required")) return true;
       const to = b.recipient ? String(b.recipient) : nextUp(actor.id);
-      if (need(to && db.accounts[to] && to !== actor.id, 400, "nobody stands above you on the published chain — pick a recipient")) return true;
+      if (need(to && fleetAccount(to) && to !== actor.id, 400, "nobody stands above you on the published chain — pick a recipient")) return true;
       const c = { id: crypto.randomBytes(6).toString("hex"), at: Date.now(), by: actor.id, to, subject,
         status: "open", log: [{ at: Date.now(), by: actor.id, text }] };
       pdb.mast.cases.push(c);
@@ -1221,9 +1231,9 @@ module.exports = function createPortalApi(deps) {
        record, one click to merge ── */
     if (p === "/api/personnel/unmatched" && req.method === "GET") {
       if (need(isAdmin(actor), 403, "management access required")) return true;
-      const manual = Object.entries(db.accounts).filter(([, a]) => a.manual)
+      const manual = fleetEntries().filter(([, a]) => a.manual)
         .map(([id2, a]) => ({ id: id2, callsign: a.callsign, rank: (pdb.personnel[id2] || {}).rank || "—" }));
-      const arrivals = Object.entries(db.accounts).filter(([, a]) => !a.manual).map(([id2, a]) => ({
+      const arrivals = fleetEntries().filter(([, a]) => !a.manual).map(([id2, a]) => ({
         id: id2, callsign: a.callsign || null, discordName: a.discordName, role: a.role,
         rank: (pdb.personnel[id2] || {}).rank || "—",
         suggestions: manual.map(mm => ({ id: mm.id, callsign: mm.callsign, rank: mm.rank, score: matchScore(a, mm) }))
@@ -1236,7 +1246,7 @@ module.exports = function createPortalApi(deps) {
       const b = await body(req);
       const from = String(b.manualId || ""), to = String(b.discordId || "");
       if (need(db.accounts[from] && db.accounts[from].manual, 404, "manual record not found")) return true;
-      if (need(db.accounts[to] && !String(to).startsWith("m-"), 404, "discord account not found")) return true;
+      if (need(fleetAccount(to) && !String(to).startsWith("m-"), 404, "discord account not found")) return true;
       const label = db.accounts[from].callsign;
       await serializeMutation(async () => { mergeAccounts(from, to, actor.name); });
       audit("merge", label + " → " + displayName(to));
@@ -1552,7 +1562,7 @@ module.exports = function createPortalApi(deps) {
       if (template) lines.push(["", "EXAMPLE - DELETE THIS ROW", "", "", "SR", "", "active", "MG-212", "Reaper 1-1", "Marine",
         "Reaper 1-1 C", "no", "", "", "Hospital Corpsman", "", "", "", "", "15AUG2956", "", "Phase 1 complete"].map(csvCell).join(","));
       else {
-        const ids = Object.keys(db.accounts).filter(id2 => db.accounts[id2].role !== "revoked")
+        const ids = fleetEntries().map(([id2]) => id2).filter(id2 => db.accounts[id2].role !== "revoked")
           .sort((a, b2) => rankIdx((pdb.personnel[b2] || {}).rank) - rankIdx((pdb.personnel[a] || {}).rank));
         for (const id2 of ids) lines.push(memberRow(id2).map(csvCell).join(","));
       }
@@ -1575,7 +1585,7 @@ module.exports = function createPortalApi(deps) {
       const dryRun = b.dryRun === true, quiet = b.quiet === true;
       const out = { ok: true, dryRun, rows: rows.length - 1, applied: 0, created: 0, errors: [], changes: [] };
       const byCallsign = new Map();
-      for (const [aid, acc] of Object.entries(db.accounts)) if (acc.callsign) byCallsign.set(String(acc.callsign).toUpperCase(), aid);
+      for (const [aid, acc] of fleetEntries()) if (acc.callsign) byCallsign.set(String(acc.callsign).toUpperCase(), aid);
       const scopes = actorScopes(actor);
       const sqScopes = scopes.filter(s => s.startsWith("squadron:")).map(s => s.slice(9));
       const shipScopes = scopes.filter(s => s.startsWith("ship:")).map(s => s.slice(5));
@@ -1594,7 +1604,7 @@ module.exports = function createPortalApi(deps) {
           if (/example/i.test(csCell) || /example/i.test(idCell)) continue;
           const label = csCell || idCell || ("row " + (i + 1));
           const rowErr = [], rowChg = [];
-          let id = idCell && db.accounts[idCell] ? idCell : (csCell ? byCallsign.get(csCell) : null);
+          let id = idCell && fleetAccount(idCell) ? idCell : (csCell ? byCallsign.get(csCell) : null);
           let created = false;
           if (!id) {
             if (!adm) { out.errors.push(label + ": not on the rolls (management adds new members)"); continue; }
@@ -1803,7 +1813,7 @@ module.exports = function createPortalApi(deps) {
     }
     if ((m = /^\/api\/personnel\/([A-Za-z0-9-]{1,40})\/rsi$/.exec(p)) && req.method === "POST") {
       if (need(isAdmin(actor), 403, "management access required")) return true;
-      const target = db.accounts[m[1]];
+      const target = fleetAccount(m[1]);
       if (need(target, 404, "no such member")) return true;
       const b = await body(req);
       if (b.revoke === true) { delete target.rsiVerified; audit("rsi", "verification revoked: " + (target.callsign || target.discordName)); }
@@ -1840,7 +1850,7 @@ module.exports = function createPortalApi(deps) {
     }
 
     if (p === "/api/personnel" && req.method === "GET") {
-      const roster = Object.keys(db.accounts).map(profile).filter(Boolean)
+      const roster = fleetEntries().map(([id2]) => profile(id2)).filter(Boolean)
         .map(pr => redactProfile(pr, actor))
         .sort((a, b2) => rankIdx(b2.rank.abbr) - rankIdx(a.rank.abbr));
       send(res, 200, { ok: true, roster });
@@ -1851,7 +1861,7 @@ module.exports = function createPortalApi(deps) {
       return true;
     }
     if ((m = /^\/api\/personnel\/([A-Za-z0-9-]{1,40})$/.exec(p)) && req.method === "GET") {
-      const pr = profile(m[1]);
+      const pr = fleetAccount(m[1]) ? profile(m[1]) : null;
       if (need(pr, 404, "no such member")) return true;
       send(res, 200, { ok: true, profile: redactProfile(pr, actor) });
       return true;
@@ -1876,7 +1886,7 @@ module.exports = function createPortalApi(deps) {
       const results = await serializeMutation(async () => {
         const out = {};
         for (const id of ids) {
-          if (!db.accounts[id]) { out[id] = { ok: false, error: "no such member" }; continue; }
+          if (!fleetAccount(id)) { out[id] = { ok: false, error: "no such member" }; continue; }
           const rec = recFor(id);
           try {
             if (act.type === "award") {
@@ -2012,7 +2022,7 @@ module.exports = function createPortalApi(deps) {
       if (need(isAdmin(actor), 403, "management access required")) return true;
       const all = {};
       for (const [id, a2] of Object.entries(pdb.availability)) {
-        const acc = db.accounts[id];
+        const acc = fleetAccount(id);
         if (acc) all[id] = { callsign: acc.callsign || acc.discordName, days: a2.days || {} };
       }
       send(res, 200, { ok: true, availability: all });
@@ -2120,7 +2130,7 @@ module.exports = function createPortalApi(deps) {
       if (need(isAdmin(actor), 403, "management access required")) return true;
       const active = [];
       for (const [id, l] of Object.entries(pdb.loa)) {
-        const acc = db.accounts[id];
+        const acc = fleetAccount(id);
         if (l.active && acc) active.push({ discordId: id, callsign: acc.callsign || acc.discordName,
           start: l.active.start, reason: l.active.reason });
       }
@@ -2142,7 +2152,7 @@ module.exports = function createPortalApi(deps) {
       if (need(hit, 404, "no such station")) return true;
       if (need(canManageShip(actor, hit.ship.id), 403, "no roster authority for " + hit.ship.name)) return true;
       const member = b.memberId ? String(b.memberId) : null;
-      if (need(!member || db.accounts[member], 404, "no such member")) return true;
+      if (need(!member || fleetAccount(member), 404, "no such member")) return true;
       assignStation(hit, member, actor);
       audit("billet", (member ? displayName(member) + " → " : "vacated: ") + hit.st.title + ", " + hit.ship.name);
       persist("roster"); persist("personnel");
@@ -2188,7 +2198,7 @@ module.exports = function createPortalApi(deps) {
             stations++;
             return { id: String(st.id || "").slice(0, 80), title: String(st.title || "").slice(0, 80),
               /* unknown assignees are cleared, not trusted */
-              assignee: st.assignee && db.accounts[String(st.assignee)] ? String(st.assignee) : null };
+              assignee: st.assignee && fleetAccount(String(st.assignee)) ? String(st.assignee) : null };
           })
         }))
       }));
@@ -2228,7 +2238,7 @@ module.exports = function createPortalApi(deps) {
             mm.element ? { element: String(mm.element).slice(0, 40) } : {},
             mm.tacsign ? { tacsign: String(mm.tacsign).slice(0, 30) } : {},
             mm.lead === true ? { lead: true } : {}))
-          .filter(mm => db.accounts[mm.discordId])
+          .filter(mm => fleetAccount(mm.discordId))
       }));
       for (const sq of clean) {
         if (need(sq.id && sq.name, 400, "every squadron needs id + name")) return true;
@@ -2246,7 +2256,7 @@ module.exports = function createPortalApi(deps) {
       if (need(canManageSquadron(actor, sq.id), 403, "no authority over " + sq.name)) return true;
       const b = await body(req);
       const member = String(b.memberId || "");
-      if (need(db.accounts[member], 404, "no such member")) return true;
+      if (need(fleetAccount(member), 404, "no such member")) return true;
       const existing = sq.members.find(mm => mm.discordId === member);
       if (b.billet === null || b.billet === undefined || b.billet === "") {
         if (need(existing, 400, "not a member of " + sq.name)) return true;
@@ -2335,7 +2345,7 @@ module.exports = function createPortalApi(deps) {
       for (const [id, rec] of Object.entries(pdb.personnel)) {
         if (id === actor.id && !isAdmin(actor)) continue;
         if (!canApproveFor(actor, id)) continue;
-        const acc = db.accounts[id];
+        const acc = fleetAccount(id);
         if (!acc) continue;
         for (const e of rec.record) if (e.state === "pending")
           queue.push({ discordId: id, callsign: acc.callsign || acc.discordName, entry: e });
@@ -2348,7 +2358,7 @@ module.exports = function createPortalApi(deps) {
     /* ── scoped authority + the itAdmin flag (no single point of failure) ── */
     if ((m = /^\/api\/personnel\/([A-Za-z0-9-]{1,40})\/scopes$/.exec(p)) && req.method === "POST") {
       if (need(isAdmin(actor), 403, "management access required")) return true;
-      const target = db.accounts[m[1]];
+      const target = fleetAccount(m[1]);
       if (need(target, 404, "no such member")) return true;
       const b = await body(req);
       if (Array.isArray(b.scopes)) {
@@ -2401,7 +2411,7 @@ module.exports = function createPortalApi(deps) {
     let mcs;
     if ((mcs = /^\/api\/personnel\/([^/]+)\/callsign$/.exec(p)) && req.method === "POST") {
       if (need(isAdmin(actor), 403, "management access required")) return true;
-      const acc = db.accounts[mcs[1]];
+      const acc = fleetAccount(mcs[1]);
       if (need(acc, 404, "no such record")) return true;
       const b = await body(req);
       const callsign = String(b.callsign || "").trim().toUpperCase()
@@ -2469,7 +2479,7 @@ module.exports = function createPortalApi(deps) {
       const when = (v) => { const t = v == null || v === "" ? null : parseWhen(v); return t == null ? Date.now() : t; };
       const day = (t) => Math.floor(Number(t) / 864e5);
       const byCallsign = new Map();
-      for (const [aid, acc] of Object.entries(db.accounts)) if (acc.callsign) byCallsign.set(String(acc.callsign).toUpperCase(), aid);
+      for (const [aid, acc] of fleetEntries()) if (acc.callsign) byCallsign.set(String(acc.callsign).toUpperCase(), aid);
       const out = { ok: true, dryRun, source, created: 0, updated: 0, applied: 0, errors: [], changes: [] };
       const work = async () => {
         for (const raw of b.members) {
@@ -2486,8 +2496,8 @@ module.exports = function createPortalApi(deps) {
           const chg = [], err = [];
           /* the loader may name the exact record to update (a stand-in matched by
              hand or by fuzzy name); otherwise the Discord id, then the name */
-          const matchId = mm.matchId != null && db.accounts[String(mm.matchId)] ? String(mm.matchId) : null;
-          let id = did && db.accounts[did] ? did : (matchId || (callsign ? byCallsign.get(callsign) : null));
+          const matchId = mm.matchId != null && fleetAccount(String(mm.matchId)) ? String(mm.matchId) : null;
+          let id = did && fleetAccount(did) ? did : (matchId || (callsign ? byCallsign.get(callsign) : null));
           let created = false;
           if (!id) {
             if (!callsign) { out.errors.push(did + ": no account by that Discord id and no callsign to file a record"); continue; }
@@ -2747,7 +2757,7 @@ module.exports = function createPortalApi(deps) {
           inventory: LG.inventory.length, catalog: LG.catalog.length, blueprints: LG.blueprints.length },
         mast: pdb.mast.cases.length,
         outbox: pdb.discord.outbox.length,
-        scopes: Object.entries(db.accounts).filter(([, a]) => Array.isArray(a.scopes) && a.scopes.length)
+        scopes: fleetEntries().filter(([, a]) => Array.isArray(a.scopes) && a.scopes.length)
           .map(([id2, a]) => (a.callsign || a.discordName || id2) + " (" + a.scopes.length + ")"),
         itAdmins: Object.values(db.accounts).filter(a => a.itAdmin === true).length,
         records: { entries: 0, awards: 0, certs: 0, ribbons: 0, insignia: 0, orders: 0, members: 0 },
@@ -2800,7 +2810,7 @@ module.exports = function createPortalApi(deps) {
     if (p === "/api/export" && req.method === "GET" && !actor.bot) {
       if (need(isAdmin(actor), 403, "management access required")) return true;
       const accounts = {};
-      for (const [id, acc] of Object.entries(db.accounts)) accounts[id] = {
+      for (const [id, acc] of fleetEntries()) accounts[id] = {
         discordName: acc.discordName, callsign: acc.callsign || null, role: acc.role,
         manual: acc.manual === true, itAdmin: acc.itAdmin === true,
         contractor: acc.contractor === true,
@@ -2828,14 +2838,14 @@ module.exports = function createPortalApi(deps) {
       const since = Number(url.searchParams.get("since") || 0);
       const feed = [];
       for (const [id, rec] of Object.entries(pdb.personnel)) {
-        const acc = db.accounts[id];
+        const acc = fleetAccount(id);
         if (!acc) continue;
         for (const entry of rec.record) if (entry.at > since)
           feed.push(Object.assign({ discordId: id, callsign: acc.callsign || acc.discordName }, entry));
       }
       feed.sort((a, b2) => b2.at - a.at);
       send(res, 200, { ok: true, feed: feed.slice(0, 200),
-        lastSeen: Object.entries(db.accounts).map(([id, a2]) => ({ discordId: id,
+        lastSeen: fleetEntries().map(([id, a2]) => ({ discordId: id,
           callsign: a2.callsign || a2.discordName, lastSeen: a2.lastSeen || null })) });
       return true;
     }
