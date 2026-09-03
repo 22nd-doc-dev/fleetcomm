@@ -34,7 +34,8 @@ function start() {
   service = spawn(process.execPath, [path.join(__dirname, "..", "server", "accounts-service.js")], {
     env: Object.assign({}, process.env, { MOCK_DISCORD: "1", HOST: "127.0.0.1", PORT: String(port),
       DATA_DIR: dataDir, RELAY_PASSWORD: "relay-test", BOOTSTRAP_TOKEN: "boot-test", ACL_SYNC_DISABLED: "1",
-      BOT_API_TOKEN: "bot-secret-test", PORTAL_ORIGIN: "https://22d.space", SSO_CODE_TTL_MS: "150" }),
+      BOT_API_TOKEN: "bot-secret-test", PORTAL_ORIGIN: "https://22d.space", SSO_CODE_TTL_MS: "150",
+      RSI_PROFILE_BASE: "http://127.0.0.1:" + rsiPort + "/citizens/", RSI_CHECK_COOLDOWN_MS: "0" }),
     stdio: "ignore"
   });
   return new Promise((resolve, reject) => {
@@ -46,12 +47,34 @@ function start() {
   });
 }
 function stop() {
+  try { rsiServer.close(); } catch (e) {}
   if (!service) return Promise.resolve();
   return new Promise(resolve => { service.once("exit", resolve); service.kill(); setTimeout(resolve, 1000); });
 }
 const pause = ms => new Promise(r => setTimeout(r, ms));
+function rawGet(pathname, token) {
+  return new Promise((resolve, reject) => {
+    http.get(base + pathname, { headers: token ? { Authorization: "Bearer " + token } : {} }, res => {
+      let text = ""; res.on("data", c => text += c);
+      res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, text }));
+    }).on("error", reject);
+  });
+}
+/* a stand-in for RSI's public citizen pages: one citizen, a bio the test edits */
+let rsiPort = 0;
+const rsiStub = { bio: "" };
+const rsiServer = http.createServer((req, res) => {
+  if (req.url === "/citizens/Oak-Tree") {
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end("<html><body><p class='entry'><span class='label'>UEE Citizen Record</span><strong class='value'>#424242</strong></p>" +
+      "<p class='entry'><span class='label'>Handle name</span><strong class='value'>Oak-Tree</strong></p>" +
+      "<div class='entry bio'><span class='label'>Bio</span><div class='value'>" + rsiStub.bio + "</div></div></body></html>");
+  } else { res.writeHead(404, { "Content-Type": "text/html" }); res.end("<html><body>404</body></html>"); }
+});
 
 (async () => {
+  await new Promise(r0 => rsiServer.listen(0, "127.0.0.1", r0));
+  rsiPort = rsiServer.address().port;
   await start();
 
   /* identities: doc claims COMMAND, oak arrives pending */
@@ -644,6 +667,128 @@ const pause = ms => new Promise(r => setTimeout(r, ms));
   ok(r.status === 400, "unknown file types are refused");
   r = await api("POST", "/api/docs/" + docId + "/delete", {}, doc);
   ok(r.status === 200, "management removes a document");
+
+  /* ── batch 3: Discord handles, departments, Marine elements, the Inactive
+     Reserve, the spreadsheet door, RSI verification, unit art, branch ladders ── */
+  r = await api("POST", "/api/bot/muster", { members: [{ id: "2002", username: "Oak", handle: "oak_tree", nick: "Oak", roles: [] }] }, "Bot bot-secret-test");
+  ok(r.status === 200, "the muster accepts Discord handles");
+  r = await api("GET", "/api/personnel/2002", null, doc);
+  ok(r.body.profile.discordUser === "oak_tree", "a member's Discord handle is on the profile for search");
+  /* Oak starts this batch holding nothing: every station relieved, every squadron left */
+  const ships3 = (await api("GET", "/api/roster", null, doc)).body.ships;
+  for (const sh of ships3) for (const d of sh.departments) for (const st of d.stations)
+    if (st.assignee === "2002") await api("POST", "/api/roster/assign", { stationId: st.id, memberId: null }, doc);
+  for (const sq of (await api("GET", "/api/squadrons", null, doc)).body.squadrons)
+    if (sq.members.some(mm => mm.discordId === "2002")) await api("POST", "/api/squadrons/" + sq.id + "/assign", { memberId: "2002", billet: null }, doc);
+  const tiber3 = ships3.find(s => s.id === "tiber");
+  const dept3 = tiber3.departments.find(d => d.stations.some(st => !st.assignee));
+  const engSt = dept3.stations.find(st => !st.assignee);
+  r = await api("POST", "/api/roster/assign", { stationId: engSt.id, memberId: "2002" }, doc);
+  r = await api("GET", "/api/personnel/2002", null, doc);
+  ok(r.body.profile.billet === engSt.title + ", " + tiber3.name && r.body.profile.department === dept3.name + " · " + tiber3.name &&
+     r.body.profile.units.ships.includes("tiber"), "a profile names its billet, department and units from the assignment");
+  await api("POST", "/api/roster/assign", { stationId: engSt.id, memberId: null }, doc);
+  r = await api("POST", "/api/squadrons/mg-212/assign", { memberId: "2002", billet: "Element Leader", element: "Reaper 1-1", tacsign: "Reaper 1-1", lead: true }, doc);
+  ok(r.status === 200 && r.body.squadron.members[0].element === "Reaper 1-1" && r.body.squadron.members[0].tacsign === "Reaper 1-1" &&
+     r.body.squadron.members[0].lead === true, "a squadron billet carries the element, tactical call sign and lead flag");
+  r = await api("GET", "/api/personnel/2002", null, doc);
+  ok(r.body.profile.department === "Reaper 1-1 · MG-212", "the department reads squad and squadron for a Marine");
+  r = await api("POST", "/api/personnel/bulk", { ids: ["2002"], action: { type: "status", status: "reserve" } }, doc);
+  ok(r.body.results["2002"].ok, "COMMAND transfers a member to the Inactive Reserve");
+  r = await api("GET", "/api/personnel/2002", null, doc);
+  ok(r.body.profile.status === "reserve" && r.body.profile.record.some(e => /Inactive Reserve/.test(e.text)), "…and the record says so");
+
+  /* the spreadsheet door */
+  r = await rawGet("/api/personnel/export.csv", doc);
+  ok(r.status === 200 && /^\uFEFF?id,callsign,/.test(r.text) && /Reaper 1-1/.test(r.text) && /reserve/.test(r.text), "the roster exports as a CSV with squads, call signs and standing");
+  r = await rawGet("/api/personnel/export.csv?template=1", doc);
+  ok(r.status === 200 && r.text.split(/\r?\n/).filter(Boolean).length === 2 && /EXAMPLE/.test(r.text), "the blank template is the header plus one example row");
+  r = await api("POST", "/api/login", { mockId: "7007", mockName: "Plain" });
+  const plain = r.body.token;
+  await api("POST", "/api/accounts/7007/role", { role: "member" }, doc);
+  r = await rawGet("/api/personnel/export.csv", plain);
+  ok(r.status === 403, "a member without keys or a purview cannot export the rolls");
+  const csvText = ["id,callsign,rank,status,squadron,element,billet,tac_callsign,element_lead,certs,enlisted",
+    "2002,,LT,active,MG-212,Reaper 1-2,Marine,Reaper 1-2 C,no,Hospital Corpsman,08/15/2026",
+    ",Newbie Marine,SR,active,mg-212,Reaper 1-2,Marine,,no,,",
+    ",EXAMPLE - DELETE THIS ROW,SR,,,,,,,,"].join("\n");
+  r = await api("POST", "/api/personnel/import/csv", { csv: csvText, dryRun: true }, doc);
+  ok(r.status === 200 && r.body.dryRun === true && r.body.applied === 2 && r.body.created === 1 && r.body.errors.length === 0,
+     "a dry run reports two rows changing, one new member, no refusals");
+  r = await api("GET", "/api/personnel", null, doc);
+  ok(!r.body.roster.some(p => p.callsign === "NEWBIE MARINE"), "…and touches nothing");
+  r = await api("POST", "/api/personnel/import/csv", { csv: csvText, quiet: true }, doc);
+  ok(r.status === 200 && r.body.applied === 2 && r.body.created === 1, "the CSV applies");
+  r = await api("GET", "/api/personnel/2002", null, doc);
+  ok(r.body.profile.status === "active" && r.body.profile.rank.abbr === "LT" && r.body.profile.department === "Reaper 1-2 · MG-212" &&
+     r.body.profile.certs.some(c => c.certId === "hospital-corpsman") && r.body.profile.joinedAt === Date.UTC(2026, 7, 15, 12),
+     "oak is back on active duty, LT, in Reaper 1-2, enlisted 15AUG2956");
+  r = await api("GET", "/api/personnel", null, doc);
+  const newbie = r.body.roster.find(p => p.callsign === "NEWBIE MARINE");
+  ok(newbie && newbie.manual && newbie.department === "Reaper 1-2 · MG-212", "the new Marine is on the rolls in Reaper 1-2");
+  await api("POST", "/api/personnel/2002/scopes", { scopes: ["squadron:mg-212"] }, doc);
+  r = await api("POST", "/api/personnel/import/csv", { csv: "callsign,rank,element,element_lead\nNewbie Marine,CAPT,Reaper 1-1,yes\n" }, oak);
+  ok(r.status === 200 && r.body.applied === 1 && r.body.errors.length === 1 && /rank/.test(r.body.errors[0]),
+     "a squadron lead moves their Marine between squads but cannot set ranks");
+  r = await api("GET", "/api/personnel/" + newbie.discordId, null, doc);
+  ok(r.body.profile.department === "Reaper 1-1 · MG-212" && r.body.profile.rank.abbr === "SR", "the squad moved, the rank did not");
+  r = await api("POST", "/api/personnel/import/csv", { csv: "id,status\n1001,reserve\n" }, oak);
+  ok(r.body.applied === 0 && r.body.errors.length === 1, "…and nothing changes for people outside their squadron");
+  r = await api("POST", "/api/personnel/import/csv", { csv: "callsign,status\nBrand New,reserve\n" }, oak);
+  ok(r.body.applied === 0 && /management adds/.test(r.body.errors[0]), "only management adds new names through the spreadsheet");
+
+  /* RSI verification against the stand-in citizen page */
+  r = await api("POST", "/api/rsi/start", { handle: "Oak-Tree" }, oak);
+  ok(r.status === 200 && /^22EF-[A-Z2-9]{6}$/.test(r.body.code), "a member starts RSI verification and receives a one-time code");
+  const rsiCode = r.body.code;
+  r = await api("GET", "/api/personnel/me", null, oak);
+  ok(r.body.profile.rsiPending && r.body.profile.rsiPending.code === rsiCode, "the pending code shows on their own profile");
+  r = await api("GET", "/api/personnel/2002", null, doc);
+  ok(!r.body.profile.rsiPending, "…and to nobody else");
+  rsiStub.bio = "Fleet pilot. No code here.";
+  r = await api("POST", "/api/rsi/check", {}, oak);
+  ok(r.status === 200 && r.body.verified === false, "the check fails while the code is not in the bio");
+  rsiStub.bio = "22nd EF — " + rsiCode;
+  r = await api("POST", "/api/rsi/check", {}, oak);
+  ok(r.body.verified === true && r.body.citizen === "#424242", "…and passes once it is, reading the citizen record");
+  r = await api("GET", "/api/personnel/2002", null, doc);
+  ok(r.body.profile.rsiHandle === "Oak-Tree" && r.body.profile.rsiVerified && r.body.profile.rsiVerified.citizen === "#424242" &&
+     r.body.profile.record.some(e => /RSI account verified/.test(e.text)), "the verified handle lands on the profile and the record");
+  await api("POST", "/api/rsi/start", { handle: "Nobody-Here" }, oak);
+  r = await api("POST", "/api/rsi/check", {}, oak);
+  ok(r.body.verified === false && /no citizen/.test(r.body.reason), "an unknown handle is reported, not verified");
+  r = await api("POST", "/api/personnel/2002/rsi", { revoke: true }, doc);
+  ok(r.status === 200 && r.body.profile.rsiVerified === null, "management can revoke a verification");
+
+  /* unit art in the library */
+  const pngB3 = Buffer.from("\x89PNG not really").toString("base64");
+  r = await api("POST", "/api/docs", { name: "mg212.png", data: pngB3, tag: "logo", ref: "squadron:mg-212" }, oak);
+  ok(r.status === 200 && r.body.file.tag === "logo", "a squadron lead files their unit's logo");
+  r = await api("POST", "/api/docs", { name: "tiber.png", data: pngB3, tag: "logo", ref: "ship:tiber" }, oak);
+  ok(r.status === 403, "…but not another unit's");
+  r = await api("POST", "/api/docs", { name: "mg212-v2.png", data: pngB3, tag: "logo", ref: "squadron:mg-212" }, doc);
+  r = await api("GET", "/api/docs?tag=logo", null, oak);
+  ok(r.body.files.length === 1 && r.body.files[0].name === "mg212-v2.png", "a new logo replaces the old one for that unit");
+  r = await api("GET", "/api/docs", null, oak);
+  ok(!r.body.files.some(f => f.tag === "logo"), "logos stay out of the course library");
+
+  /* Marine ranks beside their Navy peers, promotions along their own ladder */
+  r = await api("GET", "/api/catalog", null, doc);
+  const ladder3 = r.body.catalog.ranks.slice();
+  const slotAfter = (abbr, entry) => { const i = ladder3.findIndex(x => x.abbr === abbr); ladder3.splice(i + 1, 0, entry); };
+  slotAfter("LSM", { grade: "E-3", name: "Lance Corporal", abbr: "LCPL", branch: "marine" });
+  slotAfter("PO2", { grade: "E-5", name: "Sergeant", abbr: "SGT", branch: "marine" });
+  slotAfter("CPO", { grade: "E-7", name: "Gunnery Sergeant", abbr: "GYSGT", branch: "marine" });
+  r = await api("POST", "/api/catalog", { ranks: ladder3 }, doc);
+  ok(r.status === 200, "Marine ranks file beside their Navy pay-grade peers");
+  await api("POST", "/api/personnel/bulk", { ids: [newbie.discordId], action: { type: "rank", rank: "LCPL" } }, doc);
+  await api("POST", "/api/personnel/bulk", { ids: [newbie.discordId], action: { type: "rank", step: 1 } }, doc);
+  r = await api("GET", "/api/personnel/" + newbie.discordId, null, doc);
+  ok(r.body.profile.rank.abbr === "SGT", "a Marine promotion steps to the next Marine rank, past the Navy ones between");
+  await api("POST", "/api/personnel/bulk", { ids: ["2002"], action: { type: "rank", rank: "PO2" } }, doc);
+  await api("POST", "/api/personnel/bulk", { ids: ["2002"], action: { type: "rank", step: 1 } }, doc);
+  r = await api("GET", "/api/personnel/2002", null, doc);
+  ok(r.body.profile.rank.abbr === "PO1", "a Navy promotion skips the Marine rank filed beside it");
 
   await stop();
   fs.rmSync(dataDir, { recursive: true, force: true });

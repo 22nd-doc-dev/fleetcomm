@@ -430,6 +430,7 @@ async function musterSync() {
       for (const m of batch) {
         if (m.user && m.user.bot) continue;
         members.push({ id: m.user.id, username: m.user.global_name || m.user.username,
+          handle: m.user.username || null,            /* the @handle — searchable on the portal */
           nick: m.nick || null, roles: m.roles || [] });
       }
       after = batch[batch.length - 1].user.id;

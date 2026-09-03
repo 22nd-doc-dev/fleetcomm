@@ -190,6 +190,32 @@ module.exports = function createPortalApi(deps) {
     }
     return "Unassigned";
   }
+  /* the department (ship) or element (squadron) a member serves in today,
+     per their assignment — "Bridge · UEES Tiber", "Reaper 1-1 · MG-212" */
+  function currentDepartment(id) {
+    for (const ship of pdb.roster.ships) for (const d of ship.departments || []) for (const st of d.stations || [])
+      if (st.assignee === id) return d.name + " · " + ship.name;
+    for (const sq of pdb.squadrons.squadrons) {
+      const mm = sq.members.find(x => x.discordId === id);
+      if (mm) return (mm.element ? mm.element + " · " : "") + sq.name;
+    }
+    return "";
+  }
+  /* seat a member at a station: record entries both ways, orders issued */
+  function assignStation(hit, member, actor, quiet) {
+    const previous = hit.st.assignee;
+    const wasAt = member ? currentBillet(member) : null;
+    hit.st.assignee = member;
+    if (previous && previous !== member) logEntry(recFor(previous), actor.name, "station",
+      "Relieved of station: " + hit.st.title + ", " + hit.ship.name);
+    if (member && previous !== member) {
+      logEntry(recFor(member), actor.name, "station",
+        "Assigned to station: " + hit.st.title + ", " + hit.ship.name);
+      issueOrders(member, actor, { unit: hit.ship.name, hull: hit.ship.hullId || "",
+        title: hit.st.title, department: hit.dept ? hit.dept.name : "", previous: wasAt, reportTo: hit.ship.name, quiet: !!quiet });
+      enqueueRoles(member);
+    }
+  }
   function squadronLine(id) {
     const sq = pdb.squadrons.squadrons.find(s => s.members.some(x => x.discordId === id));
     if (!sq) return { line: pdb.fleet.via, name: (/\(([^)]+)\)\s*$/.exec(pdb.fleet.via) || [, pdb.fleet.via])[1] };
@@ -235,7 +261,7 @@ module.exports = function createPortalApi(deps) {
     rec.orders.unshift(order);
     if (rec.orders.length > 50) rec.orders.length = 50;
     logEntry(rec, actor.name, "orders", "Assignment orders issued: " + a.title + ", " + a.unit + " (" + fleetDate(when) + ")");
-    enqueue("orders", { discordId: id, name: displayName(id), text });
+    if (!a.quiet) enqueue("orders", { discordId: id, name: displayName(id), text });
     return order;
   }
   /* how alike a Discord arrival and a manual roster record look: shared
@@ -366,8 +392,74 @@ module.exports = function createPortalApi(deps) {
   const DOC_TYPES = { pdf: "application/pdf", pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     ppt: "application/vnd.ms-powerpoint", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     doc: "application/msword", xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", txt: "text/plain", md: "text/markdown" };
+    png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", txt: "text/plain", md: "text/markdown" };
   const canUploadDoc = (actor, rate) => isAdmin(actor) || (!!rate && hasScope(actor, "rate:" + rate));
+
+  /* ── CSV: the Bureau's spreadsheet door. One row per member, the header
+     names the columns in any order, unknown columns are ignored, a blank
+     cell leaves that field alone. ── */
+  const CSV_COLS = ["id", "callsign", "discord_name", "discord_user", "rank", "rating", "status", "squadron", "element",
+    "billet", "tac_callsign", "element_lead", "ship", "station", "certs", "rsi_handle", "timezone", "enlisted", "last_seen", "note"];
+  const csvCell = (v) => { const s = String(v == null ? "" : v); return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  function parseCsv(text) {
+    const rows = []; let row = [], cell = "", q = false;
+    const s = String(text).replace(/^\uFEFF/, "");
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (q) { if (c === '"') { if (s[i + 1] === '"') { cell += '"'; i++; } else q = false; } else cell += c; continue; }
+      if (c === '"') q = true;
+      else if (c === ",") { row.push(cell); cell = ""; }
+      else if (c === "\n" || c === "\r") { if (c === "\r" && s[i + 1] === "\n") i++; row.push(cell); rows.push(row); row = []; cell = ""; }
+      else cell += c;
+    }
+    if (cell.length || row.length) { row.push(cell); rows.push(row); }
+    return rows.filter(r => r.some(x => String(x).trim() !== ""));
+  }
+  const yes = (v) => /^(y|yes|true|1|lead)$/i.test(String(v || "").trim());
+  const no = (v) => /^(n|no|false|0)$/i.test(String(v || "").trim());
+  /* dates as people type them: 15AUG2956 (fleet), 2026-08-15, 08/15/2026 */
+  function parseWhen(v) {
+    const s = String(v || "").trim(); if (!s) return null;
+    let m;
+    if ((m = /^(\d{2})([A-Z]{3})(\d{4})$/i.exec(s))) { const mo = MONTHS.indexOf(m[2].toUpperCase()); if (mo >= 0) return Date.UTC(+m[3] - 930, mo, +m[1], 12); }
+    if ((m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s))) return Date.UTC(+m[1], +m[2] - 1, +m[3], 12);
+    if ((m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(s))) return Date.UTC(+m[3], +m[1] - 1, +m[2], 12);
+    const t = Date.parse(s); return Number.isFinite(t) ? t : null;
+  }
+  function memberRow(id) {
+    const acc = db.accounts[id], rec = recFor(id);
+    let sqm = null, sq = null;
+    for (const s of pdb.squadrons.squadrons) { const mm = s.members.find(x => x.discordId === id); if (mm) { sq = s; sqm = mm; break; } }
+    let shipName = "", station = "";
+    for (const ship of pdb.roster.ships) for (const d of ship.departments || []) for (const st of d.stations || [])
+      if (st.assignee === id && !station) { shipName = ship.name; station = st.title; }
+    return [id, acc.callsign || "", acc.discordName || "", acc.discordUser || "", rec.rank || "", rec.rating || "",
+      rec.status === "reserve" ? "reserve" : "active", sq ? sq.name : "", sqm ? sqm.element || "" : "", sqm ? sqm.billet || "" : "",
+      sqm ? sqm.tacsign || "" : "", sqm ? (sqm.lead ? "yes" : "no") : "", shipName, station,
+      (rec.certs || []).map(c => (pdb.catalog.certs.find(x => x.id === c.certId) || { name: c.certId }).name).join("; "),
+      acc.rsiHandle || "", acc.timezone || "", acc.createdAt ? fleetDate(acc.createdAt) : "", acc.lastSeen ? fleetDate(acc.lastSeen) : "", ""];
+  }
+
+  /* ── RSI account verification: a one-time code the member pastes into
+     their RSI bio; the fleet reads the PUBLIC citizen page and matches.
+     No RSI credential is ever asked for. ── */
+  const RSI_BASE = process.env.RSI_PROFILE_BASE || "https://robertsspaceindustries.com/citizens/";
+  const RSI_COOLDOWN = Number(process.env.RSI_CHECK_COOLDOWN_MS || 20000);
+  const RSI_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const rsiLast = new Map();
+  async function rsiPage(handle) {
+    const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 12000);
+    try {
+      const res = await fetch(RSI_BASE + encodeURIComponent(handle), { redirect: "follow", signal: ctl.signal,
+        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36 22EF-Portal",
+          "Accept": "text/html" } });
+      if (res.status === 404) return { status: 404, html: "" };
+      const html = await res.text();
+      return { status: res.status, html: html.slice(0, 400000) };
+    } finally { clearTimeout(t); }
+  }
+  const htmlText = (html) => String(html).replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&#0?39;/g, "'").replace(/\s+/g, " ");
 
   /* standing changes from the accounts registry: a cleared arrival enlists */
   function onStanding(id, prev, next) {
@@ -470,6 +562,23 @@ module.exports = function createPortalApi(deps) {
 
   const rankIdx = (abbr) => pdb.catalog.ranks.findIndex(r => r.abbr === abbr);
   const rankByAbbr = (abbr) => pdb.catalog.ranks[rankIdx(abbr)] || null;
+  /* a promotion steps along the member's OWN ladder: a Marine rank (branch
+     "marine") moves to the next Marine rank even though the Fleet Office
+     files it beside its Navy pay-grade peer, and Navy ranks step past the
+     Marine ones filed between them */
+  function rankStep(abbr, step) {
+    let i = rankIdx(abbr);
+    if (i < 0 || !step) return i;
+    const ranks = pdb.catalog.ranks;
+    const branchOf = (r) => String((r && r.branch) || "").toLowerCase();
+    const branch = branchOf(ranks[i]);
+    const dir = step > 0 ? 1 : -1;
+    for (let left = Math.abs(step); left > 0; left--) {
+      do { i += dir; } while (i >= 0 && i < ranks.length && branchOf(ranks[i]) !== branch);
+      if (i < 0 || i >= ranks.length) return -1;
+    }
+    return i;
+  }
   function recFor(id) {
     if (!pdb.personnel[id]) pdb.personnel[id] = { rank: pdb.catalog.ranks[0].abbr, awards: [], certs: [], record: [] };
     return pdb.personnel[id];
@@ -491,6 +600,14 @@ module.exports = function createPortalApi(deps) {
       scopes: Array.isArray(acc.scopes) ? acc.scopes : [],
       rsiHandle: acc.rsiHandle || null, timezone: acc.timezone || null,
       lastSeen: acc.lastSeen || null, joinedAt: acc.createdAt || null,
+      /* the @handle Discord knows them by (searchable), the RSI verification
+         state, and where they stand today per their assignment orders */
+      discordUser: acc.discordUser || null,
+      rsiVerified: acc.rsiVerified || null,
+      rsiPending: acc.rsiVerify ? { handle: acc.rsiVerify.handle, code: acc.rsiVerify.code, at: acc.rsiVerify.at } : null,
+      status: rec.status === "reserve" ? "reserve" : "active",
+      billet: currentBillet(id), department: currentDepartment(id),
+      units: (() => { const u = memberUnits(id); return { ships: u.ships, squadrons: u.squadrons }; })(),
       rank: rankByAbbr(rec.rank) || { grade: "?", name: rec.rank, abbr: rec.rank },
       /* the rated form of the rank (BMMC, GM1, QMSC…) — display trumps ladder */
       rating: rec.rating || null, serviceNo: rec.serviceNo || null, orders: rec.orders || [],
@@ -533,7 +650,7 @@ module.exports = function createPortalApi(deps) {
   function redactProfile(pr, actor) {
     const owner = !actor.bot && actor.id === pr.discordId;
     const approver = owner || canApproveFor(actor, pr.discordId);
-    return Object.assign({}, pr, { record: pr.record.filter(e =>
+    return Object.assign({}, pr, { rsiPending: owner ? pr.rsiPending : null, record: pr.record.filter(e =>
       !e.state || e.state === "approved" ||
       (e.state === "pending" && approver) ||
       (e.state === "rejected" && owner)) });
@@ -618,6 +735,7 @@ module.exports = function createPortalApi(deps) {
             try {
               const m = JSON.parse(d);
               resolve({ nick: m.nick ? String(m.nick).slice(0, 80) : null,
+                user: m.user && m.user.username ? String(m.user.username).slice(0, 40) : null,
                 roles: Array.isArray(m.roles) ? m.roles.map(String).slice(0, 100) : [] });
             } catch (e) { resolve(null); }
           });
@@ -685,6 +803,7 @@ module.exports = function createPortalApi(deps) {
         if (acc.role === "revoked") throw new Error("access revoked by COMMAND");
         acc.discordName = (member && member.nick) || who.username;
         if (member && Array.isArray(member.roles)) acc.guildRoles = member.roles;
+        if (member && member.user) acc.discordUser = member.user;
         acc.lastSeen = Date.now();
         /* a first arrival whose server name unmistakably matches one manual
            roster record walks straight into it: rank, record, billets and all */
@@ -735,6 +854,7 @@ module.exports = function createPortalApi(deps) {
       send(res, 200, {
         ok: true,
         fleet: { souls: aboard.length, contractors: aboard.filter(a => a.contractor).length,
+          reserve: Object.entries(db.accounts).filter(([id2, a]) => a.role !== "revoked" && (pdb.personnel[id2] || {}).status === "reserve").length,
           aor: pdb.fleet.aor, dutyStation: pdb.fleet.dutyStation, battlegroup: pdb.fleet.battlegroup },
         ships: pdb.roster.ships.map(s => ({
           id: s.id, name: s.name, classification: s.classification || "",
@@ -755,7 +875,7 @@ module.exports = function createPortalApi(deps) {
     /* everything below needs an operator session or the bot secret */
     const actor = actorOf(req);
     const need = (ok, code, msg) => { if (!ok) { send(res, code, { ok: false, error: msg }); return true; } return false; };
-    if (!/^\/api\/(catalog|personnel|coc|availability|events|sso|activity|loa|roster|squadrons|record|export|bot|cam-viewers|audit|fleet|mast|logistics|uex|docs|me\/permissions)/.test(p)) return false;
+    if (!/^\/api\/(catalog|personnel|coc|availability|events|sso|activity|loa|roster|squadrons|record|export|bot|cam-viewers|audit|fleet|mast|logistics|uex|docs|rsi|backups|me\/permissions)/.test(p)) return false;
     if (need(actor, 401, "unauthorized")) return true;
     /* pending accounts can see nothing but their own approval state */
     if (need(actor.bot || actor.member, 403, "awaiting COMMAND approval")) return true;
@@ -839,6 +959,7 @@ module.exports = function createPortalApi(deps) {
           if (!acc) continue;
           acc.discordName = String(mm.nick || mm.username || acc.discordName).slice(0, 80);
           acc.guildRoles = Array.isArray(mm.roles) ? mm.roles.map(String).slice(0, 100) : [];
+          if (mm.handle) acc.discordUser = String(mm.handle).slice(0, 40);
           linked++;
         }
         pdb.discord.muster = { at: Date.now(), count: members.length, linked };
@@ -883,6 +1004,16 @@ module.exports = function createPortalApi(deps) {
         if (sess && sess.callsign && sess.expiresAt > now && cleared(sess.discordId)) viewers.add(sess.callsign);
       }
       send(res, 200, { ok: true, viewers: [...viewers] });
+      return true;
+    }
+
+    /* ── the weekly backup's status for IT: the droplet's timer writes it
+       beside the data; the archive itself stays in root's directory ── */
+    if (p === "/api/backups/status" && req.method === "GET") {
+      if (need(isAdmin(actor), 403, "management access required")) return true;
+      let st = null;
+      try { st = deps.load("backup-status.json", null); } catch (e) { st = null; }
+      send(res, 200, { ok: true, status: st && typeof st === "object" ? st : null, fleetDate: st && st.at ? fleetDate(st.at) : null });
       return true;
     }
 
@@ -1238,7 +1369,9 @@ module.exports = function createPortalApi(deps) {
 
     /* ── documents ── */
     if (p === "/api/docs" && req.method === "GET") {
-      send(res, 200, { ok: true, files: pdb.docs.files.map(f => Object.assign({}, f, { byName: f.by })),
+      /* ?tag=logo lists unit art; the library proper never shows logos */
+      const wantTag = String(url.searchParams.get("tag") || "");
+      send(res, 200, { ok: true, files: pdb.docs.files.filter(f => wantTag ? f.tag === wantTag : f.tag !== "logo").map(f => Object.assign({}, f, { byName: f.by })),
         canUpload: isAdmin(actor) || actorScopes(actor).some(s => s.startsWith("rate:")),
         rates: isAdmin(actor) ? pdb.catalog.certs.map(c => c.id) : rateScopeCerts(actor) });
       return true;
@@ -1246,19 +1379,32 @@ module.exports = function createPortalApi(deps) {
     if (p === "/api/docs" && req.method === "POST") {
       const b = await body(req);
       const rate = b.rate ? String(b.rate).slice(0, 40) : "";
-      if (need(canUploadDoc(actor, rate), 403, "management access or a purview for that rate required")) return true;
+      const tag = ["course", "sop", "reg", "logo"].includes(b.tag) ? b.tag : "course";
+      const ref = String(b.ref || "").trim().slice(0, 40);
       const name = String(b.name || "").trim().slice(0, 120);
       const ext = (name.split(".").pop() || "").toLowerCase();
-      if (need(name && DOC_TYPES[ext], 400, "file type not accepted (pdf, pptx, docx, xlsx, png, jpg, txt, md)")) return true;
+      if (tag === "logo") {
+        /* unit art: a ship's backdrop or a squadron's logo, filed by whoever
+           runs that unit; one per unit, the newest replaces the old */
+        const um = /^(ship|squadron):([a-z0-9-]{1,40})$/.exec(ref);
+        if (need(um, 400, "unit art needs ref ship:<id> or squadron:<id>")) return true;
+        if (need(um[1] === "ship" ? canManageShip(actor, um[2]) : canManageSquadron(actor, um[2]), 403, "no authority over that unit")) return true;
+        if (need(/^(png|jpg|jpeg|webp)$/.test(ext), 400, "unit art must be png, jpg or webp")) return true;
+      } else if (need(canUploadDoc(actor, rate), 403, "management access or a purview for that rate required")) return true;
+      if (need(name && DOC_TYPES[ext], 400, "file type not accepted (pdf, pptx, docx, xlsx, png, jpg, webp, txt, md)")) return true;
       let bytes;
       try { bytes = Buffer.from(String(b.data || "").replace(/^data:[^,]*,/, ""), "base64"); } catch (e) { bytes = null; }
       if (need(bytes && bytes.length > 0 && bytes.length <= DOC_MAX, 400, "file missing or over 25 MB")) return true;
       const id = crypto.randomBytes(8).toString("hex");
       fs.mkdirSync(DOC_DIR, { recursive: true, mode: 0o700 });
       fs.writeFileSync(path.join(DOC_DIR, id + "." + ext), bytes, { mode: 0o600 });
-      const f = { id, name, ext, size: bytes.length, tag: ["course", "sop", "reg"].includes(b.tag) ? b.tag : "course",
-        ref: String(b.ref || "").trim().slice(0, 40), title: String(b.title || "").trim().slice(0, 120),
+      const f = { id, name, ext, size: bytes.length, tag, ref, title: String(b.title || "").trim().slice(0, 120),
         rate, by: actor.name, at: Date.now() };
+      if (tag === "logo") {
+        for (const old of pdb.docs.files.filter(x => x.tag === "logo" && x.ref === ref))
+          try { fs.unlinkSync(path.join(DOC_DIR, old.id + "." + old.ext)); } catch (e) {}
+        pdb.docs.files = pdb.docs.files.filter(x => !(x.tag === "logo" && x.ref === ref));
+      }
       pdb.docs.files.push(f); persist("docs");
       audit("docs", "uploaded " + name + (f.ref ? " (" + f.ref + ")" : ""));
       send(res, 200, { ok: true, file: f });
@@ -1283,6 +1429,257 @@ module.exports = function createPortalApi(deps) {
       pdb.docs.files = pdb.docs.files.filter(x => x !== f); persist("docs");
       audit("docs", "removed " + f.name);
       send(res, 200, { ok: true });
+      return true;
+    }
+
+    /* ── the roster as a spreadsheet, and back ── */
+    if (p === "/api/personnel/export.csv" && req.method === "GET" && !actor.bot) {
+      if (need(isAdmin(actor) || actorScopes(actor).length, 403, "management access or a purview required")) return true;
+      const template = url.searchParams.get("template") === "1";
+      const lines = [CSV_COLS.join(",")];
+      if (template) lines.push(["", "EXAMPLE - DELETE THIS ROW", "", "", "SR", "", "active", "MG-212", "Reaper 1-1", "Marine",
+        "Reaper 1-1 C", "no", "", "", "Hospital Corpsman", "", "", "15AUG2956", "", "Phase 1 complete"].map(csvCell).join(","));
+      else {
+        const ids = Object.keys(db.accounts).filter(id2 => db.accounts[id2].role !== "revoked")
+          .sort((a, b2) => rankIdx((pdb.personnel[b2] || {}).rank) - rankIdx((pdb.personnel[a] || {}).rank));
+        for (const id2 of ids) lines.push(memberRow(id2).map(csvCell).join(","));
+      }
+      const text = "\uFEFF" + lines.join("\r\n") + "\r\n";
+      res.writeHead(200, { "Content-Type": "text/csv; charset=utf-8", "Cache-Control": "no-store",
+        "Content-Disposition": "attachment; filename=\"22ef-" + (template ? "roster-template" : "roster-" + fleetDate()) + ".csv\"" });
+      res.end(text);
+      return true;
+    }
+    if (p === "/api/personnel/import/csv" && req.method === "POST" && !actor.bot) {
+      const adm = isAdmin(actor);
+      if (need(adm || actorScopes(actor).length, 403, "management access or a purview required")) return true;
+      const b = await body(req, 1048576);
+      const rows = parseCsv(String(b.csv || ""));
+      if (need(rows.length >= 2, 400, "the CSV needs a header row and at least one member")) return true;
+      if (need(rows.length <= 401, 400, "at most 400 members per file")) return true;
+      const header = rows[0].map(h => String(h).trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, ""));
+      const col = (r, name) => { const i = header.indexOf(name); return i < 0 ? undefined : String(r[i] == null ? "" : r[i]).trim(); };
+      if (need(header.includes("id") || header.includes("callsign"), 400, "the header needs an id or callsign column (download the template)")) return true;
+      const dryRun = b.dryRun === true, quiet = b.quiet === true;
+      const out = { ok: true, dryRun, rows: rows.length - 1, applied: 0, created: 0, errors: [], changes: [] };
+      const byCallsign = new Map();
+      for (const [aid, acc] of Object.entries(db.accounts)) if (acc.callsign) byCallsign.set(String(acc.callsign).toUpperCase(), aid);
+      const scopes = actorScopes(actor);
+      const sqScopes = scopes.filter(s => s.startsWith("squadron:")).map(s => s.slice(9));
+      const shipScopes = scopes.filter(s => s.startsWith("ship:")).map(s => s.slice(5));
+      const rateScopes = rateScopeCerts(actor);
+      const lc = (v) => String(v || "").toLowerCase();
+      const findSquadron = (v) => pdb.squadrons.squadrons.find(s => s.id === lc(v) || lc(s.name) === lc(v) || lc(s.designation) === lc(v));
+      const findRank = (v) => pdb.catalog.ranks.find(r => lc(r.abbr) === lc(v) || lc(r.name) === lc(v));
+      const findCert = (v) => pdb.catalog.certs.find(c => c.id === lc(v) || lc(c.name) === lc(v));
+      const findShip = (v) => pdb.roster.ships.find(s => s.id === lc(v) || lc(s.name) === lc(v));
+      const work = async () => {
+        for (let i = 1; i < rows.length; i++) {
+          const r = rows[i];
+          const v = {}; for (const k of CSV_COLS) v[k] = col(r, k);
+          const idCell = v.id || "";
+          const csCell = (v.callsign || "").toUpperCase().replace(/[^ A-Z0-9_.\-'"()[\]]+/g, "").slice(0, 40);
+          if (/example/i.test(csCell) || /example/i.test(idCell)) continue;
+          const label = csCell || idCell || ("row " + (i + 1));
+          const rowErr = [], rowChg = [];
+          let id = idCell && db.accounts[idCell] ? idCell : (csCell ? byCallsign.get(csCell) : null);
+          let created = false;
+          if (!id) {
+            if (!adm) { out.errors.push(label + ": not on the rolls (management adds new members)"); continue; }
+            if (!csCell) { out.errors.push("row " + (i + 1) + ": no callsign, no id"); continue; }
+            id = "m-" + crypto.randomBytes(5).toString("hex");
+            created = true;
+            if (!dryRun) {
+              db.accounts[id] = { discordName: String(v.discord_name || csCell).slice(0, 80), callsign: csCell, role: "member", manual: true, createdAt: Date.now() };
+              byCallsign.set(csCell, id);
+              logEntry(recFor(id), actor.name, "note", "Record created from a roster spreadsheet");
+              ensureEnlisted(id, Date.now());
+            }
+            rowChg.push("added to the rolls");
+          }
+          const acc = created && dryRun ? { callsign: csCell } : db.accounts[id];
+          const rec = created && dryRun ? { rank: pdb.catalog.ranks[0].abbr, certs: [], record: [] } : recFor(id);
+          const inMySquadron = sqScopes.some(sid => (squadronOf(sid) || { members: [] }).members.some(x => x.discordId === id));
+          const mayPerson = adm || inMySquadron || (!created && canApproveFor(actor, id));
+          if (csCell && !created && csCell !== String(acc.callsign || "").toUpperCase()) {
+            if (adm) { rowChg.push("callsign → " + csCell); if (!dryRun) { acc.callsign = csCell; byCallsign.set(csCell, id); } }
+            else rowErr.push("callsign is management's to set");
+          }
+          if (v.rank) {
+            const rk = findRank(v.rank);
+            if (!rk) rowErr.push("no such rank: " + v.rank);
+            else if (!adm) rowErr.push("rank is management's to set");
+            else if (rk.abbr !== rec.rank) {
+              rowChg.push("rank → " + rk.abbr);
+              if (!dryRun) { const from = rec.rank; rec.rank = rk.abbr;
+                logEntry(rec, actor.name, "rank", (rankIdx(rk.abbr) > rankIdx(from) ? "Promoted " : "Rank set ") + from + " → " + rk.abbr + " (roster spreadsheet)"); }
+            }
+          }
+          if (v.rating && v.rating !== (rec.rating || "")) {
+            if (!adm) rowErr.push("rating is management's to set");
+            else { rowChg.push("rating → " + v.rating); if (!dryRun) rec.rating = v.rating.slice(0, 12); }
+          }
+          if (v.status) {
+            const to = /reserve|^ir$|inactive/i.test(v.status) ? "reserve" : /active/i.test(v.status) ? "active" : null;
+            if (!to) rowErr.push("status must be active or reserve");
+            else if (!mayPerson) rowErr.push("status: no authority over this member");
+            else if (to !== (rec.status === "reserve" ? "reserve" : "active")) {
+              rowChg.push("status → " + to);
+              if (!dryRun) { rec.status = to; logEntry(rec, actor.name, "status", to === "reserve" ? "Transferred to the Inactive Reserve" : "Returned to active duty from the Inactive Reserve"); }
+            }
+          }
+          /* the squadron block: muster, squad, billet, tactical call sign, lead */
+          if (["squadron", "element", "billet", "tac_callsign", "element_lead"].some(k => v[k])) {
+            const sq = v.squadron ? findSquadron(v.squadron) : pdb.squadrons.squadrons.find(s => s.members.some(x => x.discordId === id));
+            if (v.squadron && !sq) rowErr.push("no such squadron: " + v.squadron);
+            else if (!sq) rowErr.push("squad/billet given but the member is in no squadron — add a squadron column");
+            else if (!(adm || sqScopes.includes(sq.id))) rowErr.push("no authority over " + sq.name);
+            else {
+              const mm = sq.members.find(x => x.discordId === id);
+              const next = Object.assign({}, mm || { discordId: id, billet: v.billet || "Member" });
+              if (v.billet) next.billet = v.billet.slice(0, 60);
+              if (v.element) next.element = v.element.slice(0, 40);
+              if (v.tac_callsign) next.tacsign = v.tac_callsign.slice(0, 30);
+              if (v.element_lead) { if (yes(v.element_lead)) next.lead = true; else if (no(v.element_lead)) delete next.lead; }
+              const where = next.element ? " (" + next.element + ")" : "";
+              if (!mm) {
+                rowChg.push("mustered into " + sq.name + " — " + next.billet + where);
+                if (!dryRun) {
+                  const wasAt = currentBillet(id);
+                  sq.members.push(next);
+                  logEntry(rec, actor.name, "squadron", "Assigned to " + sq.name + " — " + next.billet + where + " (roster spreadsheet)");
+                  issueOrders(id, actor, { unit: sq.name, hull: "", title: next.billet, department: next.element || sq.designation || "",
+                    previous: wasAt, squadronName: sq.name, squadronLine: sq.designation ? sq.designation + " (" + sq.name + ")" : sq.name, quiet });
+                  enqueueRoles(id);
+                }
+              } else if (JSON.stringify(next) !== JSON.stringify(mm)) {
+                rowChg.push(sq.name + ": " + next.billet + (next.element ? " · " + next.element : "") + (next.tacsign ? " · " + next.tacsign : "") + (next.lead ? " · lead" : ""));
+                if (!dryRun) {
+                  for (const k of ["element", "tacsign", "lead"]) if (!(k in next)) delete mm[k];
+                  Object.assign(mm, next);
+                  logEntry(rec, actor.name, "squadron", sq.name + " billet updated: " + next.billet + where + " (roster spreadsheet)");
+                }
+              }
+            }
+          }
+          /* a ship's station, by title, aboard the named hull */
+          if (v.ship || v.station) {
+            const ship = v.ship ? findShip(v.ship) : null;
+            if (!ship) rowErr.push(v.ship ? "no such ship: " + v.ship : "a station needs its ship column");
+            else if (!(adm || shipScopes.includes(ship.id))) rowErr.push("no authority over " + ship.name);
+            else if (!v.station) rowErr.push("which station aboard " + ship.name + "?");
+            else {
+              let hit = null;
+              for (const d of ship.departments) for (const st of d.stations)
+                if (!hit && lc(st.title) === lc(v.station) && (st.assignee === id || !st.assignee)) hit = { ship, dept: d, st };
+              if (!hit) rowErr.push("no vacant station titled " + v.station + " aboard " + ship.name);
+              else if (hit.st.assignee !== id) { rowChg.push("station → " + hit.st.title + ", " + ship.name); if (!dryRun) assignStation(hit, id, actor, quiet); }
+            }
+          }
+          if (v.certs) {
+            for (const name of v.certs.split(/[;|]/).map(s => s.trim()).filter(Boolean)) {
+              const cert = findCert(name);
+              if (!cert) { rowErr.push("no such certification: " + name); continue; }
+              if (!(adm || rateScopes.includes(cert.id))) { rowErr.push("no authority to certify " + cert.name); continue; }
+              if ((rec.certs || []).some(c => c.certId === cert.id)) continue;
+              rowChg.push("certified: " + cert.name);
+              if (!dryRun) { rec.certs.push({ certId: cert.id, at: Date.now(), by: actor.name }); logEntry(rec, actor.name, "cert", "Certified: " + cert.name + " (roster spreadsheet)"); }
+            }
+          }
+          if (v.rsi_handle && v.rsi_handle !== (acc.rsiHandle || "")) {
+            if (!mayPerson) rowErr.push("rsi_handle: no authority over this member");
+            else if (acc.rsiVerified) rowErr.push("rsi_handle is verified — it changes only by re-verification");
+            else { rowChg.push("RSI handle → " + v.rsi_handle); if (!dryRun) acc.rsiHandle = v.rsi_handle.slice(0, 60); }
+          }
+          if (v.timezone && v.timezone !== (acc.timezone || "")) {
+            if (!mayPerson) rowErr.push("timezone: no authority over this member");
+            else { rowChg.push("timezone → " + v.timezone); if (!dryRun) acc.timezone = v.timezone.slice(0, 60); }
+          }
+          if (v.enlisted) {
+            const when = parseWhen(v.enlisted);
+            if (!when) rowErr.push("enlisted date unreadable: " + v.enlisted + " (DDMONYYYY, YYYY-MM-DD or MM/DD/YYYY)");
+            else if (!adm) rowErr.push("enlisted date is management's to set");
+            else if (Math.abs((acc.createdAt || 0) - when) > 864e5) {
+              rowChg.push("enlisted → " + fleetDate(when));
+              if (!dryRun) {
+                acc.createdAt = when;
+                const en = rec.record.find(e => e.kind === "enlist");
+                if (en) { en.at = when; en.text = "Enlisted in the 22nd Expeditionary Fleet — " + fleetDate(when); rec.record.sort((x, y) => x.at - y.at); }
+                else ensureEnlisted(id, when);
+              }
+            }
+          }
+          if (v.note) {
+            if (!mayPerson) rowErr.push("note: no authority over this member");
+            else { rowChg.push("note logged"); if (!dryRun) logEntry(rec, actor.name, "note", v.note.slice(0, 400)); }
+          }
+          if (rowChg.length) { out.applied++; if (created) out.created++; out.changes.push(label + ": " + rowChg.join("; ")); }
+          for (const e of rowErr) out.errors.push(label + ": " + e);
+        }
+        if (!dryRun) { deps.persist(); persist("personnel"); persist("squadrons"); persist("roster"); }
+      };
+      if (dryRun) await work(); else await serializeMutation(work);
+      if (!dryRun && out.applied) audit("import", "roster spreadsheet: " + out.applied + " updated, " + out.created + " added" +
+        (out.errors.length ? ", " + out.errors.length + " refused" : ""));
+      send(res, 200, out);
+      return true;
+    }
+
+    /* ── RSI verification ── */
+    if (p === "/api/rsi/start" && req.method === "POST" && !actor.bot) {
+      const b = await body(req);
+      const handle = String(b.handle || "").trim();
+      if (need(/^[A-Za-z0-9_-]{3,30}$/.test(handle), 400, "an RSI handle is 3-30 letters, digits, - or _")) return true;
+      const code = "22EF-" + Array.from(crypto.randomBytes(6)).map(x => RSI_ALPHABET[x % RSI_ALPHABET.length]).join("");
+      actor.acc.rsiVerify = { handle, code, at: Date.now() };
+      deps.persist();
+      send(res, 200, { ok: true, handle, code, profileUrl: "https://robertsspaceindustries.com/citizens/" + handle,
+        editUrl: "https://robertsspaceindustries.com/account/profile" });
+      return true;
+    }
+    if (p === "/api/rsi/cancel" && req.method === "POST" && !actor.bot) {
+      delete actor.acc.rsiVerify; deps.persist();
+      send(res, 200, { ok: true });
+      return true;
+    }
+    if (p === "/api/rsi/check" && req.method === "POST" && !actor.bot) {
+      const pend = actor.acc.rsiVerify;
+      if (need(pend && pend.code, 400, "start verification first")) return true;
+      const wait = RSI_COOLDOWN - (Date.now() - (rsiLast.get(actor.id) || 0));
+      if (need(wait <= 0, 429, "give RSI a moment — try again in " + Math.ceil(wait / 1000) + "s")) return true;
+      rsiLast.set(actor.id, Date.now());
+      let page;
+      try { page = await rsiPage(pend.handle); }
+      catch (e) { send(res, 502, { ok: false, error: "RSI is not answering right now — try again shortly" }); return true; }
+      if (page.status === 404) { send(res, 200, { ok: true, verified: false, reason: "no citizen answers to " + pend.handle + " — check the handle" }); return true; }
+      if (need(page.status === 200, 502, "RSI answered " + page.status + " — try again shortly")) return true;
+      const text = htmlText(page.html);
+      if (!text.includes(pend.code)) {
+        send(res, 200, { ok: true, verified: false, reason: "the code is not on that profile yet — save the bio, give RSI a minute, try again" });
+        return true;
+      }
+      const citizen = (/UEE Citizen Record\s+(#\d+)/i.exec(text) || [])[1] || null;
+      const shown = (/Handle name\s+([A-Za-z0-9_-]+)/i.exec(text) || [])[1] || pend.handle;
+      actor.acc.rsiHandle = shown; actor.acc.rsiVerified = { at: Date.now(), citizen };
+      delete actor.acc.rsiVerify;
+      logEntry(recFor(actor.id), "BUREAU OF NAVAL PERSONNEL", "note", "RSI account verified — " + shown + (citizen ? " (Citizen Record " + citizen + ")" : ""));
+      audit("rsi", "verified " + shown + (citizen ? " " + citizen : ""));
+      deps.persist(); persist("personnel");
+      send(res, 200, { ok: true, verified: true, handle: shown, citizen });
+      return true;
+    }
+    if ((m = /^\/api\/personnel\/([A-Za-z0-9-]{1,40})\/rsi$/.exec(p)) && req.method === "POST") {
+      if (need(isAdmin(actor), 403, "management access required")) return true;
+      const target = db.accounts[m[1]];
+      if (need(target, 404, "no such member")) return true;
+      const b = await body(req);
+      if (b.revoke === true) { delete target.rsiVerified; audit("rsi", "verification revoked: " + (target.callsign || target.discordName)); }
+      if (b.handle !== undefined) {
+        const h = String(b.handle || "").trim().slice(0, 60);
+        if (h !== (target.rsiHandle || "")) { target.rsiHandle = h || null; delete target.rsiVerified; audit("rsi", "handle set by management: " + (h || "—")); }
+      }
+      deps.persist();
+      send(res, 200, { ok: true, profile: profile(m[1]) });
       return true;
     }
 
@@ -1330,7 +1727,10 @@ module.exports = function createPortalApi(deps) {
       const b = await body(req);
       const scopedCert = b.action && b.action.type === "cert" &&
         rateScopeCerts(actor).includes(String(b.action.certId || ""));
-      if (need(isAdmin(actor) || scopedCert, 403, "management access required")) return true;
+      /* a head of department moves their own people to and from the
+         Inactive Reserve; the per-member check below keeps it to their people */
+      const scopedStatus = b.action && b.action.type === "status" && actorScopes(actor).length > 0;
+      if (need(isAdmin(actor) || scopedCert || scopedStatus, 403, "management access required")) return true;
       const ids = Array.isArray(b.ids) ? b.ids.map(String).slice(0, 200) : [];
       const act = b.action && typeof b.action === "object" ? b.action : {};
       if (need(ids.length, 400, "ids[] is empty")) return true;
@@ -1359,7 +1759,7 @@ module.exports = function createPortalApi(deps) {
               }
             } else if (act.type === "rank") {
               const from = rec.rank;
-              let idx = act.rank != null ? rankIdx(String(act.rank)) : rankIdx(rec.rank) + Number(act.step || 0);
+              let idx = act.rank != null ? rankIdx(String(act.rank)) : rankStep(rec.rank, Number(act.step || 0));
               if (idx < 0 || idx >= pdb.catalog.ranks.length) throw new Error("no such rank");
               rec.rank = pdb.catalog.ranks[idx].abbr;
               if (rec.rank !== from) {
@@ -1375,6 +1775,15 @@ module.exports = function createPortalApi(deps) {
             } else if (act.type === "note") {
               if (!String(act.text || "").trim()) throw new Error("empty note");
               logEntry(rec, by, "note", act.text);
+            } else if (act.type === "status") {
+              const to = act.status === "reserve" ? "reserve" : "active";
+              if (!isAdmin(actor) && !canApproveFor(actor, id)) throw new Error("no authority over this member");
+              const from = rec.status === "reserve" ? "reserve" : "active";
+              if (to !== from) {
+                rec.status = to;
+                logEntry(rec, by, "status", to === "reserve" ? "Transferred to the Inactive Reserve"
+                  : "Returned to active duty from the Inactive Reserve");
+              }
             } else throw new Error("unknown action type");
             out[id] = { ok: true };
           } catch (e) { out[id] = { ok: false, error: e.message }; }
@@ -1583,18 +1992,7 @@ module.exports = function createPortalApi(deps) {
       if (need(canManageShip(actor, hit.ship.id), 403, "no roster authority for " + hit.ship.name)) return true;
       const member = b.memberId ? String(b.memberId) : null;
       if (need(!member || db.accounts[member], 404, "no such member")) return true;
-      const previous = hit.st.assignee;
-      const wasAt = member ? currentBillet(member) : null;
-      hit.st.assignee = member;
-      if (previous && previous !== member) logEntry(recFor(previous), actor.name, "station",
-        "Relieved of station: " + hit.st.title + ", " + hit.ship.name);
-      if (member && previous !== member) {
-        logEntry(recFor(member), actor.name, "station",
-          "Assigned to station: " + hit.st.title + ", " + hit.ship.name);
-        issueOrders(member, actor, { unit: hit.ship.name, hull: hit.ship.hullId || "",
-          title: hit.st.title, department: hit.dept ? hit.dept.name : "", previous: wasAt, reportTo: hit.ship.name });
-        enqueueRoles(member);
-      }
+      assignStation(hit, member, actor);
       audit("billet", (member ? displayName(member) + " → " : "vacated: ") + hit.st.title + ", " + hit.ship.name);
       persist("roster"); persist("personnel");
       send(res, 200, { ok: true });
@@ -1675,7 +2073,10 @@ module.exports = function createPortalApi(deps) {
         designation: String(sq.designation || "").slice(0, 100),
         role: String(sq.role || "").slice(0, 200),
         members: (Array.isArray(sq.members) ? sq.members.slice(0, 200) : [])
-          .map(mm => ({ discordId: String(mm.discordId || ""), billet: String(mm.billet || "").slice(0, 60) }))
+          .map(mm => Object.assign({ discordId: String(mm.discordId || ""), billet: String(mm.billet || "").slice(0, 60) },
+            mm.element ? { element: String(mm.element).slice(0, 40) } : {},
+            mm.tacsign ? { tacsign: String(mm.tacsign).slice(0, 30) } : {},
+            mm.lead === true ? { lead: true } : {}))
           .filter(mm => db.accounts[mm.discordId])
       }));
       for (const sq of clean) {
@@ -1706,11 +2107,19 @@ module.exports = function createPortalApi(deps) {
       } else {
         const billet = String(b.billet).slice(0, 60);
         const wasAt = currentBillet(member);
-        if (existing) existing.billet = billet;
-        else sq.members.push({ discordId: member, billet });
+        const mm = existing || { discordId: member, billet };
+        mm.billet = billet;
+        /* Marine-style detail: the element (squad) they stand in, their
+           tactical call sign, and whether they lead that element */
+        if (b.element !== undefined) { const el = String(b.element || "").trim().slice(0, 40); if (el) mm.element = el; else delete mm.element; }
+        if (b.tacsign !== undefined) { const ts = String(b.tacsign || "").trim().slice(0, 30); if (ts) mm.tacsign = ts; else delete mm.tacsign; }
+        if (b.lead !== undefined) { if (b.lead === true || b.lead === "true") mm.lead = true; else delete mm.lead; }
+        if (!existing) sq.members.push(mm);
+        const where = mm.element ? " (" + mm.element + ")" : "";
         logEntry(recFor(member), actor.name, "squadron",
-          "Assigned to " + sq.name + " — " + billet);
-        issueOrders(member, actor, { unit: sq.name, hull: "", title: billet, department: sq.designation || "",
+          (existing ? sq.name + " billet updated: " : "Assigned to " + sq.name + " — ") + billet + where);
+        if (!existing || existing.billet !== billet) issueOrders(member, actor, { unit: sq.name, hull: "", title: billet,
+          department: mm.element || sq.designation || "",
           previous: wasAt, squadronName: sq.name,
           squadronLine: sq.designation ? sq.designation + " (" + sq.name + ")" : sq.name });
         audit("assignment", displayName(member) + " -> " + sq.name + " (" + billet + ")");
@@ -1950,7 +2359,8 @@ module.exports = function createPortalApi(deps) {
         discordName: acc.discordName, callsign: acc.callsign || null, role: acc.role,
         manual: acc.manual === true, itAdmin: acc.itAdmin === true,
         contractor: acc.contractor === true,
-        rsiHandle: acc.rsiHandle || null, timezone: acc.timezone || null,
+        rsiHandle: acc.rsiHandle || null, rsiVerified: acc.rsiVerified || null, timezone: acc.timezone || null,
+        discordUser: acc.discordUser || null,
         scopes: Array.isArray(acc.scopes) ? acc.scopes : [],
         createdAt: acc.createdAt || null, lastSeen: acc.lastSeen || null };
       send(res, 200, { ok: true, exportedAt: Date.now(), accounts,
