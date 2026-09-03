@@ -27,6 +27,13 @@ const dialGovernor = process.env.FLEETCOMM_AUTOTEST
    moment the game has focus — the one condition that matters. */
 app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 app.commandLine.appendSwitch("disable-renderer-backgrounding");
+/* Chromium's native occlusion tracker on Windows decides a window behind the
+   game is "hidden": requestAnimationFrame stops, video decode is deprioritised,
+   the document goes visibilityState=hidden. The two switches above stop the
+   THROTTLING that follows, not the verdict itself — and the field saw cam
+   feeds lag and the overlay go stale until the app was tabbed back. Disable
+   the calculation: every FleetComm window is treated as visible, always. */
+app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
 
 /* The autotest rig gets a throwaway profile: it used to run against the
    operator's real userData/localStorage, leaving autotest state behind (a
@@ -75,7 +82,23 @@ function loadOvCfg() {
 }
 function saveOvCfg() { try { fs.writeFileSync(ovCfgPath(), JSON.stringify(ovCfg)); } catch (e) {} }
 function lockLocalWindow(window) {
-  window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  /* The ONLY window a page may open is a cam pop-out (frame name fcpop-*):
+     frameless, always on top of a borderless game, its own OS window, as many
+     as the operator wants — a same-origin child plays the opener's MediaStream
+     directly, so no second WebRTC leg. Everything else stays denied. */
+  window.webContents.setWindowOpenHandler(({ frameName }) => {
+    if (typeof frameName === "string" && frameName.startsWith("fcpop-")) {
+      return { action: "allow", overrideBrowserWindowOptions: {
+        frame: false, alwaysOnTop: true, resizable: true, minWidth: 240, minHeight: 150,
+        backgroundColor: "#000000", title: "FleetComm cam", autoHideMenuBar: true, skipTaskbar: false,
+        webPreferences: { contextIsolation: true, sandbox: false, nodeIntegration: false, backgroundThrottling: false }
+      } };
+    }
+    return { action: "deny" };
+  });
+  window.webContents.on("did-create-window", (child) => {
+    try { child.setAlwaysOnTop(true, "screen-saver"); child.setMenuBarVisibility(false); } catch (e) {}
+  });
   window.webContents.on("will-navigate", (event, url) => {
     if (url !== window.webContents.getURL()) event.preventDefault();
   });

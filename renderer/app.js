@@ -328,6 +328,7 @@ function finishCapture(src, code, label, mods) {
     if (t) { t.bind = bind; savePrefs(); } else toast("That net left the board — key not bound.");
   } else { masterBinds[capturing.which] = bind; store.set("masterBinds6", masterBinds); }
   capturing = null; renderNets(); renderMasterBinds();
+  tut.armed = false; tutEvent("bound");
 }
 /* Exit capture without binding: keep=false writes null ("unbound") through the
    same two storage paths finishCapture uses; keep=true just walks away.
@@ -737,9 +738,34 @@ function playFrame(n, session, opusBuf) {
      queue at a frozen cursor and all fire at once when it wakes */
   if (ctx.state !== "running") { try { ctx.resume(); } catch (e) {} }
   d.cursor = Math.max(ctx.currentTime + 0.06, d.cursor);
-  if (d.cursor > ctx.currentTime + 0.75) d.cursor = ctx.currentTime + 0.06;
+  /* BACKLOG POLICY — never move the cursor BACKWARDS. The old reset put new
+     frames underneath audio already scheduled, and the net played over itself
+     — the field's "rrraaadio check overlaying itself" on a busy first launch.
+     Past 750 ms of backlog, drop THIS frame: what is queued plays out clean,
+     the delay stays bounded, a syllable is lost instead of the transmission. */
+  if (d.cursor > ctx.currentTime + 0.75) { d.dropped = (d.dropped || 0) + 1; audioDrops++; return; }
   src.start(d.cursor); d.cursor += cnt / 48000;
 }
+let audioDrops = 0;
+/* ── audio-clock watchdog ──
+   The context clock should track wall time. When the render thread is
+   starved (a freshly-unpacked exe being scanned, a disk storm, a game
+   loading) it falls behind and every scheduled frame lands late — the first-
+   launch garble. One COMM LOG line per episode WITH NUMBERS, so the next field
+   report carries evidence instead of adjectives. */
+const clockWatch = { t: performance.now(), c: ctx.currentTime, said: 0, drops: 0 };
+setInterval(() => {
+  const nowT = performance.now(), nowC = ctx.currentTime;
+  const wall = nowT - clockWatch.t, audio = (nowC - clockWatch.c) * 1000;
+  clockWatch.t = nowT; clockWatch.c = nowC;
+  const newDrops = audioDrops - clockWatch.drops; clockWatch.drops = audioDrops;
+  const starved = ctx.state === "running" && wall > 900 && audio < wall * 0.7;
+  if ((starved || newDrops > 10) && Date.now() - clockWatch.said > 30000) {
+    clockWatch.said = Date.now();
+    addLog("sys", "", "audio engine " + (starved ? "starved \u2014 clock advanced " + Math.round(audio) + " ms in " + Math.round(wall) + " ms" : "backlog \u2014 dropped " + newDrops + " frames") +
+      " (machine busy; voice smears until it clears \u2014 a fresh install being scanned is the usual cause)");
+  }
+}, 1000);
 setInterval(() => {
   const cutoff = Date.now() - 60000;
   for (const [key, value] of decoders) {
@@ -1280,7 +1306,7 @@ async function tuneNet(i, silent) {
     return false;
   }
   n.denied = null;
-  n.tuned = true; n.idx = r.idx;
+  n.tuned = true; n.idx = r.idx; tutEvent("tuned");
   makeChain(n);
   if (n.bcast) ipcRenderer.invoke("arm-broadcast", n.idx);
   if (!n.mon) ipcRenderer.send("net-mute", { idx: n.idx, muted: true });
@@ -1552,7 +1578,7 @@ function renderSoundboard() {
     ? sbSounds.map(s => { const key = s.id || s.name;
         return '<button class="sbBtn' + (sbPlaying === key ? " playing" : "") + '" data-snd="' + escAttr(key) + '">' +
         esc(s.name.replace(/\.[^.]+$/, "")) + '</button>'; }).join("")
-    : '<span class="hint">no clips in the library — add them under SYS ▸ 1MC SOUND LIBRARY</span>';
+    : '<span class="hint">no clips in the library — add them under SETTINGS ▸ 1MC SOUND LIBRARY</span>';
 }
 $("sbAdd").addEventListener("click", () => showPage("settings"));
 $("sbList").addEventListener("click", (e) => {
@@ -1650,8 +1676,14 @@ async function playClipOnNet(s, net) {
 }
 
 /* ══ IPC: voice / roster / chat ══ */
-ipcRenderer.on("rx", (ev, r) => {
+function onRx(r) {
   const conn = nets.findIndex(x => x.idx === r.idx); if (conn < 0) return;
+  /* My own voice arriving on ANOTHER of my connections: murmur never echoes a
+     transmission to the session that sent it, but LSN ALL's listener is a
+     second session in the same channel and hears me like anyone else — the
+     "echo when I'm LSN ALL and transmit on a net" report. Wire names are
+     CALLSIGN|freq; the stack strips the freq before it reaches here. */
+  if (callsign && String(r.name || "").split("|")[0].trim().toUpperCase() === callsign.toUpperCase()) return;
   /* A ship group carries several subnets down one connection. The AUDIO stays on
      the group's own chain — LSN ALL is one ship, one volume — but the display
      follows the net the speaker is actually standing in, so the log and the
@@ -1678,7 +1710,8 @@ ipcRenderer.on("rx", (ev, r) => {
     netDyn(i); sendOv();
     setTimeout(() => { if ((n.speaking.get(r.session) || 0) <= Date.now()) { n.speaking.delete(r.session); squelchTail(n); netDyn(i); sendOv(); } }, 420);
   }
-});
+}
+ipcRenderer.on("rx", (ev, r) => onRx(r));
 setInterval(() => { /* decay sweep for stuck speakers */
   const now = Date.now();
   nets.forEach((n, i) => {
@@ -2449,36 +2482,72 @@ if (discordMode) $("signFoot").textContent = "Access is gated: Discord confirms 
 addLog("sys", "", "FleetComm console initialized — awaiting sign-in");
 
 /* ══ ACCOUNTS page (command) ══ */
+/* ── search across ACCOUNTS & ACCESS ──
+   One box, both lists. Every whitespace-separated term must match somewhere
+   in the row (case-insensitive): callsign, discord name, standing, discord
+   id for operators; name, frequency, access level for nets. The data is
+   fetched once per refresh and filtered on every keystroke — the lists are
+   small, the relay round-trip is not. Matches are marked in gold. */
+let acctData = null;                              /* { accounts, access } from the last refresh */
+const acctTerms = () => String($("acctSearch").value || "").toLowerCase().split(/\s+/).filter(Boolean);
+const acctHits = (terms, hay) => terms.every(t => hay.includes(t));
+function markHits(text, terms) {
+  let s = esc(text);
+  for (const t of terms) {
+    if (!t) continue;
+    const re = new RegExp(t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "ig");
+    s = s.replace(re, (m) => "<mark class=\"hit\">" + m + "</mark>");
+  }
+  return s;
+}
 async function refreshAccts() {
   const [ra, rn] = await Promise.all([
     ipcRenderer.invoke("acct", { method: "GET", path: "/api/accounts" }),
     ipcRenderer.invoke("acct", { method: "GET", path: "/api/nets/access" })
   ]);
-  if (!ra.ok) { $("acctList").innerHTML = '<span class="hint">' + esc(ra.error || "unavailable") + "</span>"; return; }
-  const pend = ra.accounts.filter(x => x.role === "pending").length;
+  if (!ra.ok) { $("acctList").innerHTML = '<span class="hint">' + esc(ra.error || "unavailable") + "</span>"; $("acctCount").textContent = ""; return; }
+  acctData = { accounts: ra.accounts, access: (rn.ok && rn.access) || {} };
+  renderAccts();
+}
+function renderAccts(data) {
+  const d = data || acctData; if (!d) return;
+  const terms = acctTerms();
+  const pend = d.accounts.filter(x => x.role === "pending").length;
   $("acctPending").textContent = pend ? pend + " AWAITING APPROVAL" : "";
-  const order = { pending: 0, command: 1, member: 2, revoked: 3 };
-  $("acctList").innerHTML = ra.accounts.sort((x, y) => (order[x.role] - order[y.role]) || x.discordName.localeCompare(y.discordName)).map(x => {
+  const order = { pending: 0, command: 1, element: 2, member: 3, revoked: 4 };
+  const shownAccts = d.accounts.filter(x => acctHits(terms, [x.callsign, x.discordName, x.role, x.discordId].map(v => String(v || "")).join(" ").toLowerCase()));
+  const html = shownAccts.sort((x, y) => ((order[x.role] ?? 9) - (order[y.role] ?? 9)) || String(x.discordName).localeCompare(String(y.discordName))).map(x => {
     const btns =
       (x.role === "pending" ? '<button class="ann lit-g" data-role="member">APPROVE</button>' : "") +
-      (x.role === "member" ? '<button class="ann lit-c" data-role="command">PROMOTE</button>' : "") +
+      (x.role === "member" ? '<button class="ann lit-g" data-role="element" title="May watch helmet cams; no COMMAND powers">ELEMENT LEAD</button>' : "") +
+      (x.role === "element" ? '<button class="ann" data-role="member">TO MEMBER</button>' : "") +
+      (x.role === "member" || x.role === "element" ? '<button class="ann lit-c" data-role="command">PROMOTE</button>' : "") +
       (x.role === "command" ? '<button class="ann" data-role="member">DEMOTE</button>' : "") +
       (x.role !== "revoked" ? '<button class="ann" style="border-color:var(--red);color:var(--red)" data-role="revoked">REVOKE</button>'
                             : '<button class="ann lit-g" data-role="member">REINSTATE</button>');
-    return '<div class="acctrow" data-id="' + escAttr(x.discordId) + '"><div class="nm"><b>' + esc(x.callsign || "(no callsign yet)") + '</b>' +
-      '<span>discord: ' + esc(x.discordName) + " · " + (x.lastSeen ? "seen " + new Date(x.lastSeen).toLocaleString() : "never seen") + "</span></div>" +
-      '<span class="ann rolelbl ' + (x.role === "command" ? "lit-a" : x.role === "member" ? "lit-g" : "") + '">' + x.role.toUpperCase() + "</span>" + btns + "</div>";
+    return '<div class="acctrow" data-id="' + escAttr(x.discordId) + '"><div class="nm"><b>' + markHits(x.callsign || "(no callsign yet)", terms) + '</b>' +
+      '<span>discord: ' + markHits(x.discordName, terms) + " · " + (x.lastSeen ? "seen " + new Date(x.lastSeen).toLocaleString() : "never seen") + "</span></div>" +
+      '<span class="ann rolelbl ' + (x.role === "command" ? "lit-a" : x.role === "member" || x.role === "element" ? "lit-g" : "") + '">' + (x.role === "element" ? "ELEMENT LEADER" : esc(String(x.role).toUpperCase())) + "</span>" + btns + "</div>";
   }).join("");
+  $("acctList").innerHTML = html || '<span class="hint">No operator matches “' + esc($("acctSearch").value) + '”.</span>';
   const levels = ["open", "member", "command"];
-  const rows = [];
-  nets.forEach(n => rows.push({ name: n.cfg.name, freq: n.cfg.freq }));
-  $("netAccess").innerHTML = rows.map(r =>
-    '<div class="narow" data-net="' + escAttr(r.name) + '"><b>' + esc(r.name) + '</b><span class="fq2 num">' + esc(r.freq) + "</span>" +
+  const levelLabel = (l) => l === "open" ? "OPEN — anyone approved" : l === "member" ? "MEMBERS+" : "COMMAND ONLY";
+  const rows = nets.map(n => ({ name: n.cfg.name, freq: n.cfg.freq, level: d.access[n.cfg.name] || "open" }));
+  const shownNets = rows.filter(r => acctHits(terms, (r.name + " " + r.freq + " " + r.level + " " + levelLabel(r.level)).toLowerCase()));
+  $("netAccess").innerHTML = shownNets.map(r =>
+    '<div class="narow" data-net="' + escAttr(r.name) + '"><b>' + markHits(r.name, terms) + '</b><span class="fq2 num">' + markHits(r.freq, terms) + "</span>" +
     '<select class="orgsel" data-lvl>' + levels.map(l =>
-      '<option value="' + l + '"' + (((rn.ok && rn.access[r.name]) || "open") === l ? " selected" : "") + ">" +
-      (l === "open" ? "OPEN — anyone approved" : l === "member" ? "MEMBERS+" : "COMMAND ONLY") + "</option>").join("") + "</select></div>"
-  ).join("");
+      '<option value="' + l + '"' + (r.level === l ? " selected" : "") + ">" + levelLabel(l) + "</option>").join("") + "</select></div>"
+  ).join("") || '<span class="hint">No net matches.</span>';
+  $("acctCount").textContent = terms.length
+    ? shownAccts.length + " OF " + d.accounts.length + " OPERATORS · " + shownNets.length + " OF " + rows.length + " NETS"
+    : d.accounts.length + " OPERATORS · " + rows.length + " NETS";
 }
+$("acctSearch").addEventListener("input", () => renderAccts());
+$("acctSearch").addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { e.preventDefault(); $("acctSearch").value = ""; renderAccts(); }
+  e.stopPropagation();                            /* typing here must never reach the bind engine */
+});
 $("acctList").addEventListener("click", async (e) => {
   const b = e.target.closest("[data-role]"); if (!b) return;
   const id = b.closest(".acctrow").dataset.id;
@@ -2514,6 +2583,7 @@ const cam = {
   watching: new Map(),        /* actor → {pc, tile, cs, state} */
   live: new Map(),            /* actor → callsign of announced publishers  */
   meta: new Map(),            /* actor → {since, who} from their announce   */
+  pops: new Map(),            /* actor → pop-out Window (own OS window)     */
   since: 0,                   /* when MY cam went live (rides the announce) */
   peers: [], limit: 5000, seq: 0,
   reasm: bridge.camSignal.newReassembler({ ttlMs: 30000 }),
@@ -2584,10 +2654,18 @@ ipcRenderer.on("cam-signal", async (ev, s) => {
        relay verified), never from the payload — any operator can write any
        cs into a signal. A fresh announce from the same callsign under a new
        session id (control relink) retires the stale row and its tile. */
+    let rewatch = false;
     for (const [a, cs0] of [...cam.live]) {
-      if (cs0 === from && a !== s.actor) { cam.live.delete(a); camDropTile(a); }
+      if (cs0 === from && a !== s.actor) {
+        cam.live.delete(a);
+        /* the streamer's control link relinked (new session id). A viewer used
+           to lose the tile and have to click again — "cams auto hide". Follow
+           the feed to its new session instead. */
+        if (cam.watching.has(a)) { rewatch = true; camUnwatch(a); } else camDropTile(a);
+      }
     }
     cam.live.set(s.actor, from);
+    if (rewatch) { addLog("sys", "", from + " relinked \u2014 re-watching cam"); camWatch(s.actor); }
     renderCamList(); return;
   }
   if (m.t === "off") { cam.live.delete(s.actor); camDropTile(s.actor, "OFF AIR"); renderCamList(); return; }
@@ -2784,7 +2862,16 @@ async function camAcceptOffer(actor, from, sdp) {
       entry.tile.classList.add("lost");
       entry.tile.querySelector(".st8").textContent = "LINK " + (pc.connectionState === "failed" ? "FAILED" : "LOST");
       if (pc.connectionState === "failed") {
-        setTimeout(() => { if (current() && pc.connectionState === "failed") camUnwatch(actor); }, 8000);
+        setTimeout(() => {
+          if (!(current() && pc.connectionState === "failed")) return;
+          const tries = entry.retries || 0;
+          camUnwatch(actor);
+          /* a dead link to a streamer who is still on the air gets two more
+             tries before the tile stays gone */
+          if (tries < 2 && cam.live.has(actor)) setTimeout(() => {
+            if (cam.live.has(actor) && !cam.watching.has(actor)) { camWatch(actor); const e2 = cam.watching.get(actor); if (e2) e2.retries = tries + 1; }
+          }, 1500);
+        }, 8000);
       }
     }
   });
@@ -2821,6 +2908,7 @@ function camDropTile(actor, why) {
   clearTimeout(entry.callTimer);
   if (entry.pc) { try { entry.pc.close(); } catch (e) {} }
   if (entry.tile) entry.tile.remove();
+  camPopClose(actor);
   if (why) toast(entry.cs + " — cam " + why.toLowerCase() + ".");
   camViewState(); renderCamList();
 }
@@ -2847,7 +2935,7 @@ function camMountTile(actor, label, stream, isSelf, metaIn) {
     '<div class="tl"><span class="livebadge">LIVE</span><span class="tmr" data-timer>' + (stream ? camElapsed(+tile.dataset.since) : "--:--:--") + '</span>' +
     '<b>' + esc(label) + '</b>' + (meta.who ? '<span class="who">' + esc(meta.who) + '</span>' : "") +
     '<span class="st8">' + (stream ? "" : "CALLING…") + '</span>' +
-    '<button data-pip title="Float this feed over the game">PIP</button>' +
+    '<button data-pip title="Float this feed over the game in its own window \u2014 burn-in and all; open as many as you like">POP OUT</button>' +
     (isSelf ? "" : '<button data-close title="Stop watching">✕</button>') + "</div>" +
     '<div class="bl"><span data-fclock>' + esc(fleetTime()) + '</span><span class="vox">● VOX</span></div>';
   const v = tile.querySelector("video");
@@ -2857,10 +2945,7 @@ function camMountTile(actor, label, stream, isSelf, metaIn) {
     grid.classList.toggle("solo", !solo);
     grid.querySelectorAll(".tile").forEach(t => t.classList.toggle("focus", !solo && t === tile));
   });
-  tile.querySelector("[data-pip]").addEventListener("click", (e) => {
-    e.stopPropagation();
-    v.requestPictureInPicture().catch(err => toast("PIP refused: " + err.message));
-  });
+  tile.querySelector("[data-pip]").addEventListener("click", (e) => { e.stopPropagation(); camPopOut(actor, tile); });
   const x = tile.querySelector("[data-close]");
   if (x) x.addEventListener("click", (e) => { e.stopPropagation(); camUnwatch(actor); });
   grid.appendChild(tile);
@@ -2887,15 +2972,57 @@ function camTalkSync() {
   for (const n of nets) for (const [sess, until] of n.speaking) if (until > now) talking.add(camCanon(n.roster.get(sess) || ""));
   const meTx = txSet.size > 0;
   tiles.forEach(t => t.classList.toggle("talking", t.classList.contains("self") ? meTx : talking.has(camCanon(t.dataset.cs))));
+  for (const actor of [...cam.pops.keys()]) camPopSync(actor);
 }
 function camTick() {
   const tiles = $("camGrid").querySelectorAll(".tile[data-since]");
-  if (!tiles.length) return;
   const stamp = fleetTime();
   tiles.forEach(t => {
     const tm = t.querySelector("[data-timer]"); if (tm) tm.textContent = camElapsed(+t.dataset.since);
     const fc = t.querySelector("[data-fclock]"); if (fc) fc.textContent = stamp;
   });
+  for (const actor of [...cam.pops.keys()]) camPopSync(actor);
+}
+/* ── pop-out feeds ──
+   Native picture-in-picture shows the bare video (no burn-in, no scanlines)
+   and Chromium allows exactly one. A pop-out is our own window: the same
+   MediaStream (a same-origin child window plays the opener's stream
+   directly), the full tile chrome, always on top of a borderless game, one
+   per feed, as many as wanted. main.js allows only fcpop-* frames. */
+function camPopOut(actor, tile) {
+  const existing = cam.pops.get(actor);
+  if (existing && !existing.closed) { try { existing.focus(); } catch (e) {} return; }
+  const v = tile.querySelector("video");
+  if (!v || !v.srcObject) { toast("No feed yet \u2014 wait for the picture, then pop it out."); return; }
+  const w = window.open("cam-pop.html", "fcpop-" + String(actor).replace(/[^A-Za-z0-9_-]/g, "_"), "width=640,height=390");
+  if (!w) { toast("Pop-out was blocked."); return; }
+  cam.pops.set(actor, w);
+  let tries = 0;
+  const arm = () => {
+    if (w.closed) { cam.pops.delete(actor); return; }
+    let pv = null; try { pv = w.document && w.document.getElementById("v"); } catch (e) { pv = null; }
+    if (!pv || !w.camPop) { if (tries++ < 60) setTimeout(arm, 100); return; }
+    try { pv.srcObject = v.srcObject; pv.play().catch(() => {}); } catch (e) {}
+    camPopSync(actor);
+  };
+  arm();
+}
+function camPopSync(actor) {
+  const w = cam.pops.get(actor); if (!w) return;
+  if (w.closed) { cam.pops.delete(actor); return; }
+  const tile = $("camGrid").querySelector('.tile[data-actor="' + String(actor).replace(/["\\]/g, "") + '"]');
+  if (!tile || !w.camPop) return;
+  const q = (sel) => { const el = tile.querySelector(sel); return el ? el.textContent : ""; };
+  try {
+    w.camPop.set({ cs: tile.dataset.cs, who: q(".who"), timer: q("[data-timer]"), clock: fleetTime(),
+      talking: tile.classList.contains("talking"), self: tile.classList.contains("self"),
+      scan: document.documentElement.hasAttribute("data-camscan") });
+  } catch (e) {}
+}
+function camPopClose(actor) {
+  const w = cam.pops.get(actor); if (!w) return;
+  cam.pops.delete(actor);
+  try { if (!w.closed) w.close(); } catch (e) {}
 }
 setInterval(camTick, 1000);
 function camViewState() {
@@ -2969,27 +3096,21 @@ function camTeardownAll() {
    for a first-time operator (tutDone unset), never in the rig; SYS ▸ HELP and
    the sign-in link replay it any time. SKIP anywhere ends it for good. */
 const TUT_QD = [
-  { t: "WELCOME ABOARD", b: "FleetComm is the fleet's radio: every net at once, one key to talk, and a board that shows who is where. This tour takes two minutes and ends with you on the net." },
+  { t: "WELCOME", b: "This is your radio. Two things to do: pick a channel, then hold a key to talk. It takes about a minute.", next: "OK \u25b8" },
   { t: "SIGN IN", el: () => $("discordBtn").offsetParent ? $("discordBtn") : $("connectLegacyBtn"),
-    b: "Discord confirms who you are \u2014 username only. New arrivals wait for a COMMAND operator to clear them; <b>PENDING</b> means you're in the queue. Once cleared, pick your callsign and <b>CONNECT</b>. The tour resumes on the board.", next: "SIGN IN, THEN CONTINUE \u25b8" }
+    b: "Click <b>SIGN IN WITH DISCORD</b>. If it says <b>pending</b>, an officer has to approve you first \u2014 once they have, press <b>CONNECT</b>.", next: "I'M SIGNING IN \u25b8" }
 ];
 const TUT_BOARD = [
-  { t: "THE BOARD", page: "pgComms", el: () => $("netlist"),
-    b: "Every net the fleet runs. Ships sit at the top with their departments nested beneath; the tag names the department. <b>TUNE \u25b8</b> joins a net \u2014 tuned nets are live in your headset." },
-  { t: "TX AND LSN", page: "pgComms", el: () => { const b = document.querySelector("#netlist [data-txon]"); return b ? b.closest(".net") : $("netlist"); },
-    b: "Each tuned net has two switches. <b>LSN</b> is your ear: on, you hear it; off, it's muted but still tuned. <b>TX</b> arms it for your voice \u2014 the net you talk on when you key. Arm one at a time unless you mean to talk on several." },
-  { t: "SHIP CONTROLS", page: "pgComms", el: () => { const b = document.querySelector("#netlist [data-lsnall]"); return b ? b.closest(".net") : null; },
-    b: "A ship row carries two more. <b>LSN ALL</b> hears every department aboard at once \u2014 a bridge watch. <b>1MC</b> is the ship-wide announce: your voice on every net aboard, at once. Command use; the whole ship hears it." },
-  { t: "PUSH TO TALK", page: "pgComms", el: () => $("ptt"),
-    b: "Click and hold, or press and hold your key. Set the key with <b>change</b> under the button \u2014 any keyboard key, mouse button, or flight-stick button (press a stick button twice: the first press wakes the stick). Binds work while the game has focus." },
-  { t: "CYCLING NETS", page: "pgComms", el: () => $("ovShowBtn").closest(".panel") || $("ovShowBtn").parentElement,
-    b: "<kbd>PAGE UP</kbd> / <kbd>PAGE DOWN</kbd> step your armed net through the tuned list \u2014 in the game too. Rebind them in SYS. The <b>GAME OVERLAY</b> floats your nets over Star Citizen with the armed one marked ARMED: SHOW it here, UNLOCK to move it." },
-  { t: "CHAT", page: "pgComms", el: () => $("chatBar2").offsetParent ? $("chatBar2") : document.querySelector('.pkey[data-page="pgChat"]'),
-    b: "Text rides the same net as voice. Type here for the selected net, or open <b>CHAT</b> on the rail for the full feed with a tab per net." },
-  { t: "THE STATIONS", el: () => $("rail"),
-    b: "<b>01 COMMS</b> \u2014 the board. <b>02 CHAT</b>. <b>03 ATC</b> \u2014 the tower's picture of the fleet. <b>04 CAM</b> \u2014 helmet cams. <b>05 SYS</b> \u2014 your microphone, keys, theme, and this tour again." },
-  { t: "YOU'RE ON THE NET", page: "pgComms",
-    b: "Tune a net, arm TX, key up and say hello. Radio discipline: listen first, keep it short, say who you are and who you're calling.", next: "FINISH \u25b8" }
+  { t: "PICK A CHANNEL", page: "pgComms", el: () => document.querySelector("#netlist [data-tune]") || $("netlist"), advanceOn: "tuned",
+    b: "Press <b>TUNE</b> on the channel your group is using. You can tune more than one.", done: "Tuned. Now your key." },
+  { t: "SET YOUR TALK KEY", page: "pgComms", el: () => $("ptt"), advanceOn: "bound", arm: () => { try { $("pttKeyChange").click(); } catch (e) {} },
+    b: "Press the key you want to use for talking \u2014 right now. Any keyboard key, mouse button, or flight-stick button works.", done: "Set. That's your talk key." },
+  { t: "TALK", page: "pgComms", el: () => $("ptt"),
+    b: "Hold your key and speak. Let go when you're done. The channel lights <b>orange</b> while you talk and <b>green</b> when someone else does." },
+  { t: "IN THE GAME", page: "pgComms", el: () => $("ovShowBtn").closest(".panel") || $("ovShowBtn").parentElement,
+    b: "A small overlay sits on top of your game so you can see who's talking. <kbd>PAGE UP</kbd> and <kbd>PAGE DOWN</kbd> switch which channel you talk on." },
+  { t: "YOU'RE SET", page: "pgComms",
+    b: "That's everything you need. Anything else \u2014 microphone, keys, look \u2014 is under <b>SETTINGS</b> on the left.", next: "FINISH \u25b8" }
 ];
 const tut = { on: false, phase: "", steps: [], i: 0 };
 function tutOpen(phase) {
@@ -2998,6 +3119,7 @@ function tutOpen(phase) {
   tutRender();
 }
 function tutClose(done) {
+  tutDisarm();
   tut.on = false; $("tut").hidden = true;
   if (done) { store.set("tutDone", true); store.set("tutPending", false); }
 }
@@ -3011,6 +3133,24 @@ function tutRender() {
   $("tutBack").style.visibility = tut.i ? "" : "hidden";
   $("tutNext").textContent = st.next || (tut.i === tut.steps.length - 1 ? "FINISH \u25b8" : "NEXT \u25b8");
   requestAnimationFrame(tutPlace);
+  if (st.arm) setTimeout(() => { if (tut.on && tut.steps[tut.i] === st) { st.arm(); tut.armed = true; } }, 350);
+}
+/* a capture the tour armed must not outlive the step: SKIP or NEXT with the
+   app still listening would bind the next key the operator happened to press */
+function tutDisarm() {
+  if (!tut.armed) return;
+  tut.armed = false;
+  if (capturing && capturing.kind === "master" && capturing.which === "active") { capturing = null; renderNets(); renderMasterBinds(); }
+}
+/* the app tells the tour what the operator just did; the step that was
+   waiting for it confirms and moves on by itself */
+function tutEvent(kind) {
+  if (!tut.on) return;
+  const st = tut.steps[tut.i];
+  if (!st || st.advanceOn !== kind || st._done) return;
+  st._done = true;
+  $("tutBody").innerHTML = "<b>" + esc(st.done || "Done.") + "</b>";
+  setTimeout(() => { if (tut.on && tut.steps[tut.i] === st) { delete st._done; tutNext(); } }, 900);
 }
 function tutPlace() {
   if (!tut.on) return;
@@ -3040,18 +3180,19 @@ function tutPlace() {
   card.style.top = Math.round(Math.max(m, Math.min(vh - ch - m, y))) + "px";
 }
 function tutNext() {
+  tutDisarm();
   if (tut.i < tut.steps.length - 1) { tut.i++; tutRender(); return; }
   if (tut.phase === "quarterdeck") { store.set("tutPending", true); tutClose(false); return; }
-  tutClose(true); toast("Walkthrough complete \u2014 replay it any time from SYS \u25b8 HELP.");
+  tutClose(true); toast("You're set \u2014 replay this any time from SETTINGS \u25b8 HELP.");
 }
 $("tutNext").addEventListener("click", tutNext);
-$("tutBack").addEventListener("click", () => { if (tut.i > 0) { tut.i--; tutRender(); } });
+$("tutBack").addEventListener("click", () => { tutDisarm(); if (tut.i > 0) { tut.i--; tutRender(); } });
 $("tutSkip").addEventListener("click", () => tutClose(true));
 $("tutStartBtn").addEventListener("click", () => tutOpen(connected ? "board" : "quarterdeck"));
 $("tutLink").addEventListener("click", () => tutOpen(connected ? "board" : "quarterdeck"));
 window.addEventListener("resize", () => { if (tut.on) tutPlace(); });
 window.addEventListener("keydown", (e) => {
-  if (!tut.on) return;
+  if (!tut.on || capturing) return;          /* a key being captured for a bind belongs to the bind engine */
   if (e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); tutClose(true); }
   else if (e.key === "ArrowRight" || e.key === "Enter") { e.preventDefault(); e.stopImmediatePropagation(); tutNext(); }
   else if (e.key === "ArrowLeft") { e.preventDefault(); e.stopImmediatePropagation(); if (tut.i > 0) { tut.i--; tutRender(); } }
@@ -3182,9 +3323,20 @@ if (bridge.autotestHost) {
       const tB = camMountTile(9002, "WARRIOR TAC 4", fakeFeed("FLIGHT DECK"), false, { cs: "WARRIOR TAC 4", who: "Second Operator", since: Date.now() - 128000 });
       tA.classList.add("talking"); camTick(); await wait(800); await shot("cam-live");
       feeds.forEach(f => { f.alive = false; }); tA.remove(); tB.remove(); camViewState();
+      /* ACCOUNTS & ACCESS with a stand-in roster, search active */
+      showPage("pgAcct"); await wait(300);
+      acctData = { accounts: [
+        { discordId: "1", discordName: "nailo", callsign: "TIBER DOC 2", role: "member", lastSeen: Date.now() - 3600e3 },
+        { discordId: "2", discordName: "sven", callsign: "WARRIOR TAC 4", role: "element", lastSeen: Date.now() - 120e3 },
+        { discordId: "3", discordName: "abxy", callsign: "TIBER DOC 1", role: "command", lastSeen: Date.now() },
+        { discordId: "4", discordName: "newguy", callsign: "", role: "pending", lastSeen: 0 },
+        { discordId: "5", discordName: "oak", callsign: "MINERVA ENG 3", role: "member", lastSeen: Date.now() - 86400e3 }
+      ], access: { "COMMAND NET": "command", "EMERGENCY NET": "member" } };
+      $("acctSearch").value = "tiber"; renderAccts(); await wait(400); await shot("accts");
+      $("acctSearch").value = ""; acctData = null; $("acctList").innerHTML = ""; $("netAccess").innerHTML = ""; $("acctCount").textContent = "";
       /* the walkthrough at its PTT mark */
       showPage("pgComms"); const tdWas = store.get("tutDone", false);
-      tutOpen("board"); for (let k = 0; k < 3; k++) $("tutNext").click(); await wait(600); await shot("tutorial");
+      tutOpen("board"); $("tutNext").click(); await wait(500); $("tutNext").click(); await wait(600); await shot("tutorial");
       tutClose(false); store.set("tutDone", tdWas);
       /* the in-game overlay window too — show it if hidden, capture, restore */
       const ovWasHidden = $("ovShowBtn").textContent === "SHOW";
@@ -3406,7 +3558,7 @@ if (bridge.autotestHost) {
     masterBinds.active = { src: "label", label: "F14" }; renderMasterBinds();
     L("ptt-bound-clears", !document.getElementById("pttRow").classList.contains("unbound"));
     masterBinds.active = savedActive; renderMasterBinds();
-    L("sys-key-label", (document.getElementById("sysKey").textContent || "").indexOf("SYS") >= 0);
+    L("sys-key-label", (document.getElementById("sysKey").textContent || "").indexOf("SETTINGS") >= 0);
     L("device-pickers", !!document.getElementById("micSel") && !!document.getElementById("outSel"));
 
     /* keybind unbind (1.0.1): BACKSPACE while listening writes null through
@@ -3618,13 +3770,19 @@ if (bridge.autotestHost) {
       const doneWas = store.get("tutDone", false), pendWas = store.get("tutPending", false);
       store.set("tutDone", false);
       tutOpen("board");
-      L("tut-opens", !$("tut").hidden && tut.steps.length === 8 && $("tutTitle").textContent === "THE BOARD");
+      L("tut-opens", !$("tut").hidden && tut.steps.length === 5 && $("tutTitle").textContent === "PICK A CHANNEL");
       await new Promise(r => setTimeout(r, 350));
       L("tut-spotlights-board", $("tut").querySelector(".tut-spot").getBoundingClientRect().width > 50);
-      for (let k = 0; k < 3; k++) $("tutNext").click();
+      /* step 1 advances by itself when a net is tuned — fake the event */
+      tutEvent("tuned"); await new Promise(r => setTimeout(r, 1300));
+      const onKeyStep = $("tutTitle").textContent === "SET YOUR TALK KEY";
+      /* entering the key step arms capture for the operator */
+      const armed = !!(capturing && capturing.kind === "master" && capturing.which === "active");
+      $("tutNext").click();                          /* NEXT disarms the capture the tour armed */
+      const disarmed = !capturing;
       await new Promise(r => setTimeout(r, 350));
       const spotR = $("tut").querySelector(".tut-spot").getBoundingClientRect(), pttR = $("ptt").getBoundingClientRect();
-      L("tut-ptt-step", $("tutTitle").textContent === "PUSH TO TALK" && Math.abs(spotR.left + 6 - pttR.left) < 2 && Math.abs(spotR.top + 6 - pttR.top) < 2);
+      L("tut-ptt-step", onKeyStep && armed && disarmed && $("tutTitle").textContent === "TALK" && Math.abs(spotR.left + 6 - pttR.left) < 2 && Math.abs(spotR.top + 6 - pttR.top) < 2);
       $("tutSkip").click();
       L("tut-skip-persists", $("tut").hidden && store.get("tutDone") === true);
       store.set("tutDone", doneWas); store.set("tutPending", pendWas);
@@ -3642,6 +3800,81 @@ if (bridge.autotestHost) {
         L("cam-talking-outline", on && !stub.classList.contains("talking"));
       } else L("cam-talking-outline", "skipped(no-tuned)");
       stub.remove(); camViewState();
+    }
+    /* ACCOUNTS & ACCESS search: one box filters operators and nets, counts, marks hits */
+    {
+      const fake = { accounts: [
+        { discordId: "1", discordName: "nailo", callsign: "TIBER DOC 2", role: "member", lastSeen: 0 },
+        { discordId: "2", discordName: "sven", callsign: "WARRIOR TAC 4", role: "element", lastSeen: 0 },
+        { discordId: "3", discordName: "abxy", callsign: "TIBER DOC 1", role: "command", lastSeen: 0 },
+        { discordId: "4", discordName: "newguy", callsign: "", role: "pending", lastSeen: 0 }
+      ], access: { "COMMAND NET": "command" } };
+      const dataWas = acctData; acctData = fake;
+      $("acctSearch").value = ""; renderAccts();
+      const all = $("acctList").querySelectorAll(".acctrow").length;
+      $("acctSearch").value = "tiber"; renderAccts();
+      const tiber = $("acctList").querySelectorAll(".acctrow").length;
+      const tiberNets = $("netAccess").querySelectorAll(".narow").length;
+      const marked = $("acctList").querySelectorAll("mark.hit").length > 0;
+      $("acctSearch").value = "tiber doc 2"; renderAccts();
+      const multi = $("acctList").querySelectorAll(".acctrow").length;
+      $("acctSearch").value = "pending"; renderAccts();
+      const byRole = $("acctList").querySelectorAll(".acctrow").length;
+      $("acctSearch").value = "zzznope"; renderAccts();
+      const none = $("acctList").querySelectorAll(".acctrow").length, noneHint = /No operator matches/.test($("acctList").textContent);
+      $("acctSearch").value = "121.850"; renderAccts();
+      const byFreq = $("netAccess").querySelectorAll(".narow").length;
+      L("acct-search", all === 4 && tiber === 2 && tiberNets > 0 && marked && multi === 1 && byRole === 1 && none === 0 && noneHint && byFreq === 1 &&
+        /^0 OF 4 OPERATORS · 1 OF \d+ NETS$/.test($("acctCount").textContent));   /* the last render was the frequency search */
+      $("acctSearch").value = ""; acctData = dataWas; if (dataWas) renderAccts(); else { $("acctList").innerHTML = ""; $("netAccess").innerHTML = ""; $("acctCount").textContent = ""; }
+    }
+    const silentOpus = () => { const e = new OpusScript(48000, 1, OpusScript.Application.VOIP); const f = e.encode(new ArrayBuffer(FRAME * 2), FRAME); try { e.delete(); } catch (x) {} return f; };
+    /* cam pop-out: a real window of ours plays the same stream with the burn-in; closes with the tile */
+    {
+      const c = document.createElement("canvas"); c.width = 320; c.height = 180; c.getContext("2d").fillRect(0, 0, 320, 180);
+      const t = camMountTile(7777, "WARRIOR TAC 4", c.captureStream(5), false, { cs: "WARRIOR TAC 4", who: "Pop Test", since: Date.now() });
+      cam.watching.set(7777, { pc: null, cs: "WARRIOR TAC 4", tile: t });   /* a real tile always has its watch entry */
+      t.querySelector("[data-pip]").click();
+      await new Promise(r => setTimeout(r, 2000));
+      const w = cam.pops.get(7777);
+      let fed = false, chrome = false, err = "";
+      try { fed = !!(w && !w.closed && w.document.getElementById("v").srcObject); chrome = !!(w && w.document.getElementById("cs").textContent === "WARRIOR TAC 4"); } catch (e) { err = e.message; }
+      camDropTile(7777);
+      await new Promise(r => setTimeout(r, 600));
+      L("cam-popout", fed && chrome && !cam.pops.has(7777) && (!w || w.closed));
+      if (!(fed && chrome)) L("cam-popout-detail", "opened=" + !!w + " fed=" + fed + " chrome=" + chrome + " err=" + err);
+      camViewState();
+    }
+    /* audio backlog policy: a frame past the 750 ms backlog is DROPPED, the cursor never moves backwards */
+    {
+      const k = nets.findIndex(n => n.tuned && n.gainNode);
+      if (k < 0) L("audio-drop-not-reset", "skipped(no-chain)");
+      else {
+        const key = nets[k].cfg.freq + ":424242";
+        const silent = silentOpus();
+        const d0 = audioDrops;
+        decoders.set(key, { dec: new OpusScript(48000, 1), cursor: ctx.currentTime + 5, lastUsed: Date.now() });
+        playFrame(nets[k], 424242, silent);
+        const d = decoders.get(key);
+        L("audio-drop-not-reset", audioDrops === d0 + 1 && d.cursor >= ctx.currentTime + 4.5);
+        try { d.dec.delete(); } catch (e) {} decoders.delete(key);
+      }
+    }
+    /* my own voice on another of my connections is dropped, not played */
+    {
+      const k = nets.findIndex(n => n.tuned && n.idx != null);
+      if (k < 0) L("self-echo-dropped", "skipped(no-tuned)");
+      else {
+        const before = nets[k].speaking.size;
+        onRx({ idx: nets[k].idx, session: 31337, name: callsign, opus: silentOpus() });
+        await new Promise(r => setTimeout(r, 50));
+        const mine = nets[k].speaking.size === before;
+        onRx({ idx: nets[k].idx, session: 31338, name: "SOMEONE-ELSE", opus: silentOpus() });
+        await new Promise(r => setTimeout(r, 50));
+        const other = nets[k].speaking.has(31338);
+        nets[k].speaking.delete(31338); nets[k].roster.delete(31338);
+        L("self-echo-dropped", mine && other);
+      }
     }
     /* the command rail replaced the bezel: it must never overflow sideways,
        and the docstrip must truncate rather than push the clock off-window */

@@ -555,6 +555,16 @@
   #tut .tut-skip{font-family:var(--font-mono);font-size:.64rem;letter-spacing:.14em;color:var(--muted);background:none;border:0;cursor:pointer;padding:0;white-space:nowrap}
   #tut .tut-skip:hover{color:var(--red)}
   #tut .tut-nav .btn{padding:8px 12px}
+  /* ── accounts & access search: one box filters both lists ── */
+  #acctSearchRow{display:flex;align-items:center;gap:12px;max-width:780px;margin:0 0 14px}
+  #acctSearch{flex:1;min-width:0;font-family:var(--font-mono);font-size:.78rem;letter-spacing:.06em;
+    padding:9px 11px;background:var(--bez);border:1px solid var(--line-strong);color:var(--ink);border-radius:0}
+  #acctSearch::placeholder{color:var(--muted);letter-spacing:.1em;font-size:.66rem;text-transform:uppercase}
+  #acctSearch:focus{outline:none;border-color:var(--holo);box-shadow:0 0 0 3px var(--holo-tint)}
+  #acctSearch::-webkit-search-cancel-button{-webkit-appearance:none}
+  #acctCount{font-family:var(--font-mono);font-size:.64rem;letter-spacing:.16em;color:var(--muted);white-space:nowrap}
+  mark.hit{background:transparent;color:var(--holo);font-weight:700}
+  .acctrow.hidden,.narow.hidden{display:none}
   .camgated{font-family:var(--font-mono);font-size:.64rem;font-weight:500;letter-spacing:.18em;
     color:var(--muted);border:1px dashed var(--line2);padding:8px 10px;margin-bottom:8px;text-align:center}
   @media (max-width:900px){.camside{flex-basis:230px}}
@@ -898,7 +908,7 @@
       <button class="pkey" data-page="pgChat"><span class="r-no">02</span>CHAT</button>
       <button class="pkey" data-page="pgAtc"><span class="r-no">03</span>ATC</button>
       <button class="pkey" data-page="pgCam" title="Helmet cam — stream and watch operator POV"><span class="r-no">04</span>CAM</button>
-      <button class="pkey" data-page="settings" id="sysKey" title="Ship's systems — configuration"><span class="r-no">05</span>SYS</button>
+      <button class="pkey" data-page="settings" id="sysKey" title="Settings — microphone, keys, display"><span class="r-no">05</span>SETTINGS</button>
       <button class="pkey" data-page="pgAcct" id="acctKey" style="display:none"><span class="r-no">06</span>ACCOUNTS</button>
     </nav>
     <div class="r-sec">Ship's State</div>
@@ -1006,6 +1016,11 @@
   <div class="page" id="pgAcct" style="flex-direction:column">
     <div class="ph">ACCOUNTS &amp; ACCESS<span class="r" id="acctPending" style="color:var(--amber)"></span></div>
     <div id="acctScroll" style="flex:1;overflow-y:auto;padding:14px;min-height:0">
+      <div id="acctSearchRow">
+        <input id="acctSearch" type="search" spellcheck="false" autocomplete="off"
+          placeholder="SEARCH — callsign, discord name, standing, net, frequency">
+        <span id="acctCount"></span>
+      </div>
       <div class="miniheading" style="margin-top:0">REGISTERED OPERATORS</div>
       <div id="acctList" style="max-width:780px"></div>
       <div class="miniheading">NET ACCESS — WHO MAY TUNE EACH NET (RELAY-ENFORCED)</div>
@@ -1015,7 +1030,7 @@
 
   <!-- SYS -->
   <div class="page" id="settings">
-    <div class="ph">SYS — CONFIGURATION</div>
+    <div class="ph">SETTINGS</div>
     <div id="sysScroll">
       <div class="pg-head">
         <span class="kicker">SHIP'S SYSTEMS // STATION 05</span>
