@@ -2607,9 +2607,12 @@ function renderAccts(data) {
       '<span class="ann rolelbl ' + (x.role === "command" ? "lit-a" : x.role === "member" || x.role === "element" ? "lit-g" : "") + '">' + (x.role === "element" ? "ELEMENT LEADER" : x.role === "allied" ? "ALLIED" + (x.org ? " · " + esc(x.org) : "") : esc(String(x.role).toUpperCase())) + "</span>" + btns + "</div>";
   }).join("");
   $("acctList").innerHTML = html || '<span class="hint">No operator matches “' + esc($("acctSearch").value) + '”.</span>';
-  const levels = ["open", "joint", "member", "command"];
-  const levelLabel = (l) => l === "open" ? "OPEN — anyone approved" : l === "joint" ? "JOINT — allied task force too" : l === "member" ? "MEMBERS+" : "COMMAND ONLY";
+  /* one option per allied organisation as well: that org's operators + the fleet's COMMAND */
+  const levels = ["open", "joint", "member", "command"].concat(alliedOrgs.map(g => "org:" + g.guildId));
+  const levelLabel = (l) => l === "open" ? "OPEN — anyone approved" : l === "joint" ? "JOINT — allied task force too" : l === "member" ? "MEMBERS+" : l === "command" ? "COMMAND ONLY"
+    : ((alliedOrgs.find(g => "org:" + g.guildId === l) || {}).name || "ALLIED ORG").toUpperCase() + " ONLY (+ COMMAND)";
   const rows = nets.map(n => ({ name: n.cfg.name, freq: n.cfg.freq, level: d.access[n.cfg.name] || "open" }));
+  for (const r of rows) if (!levels.includes(r.level)) levels.push(r.level);
   const shownNets = rows.filter(r => acctHits(terms, (r.name + " " + r.freq + " " + r.level + " " + levelLabel(r.level)).toLowerCase()));
   $("netAccess").innerHTML = shownNets.map(r =>
     '<div class="narow" data-net="' + escAttr(r.name) + '"><b>' + markHits(r.name, terms) + '</b><span class="fq2 num">' + markHits(r.freq, terms) + "</span>" +
@@ -2626,7 +2629,10 @@ function renderAccts(data) {
    in as ALLIED — no queue, org attached — and the relay lets them into nets
    marked JOINT and nothing else. Removing an org stops new sign-ins; people
    already in keep ALLIED standing until revoked on the roster above. */
+let alliedOrgs = [];                              /* the allied list, for the per-org net levels */
 function renderAllied(list) {
+  alliedOrgs = (list || []).map(g => ({ guildId: String(g.guildId), name: String(g.name || "") }));
+  if (acctData) renderAccts();                    /* the level dropdowns grow an option per org */
   const rows = (list || []).map(g => '<div class="narow" data-gid="' + escAttr(g.guildId) + '"><b>' + esc(g.name) + '</b>' +
     '<span class="fq2 num">' + esc(g.guildId) + '</span><span class="ann">' + (g.accounts || 0) + ' ON THE ROLLS</span>' +
     '<button class="ann" style="border-color:var(--red);color:var(--red)" data-gremove>REMOVE</button></div>').join("");
@@ -4119,6 +4125,10 @@ if (bridge.autotestHost) {
       L("acct-allied-row", label === "ALLIED · Blue Fleet" && !!row.querySelector('[data-role="member"]') && !!row.querySelector('[data-role="revoked"]'));
       renderAllied([{ guildId: "90000000000000002", name: "Blue Fleet", accounts: 3 }]);
       L("allied-org-row", /Blue Fleet/.test($("alliedList").textContent) && /3 ON THE ROLLS/.test($("alliedList").textContent) && !!$("alliedList").querySelector("[data-gremove]"));
+      renderAccts({ accounts: [], access: { "COMMAND NET": "org:90000000000000002" } });
+      const orgSel = $("netAccess").querySelector('.narow[data-net="COMMAND NET"] select');
+      const orgOpt = orgSel && [...orgSel.options].find(o => o.value === "org:90000000000000002");
+      L("acct-org-level", !!orgOpt && orgSel.value === "org:90000000000000002" && /BLUE FLEET ONLY/.test(orgOpt.textContent));
       renderAllied([]);
     }
     /* the allied view: only JOINT nets (and their nests) on the board, banner up */

@@ -94,6 +94,17 @@ function stop() {
      "an allied /api/me lists exactly the JOINT nets");
   r = await api("GET", "/api/me", null, oak);
   ok(r.body.account.jointNets === undefined, "a fleet member's /api/me carries no allied filter");
+  /* an org's own net */
+  r = await api("POST", "/api/nets/access", { net: "BLUE FLEET COMMAND", level: "org:90000000000000002" }, doc);
+  ok(r.status === 200 && r.body.access["BLUE FLEET COMMAND"] === "org:90000000000000002", "COMMAND scopes a net to one allied organization");
+  r = await api("POST", "/api/nets/access", { net: "X", level: "org:90000000000000009" }, doc);
+  ok(r.status === 400, "an org level must name a listed allied organization");
+  r = await api("GET", "/api/me", null, blue);
+  ok(r.body.account.jointNets.includes("BLUE FLEET COMMAND") && r.body.account.jointNets.includes("JTF COORD"), "an allied /api/me lists the org's own nets with the JOINT ones");
+  r = await api("POST", "/api/login", { mockId: "seed-1", mockName: "Seed One", mockAllied: "90000000000000001" });
+  ok(r.status === 200 && r.body.account.org === "Seeded Squadron", "a second org's operator signs in");
+  r = await api("GET", "/api/me", null, r.body.token);
+  ok(!r.body.account.jointNets.includes("BLUE FLEET COMMAND") && r.body.account.jointNets.includes("JTF COORD"), "another org's operator does not see Blue Fleet's own net");
 
   /* what ALLIED may not do */
   r = await api("POST", "/api/nets/access", { net: "JTF COORD", level: "open" }, blue);

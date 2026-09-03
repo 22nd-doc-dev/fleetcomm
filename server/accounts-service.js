@@ -154,7 +154,7 @@ for (const account of Object.values(db.accounts)) {
   }
 }
 for (const [net, level] of Object.entries(db.netAccess)) {
-  if (!["open", "joint", "member", "command"].includes(level)) { delete db.netAccess[net]; migrated = true; }
+  if (!["open", "joint", "member", "command"].includes(level) && !/^org:\d{5,25}$/.test(level)) { delete db.netAccess[net]; migrated = true; }
 }
 if (migrated) persist();
 
@@ -242,11 +242,16 @@ const PERM = { Write: 0x01, Traverse: 0x02, Enter: 0x04, Speak: 0x08, MakeChanne
   Whisper: 0x100, Text: 0x200, MakeTempChannel: 0x400, Listen: 0x800 };
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const CHANNEL_ACCESS = PERM.Traverse | PERM.Enter | PERM.Speak | PERM.Whisper | PERM.Text | PERM.Listen;
+/* "org:<guildId>" = that allied organisation's own net: its operators plus the
+   fleet's COMMAND (the task-force coordinator can reach every command net);
+   fleet members stay out unless COMMAND opens it to JOINT */
 function allowedAccounts(level) {
+  const org = /^org:(\d{5,25})$/.exec(String(level));
   return Object.values(db.accounts).filter(account => account.relayToken &&
     (level === "command" ? account.role === "command"
       : level === "allied" ? account.role === "allied"
       : level === "joint" ? ["allied", "member", "element", "command"].includes(account.role)
+      : org ? ((account.role === "allied" && account.orgGuild === org[1]) || account.role === "command")
       : ["member", "element", "command"].includes(account.role)));
 }
 function accessAcls(level) {
@@ -476,7 +481,7 @@ const server = http.createServer(async (req, res) => {
     if (p === "/api/me" && req.method === "GET") {
       if (Date.now() - (a.acc.lastSeen || 0) > 60000) { a.acc.lastSeen = Date.now(); persist(); }
       const me = Object.assign(pub(a.acc, a.id), { sessionCallsign: a.session.callsign || null });
-      if (a.acc.role === "allied") me.jointNets = Object.entries(db.netAccess).filter(([, l]) => l === "joint").map(([n]) => n);
+      if (a.acc.role === "allied") me.jointNets = Object.entries(db.netAccess).filter(([, l]) => l === "joint" || l === "org:" + a.acc.orgGuild).map(([n]) => n);
       return send(res, 200, { ok: true, account: me, relay: relayFor(a.acc) });
     }
     /* sign out: the presenting session dies server-side, not just in the
@@ -618,7 +623,9 @@ const server = http.createServer(async (req, res) => {
     if (p === "/api/nets/access" && req.method === "POST") {
       const b = await body(req);
       const netName = String(b.net || "").trim().slice(0, 120);
-      if (!netName || !["open", "joint", "member", "command"].includes(b.level)) return send(res, 400, { ok: false, error: "need net + level(open|joint|member|command)" });
+      const orgLevel = /^org:(\d{5,25})$/.exec(String(b.level || ""));
+      if (!netName || (!["open", "joint", "member", "command"].includes(b.level) && !orgLevel)) return send(res, 400, { ok: false, error: "need net + level(open|joint|member|command|org:<guildId>)" });
+      if (orgLevel && !db.allied[orgLevel[1]]) return send(res, 400, { ok: false, error: "no allied organization with that Discord id" });
       await serializeMutation(async () => {
         const hadPrevious = Object.prototype.hasOwnProperty.call(db.netAccess, netName);
         const previous = db.netAccess[netName];
