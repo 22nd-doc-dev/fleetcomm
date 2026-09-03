@@ -70,7 +70,12 @@ module.exports = function createPortalApi(deps) {
 
   /* ribbons: the decoration-lite category — a catalog list and a rack on every profile */
   if (!Array.isArray(pdb.catalog.ribbons)) pdb.catalog.ribbons = [];
-  for (const rec of Object.values(pdb.personnel)) if (rec && typeof rec === "object" && !Array.isArray(rec.ribbons)) rec.ribbons = [];
+  /* qualification insignia — pins and wings — are their own category, not ribbons */
+  if (!Array.isArray(pdb.catalog.insignia)) pdb.catalog.insignia = [];
+  for (const rec of Object.values(pdb.personnel)) if (rec && typeof rec === "object") {
+    if (!Array.isArray(rec.ribbons)) rec.ribbons = [];
+    if (!Array.isArray(rec.insignia)) rec.insignia = [];
+  }
   if (!pdb.content.blocks || typeof pdb.content.blocks !== "object") pdb.content.blocks = {};
   if (!Array.isArray(pdb.content.history)) pdb.content.history = [];
 
@@ -300,6 +305,7 @@ module.exports = function createPortalApi(deps) {
     if (srcRec.serviceNo && !dstRec.serviceNo) dstRec.serviceNo = srcRec.serviceNo;
     dstRec.awards = (dstRec.awards || []).concat(srcRec.awards || []);
     dstRec.ribbons = (dstRec.ribbons || []).concat(srcRec.ribbons || []);
+    dstRec.insignia = (dstRec.insignia || []).concat(srcRec.insignia || []);
     for (const c of srcRec.certs || []) if (!(dstRec.certs || []).some(x => x.certId === c.certId)) dstRec.certs.push(c);
     dstRec.record = (dstRec.record || []).concat(srcRec.record || []).sort((a, b2) => a.at - b2.at);
     dstRec.orders = (srcRec.orders || []).concat(dstRec.orders || []);
@@ -408,7 +414,7 @@ module.exports = function createPortalApi(deps) {
      names the columns in any order, unknown columns are ignored, a blank
      cell leaves that field alone. ── */
   const CSV_COLS = ["id", "callsign", "discord_name", "discord_user", "rank", "rating", "status", "squadron", "element",
-    "billet", "tac_callsign", "element_lead", "ship", "station", "certs", "ribbons", "rsi_handle", "timezone", "enlisted", "last_seen", "note"];
+    "billet", "tac_callsign", "element_lead", "ship", "station", "certs", "ribbons", "insignia", "rsi_handle", "timezone", "enlisted", "last_seen", "note"];
   const csvCell = (v) => { const s = String(v == null ? "" : v); return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
   function parseCsv(text) {
     const rows = []; let row = [], cell = "", q = false;
@@ -450,6 +456,7 @@ module.exports = function createPortalApi(deps) {
       sqm ? sqm.tacsign || "" : "", sqm ? (sqm.lead ? "yes" : "no") : "", shipName, station,
       (rec.certs || []).map(c => (pdb.catalog.certs.find(x => x.id === c.certId) || { name: c.certId }).name).join("; "),
       (rec.ribbons || []).map(c => ((pdb.catalog.ribbons || []).find(x => x.id === c.ribbonId) || { name: c.ribbonId }).name).join("; "),
+      (rec.insignia || []).map(c => ((pdb.catalog.insignia || []).find(x => x.id === c.insigniaId) || { name: c.insigniaId }).name).join("; "),
       acc.rsiHandle || "", acc.timezone || "", acc.createdAt ? fleetDate(acc.createdAt) : "", acc.lastSeen ? fleetDate(acc.lastSeen) : "", ""];
   }
 
@@ -622,8 +629,9 @@ module.exports = function createPortalApi(deps) {
     return i;
   }
   function recFor(id) {
-    if (!pdb.personnel[id]) pdb.personnel[id] = { rank: pdb.catalog.ranks[0].abbr, awards: [], certs: [], ribbons: [], record: [] };
+    if (!pdb.personnel[id]) pdb.personnel[id] = { rank: pdb.catalog.ranks[0].abbr, awards: [], certs: [], ribbons: [], insignia: [], record: [] };
     if (!Array.isArray(pdb.personnel[id].ribbons)) pdb.personnel[id].ribbons = [];
+    if (!Array.isArray(pdb.personnel[id].insignia)) pdb.personnel[id].insignia = [];
     return pdb.personnel[id];
   }
   /* extra rides along on the entry — the importers stamp their source there */
@@ -656,7 +664,7 @@ module.exports = function createPortalApi(deps) {
       /* the rated form of the rank (BMMC, GM1, QMSC…) — display trumps ladder */
       rating: rec.rating || null, serviceNo: rec.serviceNo || null, orders: rec.orders || [],
       duties: rec.duties || [], designators: rec.designators || [],
-      awards: rec.awards, certs: rec.certs, ribbons: rec.ribbons || [], record: rec.record
+      awards: rec.awards, certs: rec.certs, ribbons: rec.ribbons || [], insignia: rec.insignia || [], record: rec.record
     };
   }
 
@@ -915,6 +923,8 @@ module.exports = function createPortalApi(deps) {
         awards: (pdb.catalog.awards || []).filter(a => !a.hidden)
           .map(a => ({ id: a.id, name: a.name, img: a.img || "" })),
         ribbons: (pdb.catalog.ribbons || []).filter(a => !a.hidden)
+          .map(a => ({ id: a.id, name: a.name, img: a.img || "", description: a.description || "" })),
+        insignia: (pdb.catalog.insignia || []).filter(a => !a.hidden)
           .map(a => ({ id: a.id, name: a.name, img: a.img || "", description: a.description || "" })),
       });
       return true;
@@ -1540,7 +1550,7 @@ module.exports = function createPortalApi(deps) {
       const template = url.searchParams.get("template") === "1";
       const lines = [CSV_COLS.join(",")];
       if (template) lines.push(["", "EXAMPLE - DELETE THIS ROW", "", "", "SR", "", "active", "MG-212", "Reaper 1-1", "Marine",
-        "Reaper 1-1 C", "no", "", "", "Hospital Corpsman", "", "", "", "15AUG2956", "", "Phase 1 complete"].map(csvCell).join(","));
+        "Reaper 1-1 C", "no", "", "", "Hospital Corpsman", "", "", "", "", "15AUG2956", "", "Phase 1 complete"].map(csvCell).join(","));
       else {
         const ids = Object.keys(db.accounts).filter(id2 => db.accounts[id2].role !== "revoked")
           .sort((a, b2) => rankIdx((pdb.personnel[b2] || {}).rank) - rankIdx((pdb.personnel[a] || {}).rank));
@@ -1699,6 +1709,16 @@ module.exports = function createPortalApi(deps) {
               if (!dryRun) { rec.ribbons.push({ ribbonId: ribbon.id, at: Date.now(), by: actor.name, src: "csv" }); logEntry(rec, actor.name, "ribbon", "Ribbon: " + ribbon.name + " (roster spreadsheet)", { src: "csv" }); }
             }
           }
+          if (v.insignia) {
+            if (!adm) rowErr.push("insignia are management's to pin");
+            else for (const name of v.insignia.split(/[;|]/).map(s => s.trim()).filter(Boolean)) {
+              const item = (pdb.catalog.insignia || []).find(x => x.id === lc(name) || lc(x.name) === lc(name));
+              if (!item) { rowErr.push("no such insignia: " + name); continue; }
+              if ((rec.insignia || []).some(x => x.insigniaId === item.id)) continue;
+              rowChg.push("insignia: " + item.name);
+              if (!dryRun) { rec.insignia.push({ insigniaId: item.id, at: Date.now(), by: actor.name, src: "csv" }); logEntry(rec, actor.name, "insignia", "Insignia: " + item.name + " (roster spreadsheet)", { src: "csv" }); }
+            }
+          }
           if (v.rsi_handle && v.rsi_handle !== (acc.rsiHandle || "")) {
             if (!mayPerson) rowErr.push("rsi_handle: no authority over this member");
             else if (acc.rsiVerified) rowErr.push("rsi_handle is verified — it changes only by re-verification");
@@ -1801,7 +1821,7 @@ module.exports = function createPortalApi(deps) {
       if (need(isAdmin(actor), 403, "management access required")) return true;
       const b = await body(req);
       await serializeMutation(async () => {
-        for (const key of ["ranks", "awards", "certs", "apps", "aotq", "issue", "ribbons"]) {
+        for (const key of ["ranks", "awards", "certs", "apps", "aotq", "issue", "ribbons", "insignia"]) {
           if (!Array.isArray(b[key])) continue;
           const list = b[key].slice(0, 200).map(x => x && typeof x === "object" ? x : null).filter(Boolean);
           if (key === "ranks" && list.some(r => !r.grade || !r.name || !r.abbr)) throw new Error("every rank needs grade+name+abbr");
@@ -1810,7 +1830,7 @@ module.exports = function createPortalApi(deps) {
         }
         persist("catalog");
       });
-      audit("catalog", "edited: " + ["ranks", "awards", "certs", "apps", "aotq", "issue", "ribbons"].filter(k => Array.isArray(b[k])).join(", "));
+      audit("catalog", "edited: " + ["ranks", "awards", "certs", "apps", "aotq", "issue", "ribbons", "insignia"].filter(k => Array.isArray(b[k])).join(", "));
       send(res, 200, { ok: true, catalog: pdb.catalog });
       return true;
     }
@@ -1894,6 +1914,13 @@ module.exports = function createPortalApi(deps) {
               if (!rec.ribbons.some(x => x.ribbonId === ribbon.id)) {
                 rec.ribbons.push({ ribbonId: ribbon.id, at: Date.now(), by, note: String(act.note || "").slice(0, 200) });
                 logEntry(rec, by, "ribbon", "Ribbon: " + ribbon.name + (act.note ? " — " + act.note : ""));
+              }
+            } else if (act.type === "insignia") {
+              const item = (pdb.catalog.insignia || []).find(x => x.id === act.insigniaId);
+              if (!item) throw new Error("unknown insignia");
+              if (!rec.insignia.some(x => x.insigniaId === item.id)) {
+                rec.insignia.push({ insigniaId: item.id, at: Date.now(), by, note: String(act.note || "").slice(0, 200) });
+                logEntry(rec, by, "insignia", "Insignia: " + item.name + (act.note ? " — " + act.note : ""));
               }
             } else if (act.type === "status") {
               const to = act.status === "reserve" ? "reserve" : "active";
@@ -2485,7 +2512,7 @@ module.exports = function createPortalApi(deps) {
             }
           }
           const acc = created && dryRun ? { callsign } : db.accounts[id];
-          const rec = created && dryRun ? { rank: "—", awards: [], certs: [], ribbons: [], record: [], orders: [] } : recFor(id);
+          const rec = created && dryRun ? { rank: "—", awards: [], certs: [], ribbons: [], insignia: [], record: [], orders: [] } : recFor(id);
           if (!Array.isArray(rec.orders)) rec.orders = [];
           const pushRec = (at, who, kind, text) => rec.record.push({ at, by: String(who || byDefault).slice(0, 80), kind, text: String(text).slice(0, 400), src: source });
           const setField = (obj, k, v, what) => { if (obj[k] !== v) { chg.push(what + " → " + (v === true ? "yes" : v === false ? "no" : v)); if (!dryRun) obj[k] = v; } };
@@ -2603,6 +2630,26 @@ module.exports = function createPortalApi(deps) {
               pushRec(t, ro.by, "ribbon", "Ribbon: " + ribbon.name + (ro.note ? " — " + ro.note : ""));
             }
           }
+          for (const ins of Array.isArray(mm.insignia) ? mm.insignia.slice(0, 60) : []) {
+            const io2 = typeof ins === "string" ? { insignia: ins } : (ins || {});
+            const item = findNamed(pdb.catalog.insignia, io2.insignia || io2.name || io2.id);
+            if (!item) { err.push("no such insignia: " + (io2.insignia || io2.name || io2.id)); continue; }
+            const t = when(io2.at);
+            /* the same pin filed as a ribbon before the split moves across whole */
+            const asRibbon = rec.ribbons.findIndex(x => x.ribbonId === item.id);
+            if (asRibbon >= 0) {
+              chg.push("ribbon → insignia: " + item.name);
+              if (!dryRun) { const old = rec.ribbons.splice(asRibbon, 1)[0]; rec.insignia.push({ insigniaId: item.id, at: old.at, by: old.by, note: old.note || "", src: old.src || source }); }
+              continue;
+            }
+            if (rec.insignia.some(x => x.insigniaId === item.id && day(x.at) === day(t))) continue;
+            chg.push("insignia: " + item.name);
+            if (!dryRun) {
+              const note = String(io2.note || io2.citation || "").slice(0, 200);
+              rec.insignia.push({ insigniaId: item.id, at: t, by: String(io2.by || byDefault).slice(0, 80), note, src: source });
+              pushRec(t, io2.by, "insignia", "Insignia: " + item.name + (note ? " — " + note : ""));
+            }
+          }
           for (const e of Array.isArray(mm.record) ? mm.record.slice(0, 200) : []) {
             const text = String((e && e.text) || "").trim().slice(0, 400); if (!text) continue;
             const t = when(e.at);
@@ -2699,7 +2746,7 @@ module.exports = function createPortalApi(deps) {
         scopes: Object.entries(db.accounts).filter(([, a]) => Array.isArray(a.scopes) && a.scopes.length)
           .map(([id2, a]) => (a.callsign || a.discordName || id2) + " (" + a.scopes.length + ")"),
         itAdmins: Object.values(db.accounts).filter(a => a.itAdmin === true).length,
-        records: { entries: 0, awards: 0, certs: 0, ribbons: 0, orders: 0, members: 0 },
+        records: { entries: 0, awards: 0, certs: 0, ribbons: 0, insignia: 0, orders: 0, members: 0 },
         seats: { stations: [], musters: [] },
         availability: Object.keys(pdb.availability).length,
         events: withEvents ? Object.keys(pdb.events).length : null,
@@ -2709,8 +2756,9 @@ module.exports = function createPortalApi(deps) {
         const e = (rec.record || []).filter(x => x.kind !== "enlist" && !kept(x)).length;
         const a = (rec.awards || []).filter(x => !kept(x)).length, c = (rec.certs || []).filter(x => !kept(x)).length;
         const rb = (rec.ribbons || []).filter(x => !kept(x)).length, o = (rec.orders || []).filter(x => !kept(x)).length;
-        if (e + a + c + rb + o) inv.records.members++;
-        inv.records.entries += e; inv.records.awards += a; inv.records.certs += c; inv.records.ribbons += rb; inv.records.orders += o;
+        const ig = (rec.insignia || []).filter(x => !kept(x)).length;
+        if (e + a + c + rb + ig + o) inv.records.members++;
+        inv.records.entries += e; inv.records.awards += a; inv.records.certs += c; inv.records.ribbons += rb; inv.records.insignia += ig; inv.records.orders += o;
       }
       for (const ship of pdb.roster.ships) for (const d of ship.departments || []) for (const st of d.stations || [])
         if (st.assignee && !st.src) inv.seats.stations.push(st.title + ", " + ship.name + " — " + displayName(st.assignee));
@@ -2723,7 +2771,7 @@ module.exports = function createPortalApi(deps) {
           for (const rec of Object.values(pdb.personnel)) {
             rec.record = (rec.record || []).filter(x => x.kind === "enlist" || kept(x));
             rec.awards = (rec.awards || []).filter(kept); rec.certs = (rec.certs || []).filter(kept);
-            rec.ribbons = (rec.ribbons || []).filter(kept); rec.orders = (rec.orders || []).filter(kept);
+            rec.ribbons = (rec.ribbons || []).filter(kept); rec.insignia = (rec.insignia || []).filter(kept); rec.orders = (rec.orders || []).filter(kept);
           }
           for (const ship of pdb.roster.ships) for (const d of ship.departments || []) for (const st of d.stations || [])
             if (st.assignee && !st.src) st.assignee = null;
@@ -2736,7 +2784,7 @@ module.exports = function createPortalApi(deps) {
         });
         audit("reset-baseline", "logistics " + Object.values(inv.logistics).reduce((s, n) => s + n, 0) + ", mast " + inv.mast +
           ", outbox " + inv.outbox + ", purviews " + inv.scopes.length + ", record items " +
-          (inv.records.entries + inv.records.awards + inv.records.certs + inv.records.ribbons + inv.records.orders) +
+          (inv.records.entries + inv.records.awards + inv.records.certs + inv.records.ribbons + inv.records.insignia + inv.records.orders) +
           ", seats " + (inv.seats.stations.length + inv.seats.musters.length) +
           (withEvents ? ", events " + inv.events : "") + (withChain ? ", chain " + inv.chain : ""));
       }

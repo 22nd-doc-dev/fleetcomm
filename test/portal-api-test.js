@@ -804,6 +804,21 @@ const rsiServer = http.createServer((req, res) => {
   r = await api("POST", "/api/personnel/import/csv", { csv: "id,ribbons\n2002,Good Conduct Ribbon; pyro-campaign\n" }, doc);
   r = await api("GET", "/api/personnel/2002", null, doc);
   ok(r.body.profile.ribbons.length === 2, "the spreadsheet pins ribbons by name or id, never twice");
+  /* qualification insignia: pins and wings, their own category; a pin filed as a ribbon before the split moves across */
+  r = await api("POST", "/api/catalog", { ribbons: (await api("GET", "/api/catalog", null, doc)).body.catalog.ribbons.concat({ id: "boarding-warfare-pin", name: "Boarding Warfare Pin" }),
+    insignia: [{ id: "naval-flight-wings", name: "Naval Flight Wings", img: "", description: "Qualified naval aviator" }, { id: "boarding-warfare-pin", name: "Boarding Warfare Pin" }] }, doc);
+  ok(r.status === 200 && r.body.catalog.insignia.length === 2, "qualification insignia are their own catalog");
+  r = await api("POST", "/api/personnel/bulk", { ids: ["2002"], action: { type: "insignia", insigniaId: "naval-flight-wings" } }, doc);
+  await api("POST", "/api/personnel/bulk", { ids: ["2002"], action: { type: "ribbon", ribbonId: "boarding-warfare-pin" } }, doc);
+  r = await api("GET", "/api/personnel/2002", null, doc);
+  ok(r.body.profile.insignia.length === 1 && r.body.profile.record.some(e => e.kind === "insignia") && r.body.profile.ribbons.length === 3, "COMMAND pins insignia on a member");
+  r = await api("POST", "/api/personnel/import", { source: "22nd.space crawl", members: [{ discordId: "2002", insignia: [{ insignia: "boarding-warfare-pin", at: "2026-01-01" }] }] }, doc);
+  ok(r.status === 200 && /ribbon → insignia/.test(r.body.changes[0]), "re-import moves a pin filed as a ribbon into insignia");
+  r = await api("GET", "/api/personnel/2002", null, doc);
+  ok(!r.body.profile.ribbons.some(x => x.ribbonId === "boarding-warfare-pin") && r.body.profile.insignia.some(x => x.insigniaId === "boarding-warfare-pin") && r.body.profile.ribbons.length === 2,
+     "…whole, with its date and source, leaving the ribbons rack honest");
+  r = await api("GET", "/api/public");
+  ok(r.body.insignia && r.body.insignia.length === 2, "insignia are on the public registry");
 
   /* the snapshot importer: rich records, dry run first, idempotent */
   const ships4 = (await api("GET", "/api/roster", null, doc)).body.ships;
