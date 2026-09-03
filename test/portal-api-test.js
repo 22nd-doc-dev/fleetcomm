@@ -819,6 +819,8 @@ const rsiServer = http.createServer((req, res) => {
      "…whole, with its date and source, leaving the ribbons rack honest");
   r = await api("GET", "/api/public");
   ok(r.body.insignia && r.body.insignia.length === 2, "insignia are on the public registry");
+  r = await api("POST", "/api/catalog", { ribbons: [], insignia: [{ id: "", name: "" }] }, doc);
+  ok(r.status !== 200 && (await api("GET", "/api/public")).body.ribbons.length > 0, "a bad list refuses the whole catalog save — nothing half-applied");
 
   /* the snapshot importer: rich records, dry run first, idempotent */
   const ships4 = (await api("GET", "/api/roster", null, doc)).body.ships;

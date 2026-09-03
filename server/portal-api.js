@@ -1821,13 +1821,17 @@ module.exports = function createPortalApi(deps) {
       if (need(isAdmin(actor), 403, "management access required")) return true;
       const b = await body(req);
       await serializeMutation(async () => {
+        /* every list is checked before any is written: a bad entry in one
+           list must not leave the others half-applied in memory */
+        const clean = {};
         for (const key of ["ranks", "awards", "certs", "apps", "aotq", "issue", "ribbons", "insignia"]) {
           if (!Array.isArray(b[key])) continue;
           const list = b[key].slice(0, 200).map(x => x && typeof x === "object" ? x : null).filter(Boolean);
           if (key === "ranks" && list.some(r => !r.grade || !r.name || !r.abbr)) throw new Error("every rank needs grade+name+abbr");
-          if (key !== "ranks" && list.some(r => !r.id || !r.name)) throw new Error("every entry needs id+name");
-          pdb.catalog[key] = list;
+          if (key !== "ranks" && list.some(r => !r.id || !r.name)) throw new Error("every " + key + " entry needs id+name");
+          clean[key] = list;
         }
+        Object.assign(pdb.catalog, clean);
         persist("catalog");
       });
       audit("catalog", "edited: " + ["ranks", "awards", "certs", "apps", "aotq", "issue", "ribbons", "insignia"].filter(k => Array.isArray(b[k])).join(", "));
