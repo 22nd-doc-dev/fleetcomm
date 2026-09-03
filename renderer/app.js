@@ -105,6 +105,10 @@ function applyCamScanFx() {
 }
 let myCallsigns = store.get("callsigns", []);
 let callsign = store.get("callsign", "");
+/* declared up here because renderNets() and addLog() run at boot, long before the
+   ACCOUNTS section that uses them — a later let/const would be a TDZ crash */
+let alliedMode = null;                            /* { org, joint: Set<netName> } for an ALLIED account */
+const sysLines = [];                              /* SETTINGS ▸ SYSTEM LOG ring (400) */
 let cmdToken = store.get("cmdToken", "");
 /* Relay back-off. One tuned net is one connection, so a sign-in is several
    connections at once; murmur's per-IP rate guard answers a burst by dropping
@@ -949,7 +953,9 @@ function renderNets() {
   rowDragging = false;
   netlist.innerHTML = "";
   rebuildTree();
+  const alliedVisible = alliedMode ? alliedVisibleNames() : null;
   tree.rows.forEach((row) => {
+    if (alliedVisible && !alliedVisible.has(nets[row.i].cfg.name)) return;
     const i = row.i, n = nets[i];
     const kids = row.kids.map(k => nets[k]);
     const par = kids.length > 0 || (n.cfg.subnets || []).length > 0;
@@ -1130,6 +1136,7 @@ function renderMasterBinds() {
 const logFeed = $("logFeed");
 let logN = 0;
 function addLog(kind, netName, msg) {
+  if (kind === "sys" && !netName) { addSysLog(msg); return; }
   logN++;
   if (logN > 400) { logFeed.removeChild(logFeed.firstChild); }
   const d = document.createElement("div");
@@ -2055,6 +2062,7 @@ function applyLogin(r) {
      session, not the default for every op */
   $("csIn").value = callsign || r.account.callsign || "";
   loadIdentity();
+  applyAlliedMode(r.account);
   $("discordBtn").textContent = "✓ " + r.account.discordName.toUpperCase() + " — " + r.account.role.toUpperCase();
   $("discordBtn").disabled = true;
 }
@@ -2085,7 +2093,7 @@ $("disconnBtn").addEventListener("click", () => {
   camTeardownAll();      /* cams and their peer links die with the session */
   clearTxState(); ipcRenderer.send("disconnect"); connected = false;
   if (discordMode) {
-    acct = null; cmdToken = ""; refreshSounds(); showSignedAs(null);
+    acct = null; cmdToken = ""; refreshSounds(); showSignedAs(null); applyAlliedMode(null);
     $("discordBtn").disabled = false; $("discordBtn").textContent = "SIGN IN WITH DISCORD ▸";
     $("pendingBox").style.display = "none"; $("bootstrapRow").style.display = "none";
     $("csRow2").style.display = "none"; $("connectBtn").style.display = "none";
@@ -2231,6 +2239,7 @@ function pollOps() {
     }
     if (discordMode) {
       const current = await ipcRenderer.invoke("acct", { method: "GET", path: "/api/me" });
+      if (current && current.ok && current.account) applyAlliedMode(current.account);
       const verdict = bridge.acctHeartbeat.assess(current, acctFails);
       acctFails = verdict.fails;
       if (verdict.warn) addLog("sys", "", "accounts service unreachable — staying on comms, still checking");
@@ -2574,31 +2583,32 @@ async function refreshAccts() {
   if (!ra.ok) { $("acctList").innerHTML = '<span class="hint">' + esc(ra.error || "unavailable") + "</span>"; $("acctCount").textContent = ""; return; }
   acctData = { accounts: ra.accounts, access: (rn.ok && rn.access) || {} };
   renderAccts();
+  refreshAllied();
 }
 function renderAccts(data) {
   const d = data || acctData; if (!d) return;
   const terms = acctTerms();
   const pend = d.accounts.filter(x => x.role === "pending").length;
   $("acctPending").textContent = pend ? pend + " AWAITING APPROVAL" : "";
-  const order = { pending: 0, command: 1, element: 2, member: 3, revoked: 4 };
-  const shownAccts = d.accounts.filter(x => acctHits(terms, [fleetName(x), x.callsign, x.discordName, x.role, x.discordId, x.onAir].map(v => String(v || "")).join(" ").toLowerCase()));
+  const order = { pending: 0, command: 1, element: 2, member: 3, allied: 4, revoked: 5 };
+  const shownAccts = d.accounts.filter(x => acctHits(terms, [fleetName(x), x.callsign, x.discordName, x.role, x.org, x.discordId, x.onAir].map(v => String(v || "")).join(" ").toLowerCase()));
   const html = shownAccts.sort((x, y) => ((order[x.role] ?? 9) - (order[y.role] ?? 9)) || String(x.discordName).localeCompare(String(y.discordName))).map(x => {
     const btns =
       (x.role === "pending" ? '<button class="ann lit-g" data-role="member">APPROVE</button>' : "") +
       (x.role === "member" ? '<button class="ann lit-g" data-role="element" title="May watch helmet cams; no COMMAND powers">ELEMENT LEAD</button>' : "") +
-      (x.role === "element" ? '<button class="ann" data-role="member">TO MEMBER</button>' : "") +
+      (x.role === "element" || x.role === "allied" ? '<button class="ann" data-role="member">TO MEMBER</button>' : "") +
       (x.role === "member" || x.role === "element" ? '<button class="ann lit-c" data-role="command">PROMOTE</button>' : "") +
       (x.role === "command" ? '<button class="ann" data-role="member">DEMOTE</button>' : "") +
       (x.role !== "revoked" ? '<button class="ann" style="border-color:var(--red);color:var(--red)" data-role="revoked">REVOKE</button>'
-                            : '<button class="ann lit-g" data-role="member">REINSTATE</button>');
+                            : '<button class="ann lit-g" data-role="' + (x.org ? "allied" : "member") + '">REINSTATE</button>');
     return '<div class="acctrow" data-id="' + escAttr(x.discordId) + '"><div class="nm"><b>' + markHits(fleetName(x), terms) + '</b>' +
       '<span>discord: ' + markHits(x.discordName, terms) + " · " + (x.lastSeen ? "seen " + new Date(x.lastSeen).toLocaleString() : "never seen") +
       (x.onAir ? ' · <span class="onair">on air as ' + markHits(x.onAir, terms) + "</span>" : "") + "</span></div>" +
-      '<span class="ann rolelbl ' + (x.role === "command" ? "lit-a" : x.role === "member" || x.role === "element" ? "lit-g" : "") + '">' + (x.role === "element" ? "ELEMENT LEADER" : esc(String(x.role).toUpperCase())) + "</span>" + btns + "</div>";
+      '<span class="ann rolelbl ' + (x.role === "command" ? "lit-a" : x.role === "member" || x.role === "element" ? "lit-g" : "") + '">' + (x.role === "element" ? "ELEMENT LEADER" : x.role === "allied" ? "ALLIED" + (x.org ? " · " + esc(x.org) : "") : esc(String(x.role).toUpperCase())) + "</span>" + btns + "</div>";
   }).join("");
   $("acctList").innerHTML = html || '<span class="hint">No operator matches “' + esc($("acctSearch").value) + '”.</span>';
-  const levels = ["open", "member", "command"];
-  const levelLabel = (l) => l === "open" ? "OPEN — anyone approved" : l === "member" ? "MEMBERS+" : "COMMAND ONLY";
+  const levels = ["open", "joint", "member", "command"];
+  const levelLabel = (l) => l === "open" ? "OPEN — anyone approved" : l === "joint" ? "JOINT — allied task force too" : l === "member" ? "MEMBERS+" : "COMMAND ONLY";
   const rows = nets.map(n => ({ name: n.cfg.name, freq: n.cfg.freq, level: d.access[n.cfg.name] || "open" }));
   const shownNets = rows.filter(r => acctHits(terms, (r.name + " " + r.freq + " " + r.level + " " + levelLabel(r.level)).toLowerCase()));
   $("netAccess").innerHTML = shownNets.map(r =>
@@ -2610,6 +2620,81 @@ function renderAccts(data) {
     ? shownAccts.length + " OF " + d.accounts.length + " OPERATORS · " + shownNets.length + " OF " + rows.length + " NETS"
     : d.accounts.length + " OPERATORS · " + rows.length + " NETS";
 }
+/* ── ALLIED ORGANIZATIONS ──
+   A joint op puts other organisations on the relay. COMMAND lists their
+   Discord servers here; anyone in one of them (and not in the fleet's) signs
+   in as ALLIED — no queue, org attached — and the relay lets them into nets
+   marked JOINT and nothing else. Removing an org stops new sign-ins; people
+   already in keep ALLIED standing until revoked on the roster above. */
+function renderAllied(list) {
+  const rows = (list || []).map(g => '<div class="narow" data-gid="' + escAttr(g.guildId) + '"><b>' + esc(g.name) + '</b>' +
+    '<span class="fq2 num">' + esc(g.guildId) + '</span><span class="ann">' + (g.accounts || 0) + ' ON THE ROLLS</span>' +
+    '<button class="ann" style="border-color:var(--red);color:var(--red)" data-gremove>REMOVE</button></div>').join("");
+  $("alliedList").innerHTML = rows || '<span class="hint">No allied organizations — the fleet Discord is the only door.</span>';
+}
+async function refreshAllied() {
+  const r = await ipcRenderer.invoke("acct", { method: "GET", path: "/api/allied" });
+  if (r && r.ok) renderAllied(r.allied);
+  else $("alliedList").innerHTML = '<span class="hint">' + esc((r && r.error) || "allied list unavailable — the service needs 1.4.5") + "</span>";
+}
+$("alliedAddBtn").addEventListener("click", async () => {
+  const guildId = $("alliedId").value.trim(), name = $("alliedName").value.trim();
+  if (!/^\d{5,25}$/.test(guildId)) { toast("The Discord server id is a number — Server Settings ▸ Widget, or Developer Mode ▸ Copy Server ID."); return; }
+  if (!name) { toast("Give the organization a name."); return; }
+  const r = await ipcRenderer.invoke("acct", { method: "POST", path: "/api/allied", body: { guildId, name } });
+  if (!r.ok) { toast(r.error || "couldn't add the organization"); return; }
+  $("alliedId").value = ""; $("alliedName").value = ""; toast("Allied organization added: " + name); refreshAllied();
+});
+$("alliedList").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-gremove]"); if (!b) return;
+  const gid = b.closest("[data-gid]").dataset.gid;
+  const r = await ipcRenderer.invoke("acct", { method: "POST", path: "/api/allied/" + gid + "/remove" });
+  if (!r.ok) toast(r.error || "couldn't remove"); else { toast("Removed — its operators keep ALLIED standing until you revoke them."); refreshAllied(); }
+});
+["alliedId", "alliedName"].forEach(id => $(id).addEventListener("keydown", (e) => { e.stopPropagation(); if (e.key === "Enter") $("alliedAddBtn").click(); }));
+
+/* ── the allied operator's view ──
+   An ALLIED account can enter only JOINT nets; the board shows only those
+   (plus the nests they sit in) instead of 44 restricted rows, with a banner
+   naming the org. Refreshed from every /api/me so a net COMMAND marks JOINT
+   mid-op appears without a relaunch. */
+function applyAlliedMode(account) {
+  const next = account && account.role === "allied" ? { org: account.org || "allied", joint: new Set(account.jointNets || []) } : null;
+  const changed = JSON.stringify(next && { o: next.org, j: [...next.joint].sort() }) !== JSON.stringify(alliedMode && { o: alliedMode.org, j: [...alliedMode.joint].sort() });
+  alliedMode = next;
+  $("alliedBanner").style.display = alliedMode ? "" : "none";
+  $("alliedBannerV").textContent = alliedMode ? alliedMode.org.toUpperCase() + " · JOINT NETS ONLY" : "";
+  if (changed && nets.length) renderNets();
+  return changed;
+}
+function alliedVisibleNames() {
+  const vis = new Set();
+  for (const n of nets) {
+    if (!alliedMode.joint.has(n.cfg.name)) continue;
+    let cur = n;
+    while (cur) { vis.add(cur.cfg.name); cur = cur.parent ? nets.find(x => x.cfg.name === cur.parent) : null; }
+  }
+  return vis;
+}
+
+/* ── the system log ──
+   Technical lines (audio engine, microphone, updater, hooks, cam links) used
+   to land in the COMM LOG between radio traffic. They live under SETTINGS ▸
+   SYSTEM LOG now, with COPY for bug reports; the COMM LOG keeps everything
+   about nets and the relay. The rule: a "sys" line with no net name is
+   technical; one addressed to a net is operational. */
+function addSysLog(msg) {
+  const line = utc() + "  " + msg;
+  sysLines.push(line); if (sysLines.length > 400) sysLines.shift();
+  const feed = document.getElementById("sysFeed"); if (!feed) return;
+  const d = document.createElement("div"); d.className = "le sys"; d.textContent = line;
+  feed.appendChild(d); while (feed.children.length > 400) feed.removeChild(feed.firstChild);
+  feed.scrollTop = feed.scrollHeight;
+}
+$("sysLogCopy").addEventListener("click", async () => {
+  try { await navigator.clipboard.writeText(sysLines.join("\n")); toast("System log copied — " + sysLines.length + " lines."); }
+  catch (e) { toast("Couldn't copy: " + e.message); }
+});
 $("acctSearch").addEventListener("input", () => renderAccts());
 $("acctSearch").addEventListener("keydown", (e) => {
   if (e.key === "Escape") { e.preventDefault(); $("acctSearch").value = ""; renderAccts(); }
@@ -3983,7 +4068,7 @@ if (bridge.autotestHost) {
     /* audio-clock watchdog: three flat seconds trigger a heal that re-opens
        the output and keeps the graph playable; a hiccup does not */
     {
-      const h0 = audioHeals, logs0 = logFeed.children.length;
+      const h0 = audioHeals, logs0 = sysLines.length;
       audioClockSample(650, 1000); audioClockSample(1000, 1000);
       L("audio-clock-hiccup-ignored", audioHeals === h0 && !clockWatch.ailing);
       const micWasOpen = !!capNode;
@@ -3992,9 +4077,9 @@ if (bridge.autotestHost) {
       await p; await new Promise(r => setTimeout(r, 1200));
       const drift = Math.abs((ctx.currentTime - clockWatch.c) * 1000 / (performance.now() - clockWatch.t) - 1);
       L("audio-clock-heal-playable", ctx.state === "running" && drift < 0.15 && (!micWasOpen || !!capNode));
-      L("audio-clock-heal-logged", logFeed.children.length >= logs0 + 2 && /re-opened/.test(logFeed.textContent));
+      L("audio-clock-heal-logged", sysLines.length >= logs0 + 2 && /re-opened/.test(sysLines.join("\n")));
       audioClockSample(1000, 1000); audioClockSample(1000, 1000); audioClockSample(1000, 1000);
-      L("audio-clock-recovers", !clockWatch.ailing && /back on rate/.test(logFeed.textContent));
+      L("audio-clock-recovers", !clockWatch.ailing && /back on rate/.test(sysLines.join("\n")));
     }
     /* fleet identity: ACCOUNTS rows read rank + name from the roster, the sign-in
        card says who the fleet thinks you are, and nothing on this page can edit a name */
@@ -4015,6 +4100,39 @@ if (bridge.autotestHost) {
       const line = showSignedAs({ rating: "CDRE", rank: { abbr: "CDRE" }, callsign: "Travis Barnes" });
       L("signed-as-line", line === "CDRE TRAVIS BARNES" && $("signedAs").style.display === "" && $("signedAsV").textContent === "CDRE TRAVIS BARNES");
       showSignedAs(null);
+    }
+    /* the system log takes technical lines; the COMM LOG keeps net traffic */
+    {
+      const c0 = logFeed.children.length, s0 = sysLines.length;
+      addLog("sys", "", "audio engine test line");
+      addLog("sys", "COMMAND NET", "ACCESS DENIED — restricted net");
+      L("syslog-split", sysLines.length === s0 + 1 && logFeed.children.length === c0 + 1 && /audio engine test line/.test($("sysFeed").textContent) && !/audio engine test line/.test(logFeed.textContent));
+    }
+    /* joint task force: the JOINT level exists, ALLIED rows render with their org, the allied list renders */
+    {
+      $("acctSearch").value = "";
+      renderAccts({ accounts: [{ discordId: "424250", discordName: "Blue One", callsign: "Blue One", role: "allied", org: "Blue Fleet" }], access: { "COMMAND NET": "joint" } });
+      const row = $("acctList").querySelector(".acctrow");
+      const label = row && row.querySelector(".rolelbl").textContent;
+      const sel = $("netAccess").querySelector('.narow[data-net="COMMAND NET"] select');
+      L("acct-joint-level", !!sel && sel.value === "joint" && [...sel.options].some(o => o.value === "joint"));
+      L("acct-allied-row", label === "ALLIED · Blue Fleet" && !!row.querySelector('[data-role="member"]') && !!row.querySelector('[data-role="revoked"]'));
+      renderAllied([{ guildId: "90000000000000002", name: "Blue Fleet", accounts: 3 }]);
+      L("allied-org-row", /Blue Fleet/.test($("alliedList").textContent) && /3 ON THE ROLLS/.test($("alliedList").textContent) && !!$("alliedList").querySelector("[data-gremove]"));
+      renderAllied([]);
+    }
+    /* the allied view: only JOINT nets (and their nests) on the board, banner up */
+    {
+      const total = nets.length;
+      const target = nets.find(n => n.parent) || nets[0];
+      const changed = applyAlliedMode({ role: "allied", org: "Blue Fleet", jointNets: [target.cfg.name] });
+      const shown = [...netlist.querySelectorAll(".net")].map(el => nets[+el.dataset.i].cfg.name);
+      const expect = new Set([target.cfg.name]); let cur = target; while (cur && cur.parent) { expect.add(cur.parent); cur = nets.find(x => x.cfg.name === cur.parent); }
+      const banner = $("alliedBanner").style.display === "" && /BLUE FLEET/.test($("alliedBannerV").textContent);
+      applyAlliedMode(null);
+      const restored = netlist.querySelectorAll(".net").length === total && $("alliedBanner").style.display === "none";
+      L("allied-view-filter", changed && shown.length === expect.size && shown.every(nm => expect.has(nm)) && banner && restored);
+      if (!(changed && shown.length === expect.size && shown.every(nm => expect.has(nm)) && banner && restored)) L("allied-view-filter-detail", JSON.stringify({ changed, shown, expect: [...expect], banner, restored, total }));
     }
     /* the streamer's source card */
     {

@@ -442,6 +442,12 @@
   .camsrc b{display:block;font-family:var(--font-display);font-weight:600;font-size:1rem;letter-spacing:.04em;text-transform:uppercase;
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .acctrow .onair{color:var(--grn)}
+  #alliedAdd{display:flex;gap:8px;align-items:center;margin:8px 0 6px}
+  #alliedAdd input{flex:1;min-width:0;font-size:.8rem;padding:8px 10px;background:var(--bez);border:1px solid var(--line-strong);color:var(--ink)}
+  #alliedBanner .v{color:var(--gold)}
+  #sysFeed{font-family:var(--font-mono);font-size:.68rem;line-height:1.5;max-height:240px;overflow-y:auto;border:1px solid var(--line);
+    background:var(--panel);padding:8px 10px;margin:0 0 16px;white-space:pre-wrap;word-break:break-word;color:var(--ink2)}
+  #sysFeed:empty::before{content:"Nothing yet — technical events land here as they happen.";color:var(--muted)}
   #camPick{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0}
   #camPick .src{min-width:0;border:1px solid var(--line);background:var(--panel);cursor:pointer;padding:0 0 4px;
     transition:border-color .2s,transform .2s var(--ease-out)}
@@ -927,6 +933,7 @@
     <!-- one row per ship of the line: crewed headcount across the ship and its
          nets, fed by the same atc-view poll as the ops count -->
     <div id="shipStateRows"></div>
+    <div class="rd" id="alliedBanner" style="display:none"><label>Allied access</label><span class="v" id="alliedBannerV"></span></div>
     <div class="r-sec">Levels</div>
     <div class="rd volrd"><label>VOICE VOL <span class="num" id="masterVolVal"></span></label>
       <input type="range" id="masterVolSl" min="0" max="150" step="5" title="Master volume for everything the nets play — per-net VOL still applies underneath"></div>
@@ -1033,7 +1040,14 @@
       <div class="miniheading" style="margin-top:0">REGISTERED OPERATORS</div>
       <div id="acctList" style="max-width:780px"></div>
       <div class="miniheading">NET ACCESS — WHO MAY TUNE EACH NET (RELAY-ENFORCED)</div>
-      <div id="netAccess" style="max-width:780px;padding-bottom:20px"></div>
+      <div id="netAccess" style="max-width:780px"></div>
+      <div class="miniheading">ALLIED ORGANIZATIONS — JOINT TASK FORCE DISCORDS</div>
+      <div id="alliedList" style="max-width:780px"></div>
+      <div id="alliedAdd" style="max-width:780px">
+        <input id="alliedId" class="mono" placeholder="Discord server id (Server Settings ▸ Widget)" maxlength="25">
+        <input id="alliedName" class="mono" placeholder="Organization name" maxlength="60">
+        <button class="btn" id="alliedAddBtn">ADD ORG</button></div>
+      <p class="hint" style="max-width:780px;text-align:left;padding-bottom:20px">Anyone in one of these Discords — and not in the fleet's — signs in as ALLIED: no approval queue, their org on the roster, and the relay admits them only to nets marked JOINT above. Remove an org to stop new sign-ins; revoke people on the roster.</p>
     </div>
   </div>
 
@@ -1066,6 +1080,10 @@
       <div class="miniheading">HELP</div>
       <div class="togrow"><div class="tl"><b>Walkthrough</b><span>The two-minute tour, sign-in to first transmission — the board, TX and LSN, ship controls, PTT, cycling nets, chat</span></div>
         <button class="btn" id="tutStartBtn">START TOUR</button></div>
+      <div class="miniheading">SYSTEM LOG</div>
+      <div class="togrow"><div class="tl"><b>Technical events</b><span>Audio engine, microphone, updater, key hooks, cam links — the lines that used to sit in the COMM LOG. Copy this when you report a problem.</span></div>
+        <button class="btn" id="sysLogCopy">COPY</button></div>
+      <div id="sysFeed"></div>
       <div class="miniheading">DISPLAY</div>
       <div class="togrow"><div class="tl"><b>Prose typeface</b><span>The manual's serif, or a plain system face if serif reads slower for you — data and labels stay mono either way</span></div>
         <select class="orgsel" id="sfontsel"><option value="legible">Manual serif</option><option value="system">System sans</option></select></div>

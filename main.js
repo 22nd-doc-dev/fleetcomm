@@ -543,8 +543,8 @@ ipcMain.handle("acct", async (ev, request) => {
   if (!acctToken) return { ok: false, error: "not signed in" };
   const verb = method === "POST" ? "POST" : "GET";
   const allowed = verb === "GET"
-    ? ["/api/me", "/api/accounts", "/api/nets/access", "/api/sounds", "/api/cam-viewers", "/api/personnel", "/api/personnel/me"].includes(p) || /^\/api\/sounds\/[a-f0-9]{16}$/.test(p)
-    : p === "/api/callsign" || p === "/api/nets/access" || p === "/api/sounds"
+    ? ["/api/me", "/api/accounts", "/api/nets/access", "/api/sounds", "/api/cam-viewers", "/api/personnel", "/api/personnel/me", "/api/allied"].includes(p) || /^\/api\/sounds\/[a-f0-9]{16}$/.test(p)
+    : p === "/api/callsign" || p === "/api/nets/access" || p === "/api/sounds" || p === "/api/allied" || /^\/api\/allied\/\d{5,25}\/remove$/.test(p)
       || /^\/api\/sounds\/[a-f0-9]{16}\/delete$/.test(p) || /^\/api\/accounts\/\d+\/role$/.test(p)
       || /^\/api\/personnel\/[A-Za-z0-9-]{1,40}\/callsign$/.test(p);
   if (!allowed) return { ok: false, error: "unsupported account operation" };

@@ -61,6 +61,16 @@ const SESSION_ABS_MS = MOCK && process.env.SESSION_ABS_MS
    Unset = no gate, so a droplet that hasn't been told the guild ID keeps working
    instead of silently locking out the whole fleet. */
 const GUILD_ID = String(process.env.DISCORD_GUILD_ID || "").trim();
+/* ── allied task-force Discords ──
+   A joint op needs other organisations on the relay without putting them on
+   the fleet's rolls. COMMAND lists allied Discord servers (ACCOUNTS & ACCESS
+   → ALLIED ORGANIZATIONS, or ALLIED_GUILD_IDS="id:Name,id:Name" as a seed);
+   a Discord user who is in one of them but not in the fleet's signs in as
+   standing ALLIED — auto-approved, tagged with the org, relay access limited
+   to nets whose level is JOINT (the relay ACL enforces it), never a fleet
+   personnel record, never a helmet-cam viewer. */
+const ALLIED_SEED = String(process.env.ALLIED_GUILD_IDS || "").split(",").map(x => x.trim()).filter(Boolean)
+  .map(x => { const i = x.indexOf(":"); return i > 0 ? { id: x.slice(0, i).trim(), name: x.slice(i + 1).trim() } : { id: x, name: "Allied org " + x }; });
 const ACL_SYNC_DISABLED = process.env.ACL_SYNC_DISABLED === "1";
 if (!["127.0.0.1", "::1", "localhost"].includes(HOST) && process.env.ALLOW_PUBLIC_ACCOUNTS !== "1")
   throw new Error("accounts service must bind to loopback (set ALLOW_PUBLIC_ACCOUNTS=1 only behind a trusted TLS proxy)");
@@ -87,10 +97,12 @@ function save(name, obj) {
 const db = {
   accounts: record(load("accounts.json", {}), "accounts.json"),   // discordId -> {discordName, callsign, role, relayToken, ...}
   sessions: record(load("sessions.json", {}), "sessions.json"),   // token -> {discordId, expiresAt}
-  netAccess: record(load("netaccess.json", {}), "netaccess.json"),// netName -> open|member|command
+  netAccess: record(load("netaccess.json", {}), "netaccess.json"),// netName -> open|joint|member|command
+  allied: record(load("allied.json", {}), "allied.json"),          // guildId -> {name, addedAt, by}
   sounds: record(load("sounds.json", {}), "sounds.json")          // id -> {name, size, ext, by, at}
 };
-const persist = () => { save("accounts.json", db.accounts); save("sessions.json", db.sessions); save("netaccess.json", db.netAccess); };
+const persist = () => { save("accounts.json", db.accounts); save("sessions.json", db.sessions); save("netaccess.json", db.netAccess); save("allied.json", db.allied); };
+for (const g of ALLIED_SEED) if (/^\d{5,25}$/.test(g.id) && !db.allied[g.id]) db.allied[g.id] = { name: g.name.slice(0, 60), addedAt: Date.now(), by: "env" };
 
 /* -- the audit ledger: append-only by construction. Every privileged action
    lands here, and no API exists to clear or rewrite it - that is the design.
@@ -136,13 +148,13 @@ function serializeMutation(work) {
 let migrated = false;
 for (const account of Object.values(db.accounts)) {
   if (!account || typeof account !== "object") throw new Error("invalid account record");
-  if (!["pending", "member", "element", "command", "revoked"].includes(account.role)) { account.role = "pending"; migrated = true; }
+  if (!["pending", "allied", "member", "element", "command", "revoked"].includes(account.role)) { account.role = "pending"; migrated = true; }
   if (!/^u-[0-9a-f]{36}$/.test(String(account.relayToken || ""))) {
     account.relayToken = "u-" + crypto.randomBytes(18).toString("hex"); migrated = true;
   }
 }
 for (const [net, level] of Object.entries(db.netAccess)) {
-  if (!["open", "member", "command"].includes(level)) { delete db.netAccess[net]; migrated = true; }
+  if (!["open", "joint", "member", "command"].includes(level)) { delete db.netAccess[net]; migrated = true; }
 }
 if (migrated) persist();
 
@@ -180,14 +192,19 @@ function discordGet(pathName, token) {
     req.on("timeout", () => { req.destroy(); reject(new Error("discord timed out")); });
   });
 }
-/* Throws unless this token's owner is a member of the configured guild. */
+/* Resolves to { fleet: true } for a member of the fleet's Discord, to
+   { allied: { id, name } } for someone who is only in a listed allied Discord,
+   and throws for everyone else. The fleet wins when both apply. */
 async function requireGuildMember(token) {
-  if (!GUILD_ID) return true;                 /* gate not configured — allow */
+  if (!GUILD_ID) return { fleet: true };      /* gate not configured — allow */
   const guilds = await discordGet("/users/@me/guilds", token);
   if (!Array.isArray(guilds)) throw new Error("discord returned an unexpected guild list");
-  if (!guilds.some(g => String(g && g.id) === GUILD_ID))
-    throw new Error("not a member of the fleet Discord");
-  return true;
+  if (guilds.some(g => String(g && g.id) === GUILD_ID)) return { fleet: true };
+  const allied = guilds.find(g => g && db.allied[String(g.id)]);
+  if (allied) return { allied: { id: String(allied.id), name: db.allied[String(allied.id)].name } };
+  throw new Error(Object.keys(db.allied).length
+    ? "not a member of the fleet Discord or of an allied task-force Discord"
+    : "not a member of the fleet Discord");
 }
 
 function verifyDiscord(body) {
@@ -227,9 +244,14 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const CHANNEL_ACCESS = PERM.Traverse | PERM.Enter | PERM.Speak | PERM.Whisper | PERM.Text | PERM.Listen;
 function allowedAccounts(level) {
   return Object.values(db.accounts).filter(account => account.relayToken &&
-    (level === "command" ? account.role === "command" : ["member", "element", "command"].includes(account.role)));
+    (level === "command" ? account.role === "command"
+      : level === "allied" ? account.role === "allied"
+      : level === "joint" ? ["allied", "member", "element", "command"].includes(account.role)
+      : ["member", "element", "command"].includes(account.role)));
 }
 function accessAcls(level) {
+  /* "open" = anyone the fleet approved; allied operators are NOT that — the
+     root already denies them Enter, and an open net inherits it */
   if (level === "open") return [];
   return [{ applyHere: true, applySubs: true, group: "all", deny: CHANNEL_ACCESS }]
     .concat(allowedAccounts(level).map(account => ({ applyHere: true, applySubs: true,
@@ -240,6 +262,10 @@ function rootAcls() {
   return [{ applyHere: true, applySubs: true, group: "all", deny: CHANNEL_ACCESS }]
     .concat(allowedAccounts("member").map(account => ({ applyHere: true, applySubs: true,
       group: "#" + account.relayToken, grant: CHANNEL_ACCESS })))
+    /* allied: Traverse only — murmur needs it on every ancestor to reach a
+       JOINT net's own grant; Enter/Speak stay denied everywhere else */
+    .concat(allowedAccounts("allied").map(account => ({ applyHere: true, applySubs: true,
+      group: "#" + account.relayToken, grant: PERM.Traverse })))
     .concat(allowedAccounts("command").map(account => ({ applyHere: true, applySubs: true,
       group: "#" + account.relayToken, grant: commandGrant })));
 }
@@ -305,7 +331,7 @@ function tokensFor(acc) {
   return [acc.relayToken];
 }
 function pub(acc, id) {
-  return { discordId: id, discordName: acc.discordName, callsign: acc.callsign || null, onAir: liveCallsign(id), role: acc.role, lastSeen: acc.lastSeen || null, createdAt: acc.createdAt };
+  return { discordId: id, discordName: acc.discordName, callsign: acc.callsign || null, onAir: liveCallsign(id), role: acc.role, org: acc.org || null, lastSeen: acc.lastSeen || null, createdAt: acc.createdAt };
 }
 function relayFor(acc) {
   if (acc.role === "pending" || acc.role === "revoked") return null;
@@ -392,8 +418,20 @@ const server = http.createServer(async (req, res) => {
       const who = await verifyDiscord(b);
       /* fleet Discord membership is checked before ANY account state is touched,
          so a non-member never lands in the queue in the first place */
-      if (!MOCK && b.discordToken) await requireGuildMember(String(b.discordToken));
+      let gate = { fleet: true };
+      if (!MOCK && b.discordToken) gate = await requireGuildMember(String(b.discordToken));
+      else if (MOCK && b.mockAllied) {            /* the rig's stand-in for an allied Discord */
+        if (!db.allied[String(b.mockAllied)]) return send(res, 403, { ok: false, error: "not a member of the fleet Discord or of an allied task-force Discord" });
+        gate = { allied: { id: String(b.mockAllied), name: db.allied[String(b.mockAllied)].name } };
+      }
       let acc = db.accounts[who.id];
+      /* an allied operator never enters the approval queue and never becomes
+         a fleet record: standing ALLIED from the first sign-in, org attached.
+         A fleet member who is ALSO in an allied Discord stays a fleet member. */
+      if (gate.allied && (!acc || acc.role === "pending" || acc.role === "allied")) {
+        if (!acc) acc = db.accounts[who.id] = { discordName: who.username, role: "allied", createdAt: Date.now() };
+        acc.role = "allied"; acc.org = gate.allied.name; acc.orgGuild = gate.allied.id;
+      }
       const initialized = hasCommand();
       if (!initialized) {
         if (!BOOTSTRAP_TOKEN)
@@ -437,7 +475,9 @@ const server = http.createServer(async (req, res) => {
 
     if (p === "/api/me" && req.method === "GET") {
       if (Date.now() - (a.acc.lastSeen || 0) > 60000) { a.acc.lastSeen = Date.now(); persist(); }
-      return send(res, 200, { ok: true, account: Object.assign(pub(a.acc, a.id), { sessionCallsign: a.session.callsign || null }), relay: relayFor(a.acc) });
+      const me = Object.assign(pub(a.acc, a.id), { sessionCallsign: a.session.callsign || null });
+      if (a.acc.role === "allied") me.jointNets = Object.entries(db.netAccess).filter(([, l]) => l === "joint").map(([n]) => n);
+      return send(res, 200, { ok: true, account: me, relay: relayFor(a.acc) });
     }
     /* sign out: the presenting session dies server-side, not just in the
        browser — a shared machine can't resurrect it from a saved token */
@@ -463,6 +503,28 @@ const server = http.createServer(async (req, res) => {
     /* command-only below */
     if (a.acc.role !== "command") return send(res, 403, { ok: false, error: "COMMAND role required" });
 
+    if (p === "/api/allied" && req.method === "GET") {
+      return send(res, 200, { ok: true, allied: Object.entries(db.allied).map(([id, g]) => ({ guildId: id, name: g.name, addedAt: g.addedAt || null,
+        accounts: Object.values(db.accounts).filter(x => x.role === "allied" && x.orgGuild === id).length })) });
+    }
+    if (p === "/api/allied" && req.method === "POST") {
+      const b = await body(req);
+      const id = String(b.guildId || "").trim(), name = String(b.name || "").trim().replace(/\s+/g, " ").slice(0, 60);
+      if (!/^\d{5,25}$/.test(id)) return send(res, 400, { ok: false, error: "guildId must be the Discord server id (a number)" });
+      if (!name) return send(res, 400, { ok: false, error: "name required" });
+      if (id === GUILD_ID) return send(res, 400, { ok: false, error: "that is the fleet's own Discord" });
+      db.allied[id] = { name, addedAt: Date.now(), by: a.id }; persist();
+      audit(a.acc.callsign || a.acc.discordName, a.id, "allied", "added " + name + " (" + id + ")");
+      return send(res, 200, { ok: true });
+    }
+    const alliedRemove = /^\/api\/allied\/(\d{5,25})\/remove$/.exec(p);
+    if (alliedRemove && req.method === "POST") {
+      if (!db.allied[alliedRemove[1]]) return send(res, 404, { ok: false, error: "no such allied org" });
+      const name = db.allied[alliedRemove[1]].name;
+      delete db.allied[alliedRemove[1]]; persist();
+      audit(a.acc.callsign || a.acc.discordName, a.id, "allied", "removed " + name + " (" + alliedRemove[1] + ") — its operators keep ALLIED standing until revoked");
+      return send(res, 200, { ok: true });
+    }
     if (p === "/api/accounts" && req.method === "GET") {
       return send(res, 200, { ok: true, accounts: Object.entries(db.accounts).map(([id, acc]) => pub(acc, id)) });
     }
@@ -514,7 +576,7 @@ const server = http.createServer(async (req, res) => {
        than a Discord snowflake */
     if ((m = /^\/api\/accounts\/([A-Za-z0-9-]{1,40})\/role$/.exec(p)) && req.method === "POST") {
       const b = await body(req);
-      if (!["pending", "member", "element", "command", "revoked"].includes(b.role)) return send(res, 400, { ok: false, error: "bad role" });
+      if (!["pending", "allied", "member", "element", "command", "revoked"].includes(b.role)) return send(res, 400, { ok: false, error: "bad role" });
       if (m[1] === a.id && b.role !== "command") return send(res, 400, { ok: false, error: "cannot demote yourself" });
       const updated = await serializeMutation(async () => {
         const target = db.accounts[m[1]];
@@ -556,7 +618,7 @@ const server = http.createServer(async (req, res) => {
     if (p === "/api/nets/access" && req.method === "POST") {
       const b = await body(req);
       const netName = String(b.net || "").trim().slice(0, 120);
-      if (!netName || !["open", "member", "command"].includes(b.level)) return send(res, 400, { ok: false, error: "need net + level(open|member|command)" });
+      if (!netName || !["open", "joint", "member", "command"].includes(b.level)) return send(res, 400, { ok: false, error: "need net + level(open|joint|member|command)" });
       await serializeMutation(async () => {
         const hadPrevious = Object.prototype.hasOwnProperty.call(db.netAccess, netName);
         const previous = db.netAccess[netName];
