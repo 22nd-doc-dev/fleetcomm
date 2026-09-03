@@ -864,7 +864,7 @@ module.exports = function createPortalApi(deps) {
           id: s.id, name: s.name, designation: s.designation || "", role: s.role || "",
         })),
         ranks: (pdb.catalog.ranks || []).filter(r => !r.hidden)
-          .map(r => ({ grade: r.grade, name: r.name, abbr: r.abbr })),
+          .map(r => ({ grade: r.grade, name: r.name, abbr: r.abbr, branch: r.branch || "" })),
         certs: (pdb.catalog.certs || []).filter(c => !c.hidden).map(c => ({ id: c.id, name: c.name })),
         awards: (pdb.catalog.awards || []).filter(a => !a.hidden)
           .map(a => ({ id: a.id, name: a.name, img: a.img || "" })),
