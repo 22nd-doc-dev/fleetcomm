@@ -790,6 +790,126 @@ const rsiServer = http.createServer((req, res) => {
   r = await api("GET", "/api/personnel/2002", null, doc);
   ok(r.body.profile.rank.abbr === "PO1", "a Navy promotion skips the Marine rank filed beside it");
 
+  /* ── batch 4: ribbons, the snapshot importer, the go-live reset, editable copy ── */
+  r = await api("POST", "/api/catalog", { ribbons: [{ id: "pyro-campaign", name: "Pyro Campaign Ribbon", img: "", description: "Served in the Pyro system" },
+    { id: "good-conduct", name: "Good Conduct Ribbon", img: "good-conduct.png", description: "" }] }, doc);
+  ok(r.status === 200 && r.body.catalog.ribbons.length === 2, "the Fleet Office keeps a ribbons catalog");
+  r = await api("GET", "/api/public");
+  ok(r.body.ribbons && r.body.ribbons.length === 2, "ribbons are on the public registry");
+  r = await api("POST", "/api/personnel/bulk", { ids: ["2002"], action: { type: "ribbon", ribbonId: "pyro-campaign", note: "Op Ember" } }, doc);
+  ok(r.body.results["2002"].ok, "COMMAND issues a ribbon");
+  r = await api("GET", "/api/personnel/2002", null, doc);
+  ok(r.body.profile.ribbons.length === 1 && r.body.profile.ribbons[0].note === "Op Ember" && r.body.profile.record.some(e => e.kind === "ribbon"),
+     "the ribbon sits on the profile rack and the record");
+  r = await api("POST", "/api/personnel/import/csv", { csv: "id,ribbons\n2002,Good Conduct Ribbon; pyro-campaign\n" }, doc);
+  r = await api("GET", "/api/personnel/2002", null, doc);
+  ok(r.body.profile.ribbons.length === 2, "the spreadsheet pins ribbons by name or id, never twice");
+
+  /* the snapshot importer: rich records, dry run first, idempotent */
+  const ships4 = (await api("GET", "/api/roster", null, doc)).body.ships;
+  const tiber4 = ships4.find(s => s.id === "tiber");
+  let vac4 = null;
+  for (const d of tiber4.departments) for (const st of d.stations) if (!vac4 && !st.assignee) vac4 = { d, st };
+  const snap = { source: "22nd.space crawl", dryRun: true, members: [
+    { discordId: "9009", callsign: "Jack Sheridan", discordUser: "sheridan", rank: "Petty Officer First Class", rating: "GM1", status: "active",
+      joinedAt: "2024-03-01", rsiHandle: "Jack_Sheridan", timezone: "Central Time (US & Canada)",
+      squadrons: [{ squadron: "Marine Group 212", billet: "Marine", element: "Reaper 1-2", tacsign: "Reaper 1-2 B", lead: false }],
+      stations: [{ ship: tiber4.name, station: vac4.st.title }],
+      certs: ["Gunner's Mate", { cert: "hospital-corpsman", at: "15AUG2956" }],
+      awards: [{ award: "Navigator's Star", at: "2025-11-02", citation: "Charted the Pyro run" }],
+      ribbons: [{ ribbon: "Good Conduct Ribbon", at: "01JAN2956" }],
+      record: [{ at: "2025-06-10", kind: "deployment", text: "Deployed to Pyro with DESRON-38" }],
+      orders: [{ at: "2025-06-01", unit: tiber4.name, title: vac4.st.title, text: "ASSIGNMENT ORDER — verbatim from the old portal" }],
+      loa: false },
+    { callsign: "Old Hand", rank: null, status: "reserve", loa: { since: "2026-01-05", reason: "Deployed IRL" } },
+  ] };
+  r = await api("POST", "/api/personnel/import", snap, doc);
+  ok(r.status === 200 && r.body.dryRun === true && r.body.created === 2 && r.body.errors.length === 0 && r.body.changes.length === 2,
+     "the snapshot dry run reports two new records and no refusals");
+  r = await api("GET", "/api/personnel/9009", null, doc);
+  ok(r.status === 404, "…and files nothing");
+  snap.dryRun = false;
+  r = await api("POST", "/api/personnel/import", snap, doc);
+  ok(r.status === 200 && r.body.created === 2 && r.body.errors.length === 0, "the snapshot applies");
+  r = await api("GET", "/api/personnel/9009", null, doc);
+  const jack = r.body.profile;
+  ok(jack && jack.callsign === "JACK SHERIDAN" && jack.manual === true && jack.rank.abbr === "PO1" && jack.rating === "GM1" && jack.discordUser === "sheridan" &&
+     jack.joinedAt === Date.UTC(2024, 2, 1, 12), "a record filed under the Discord id carries name, rank, rate, handle and enlistment");
+  ok(jack.department === vac4.d.name + " · " + tiber4.name && jack.units.squadrons.includes("mg-212") && jack.certs.length === 2 &&
+     jack.awards.length === 1 && jack.awards[0].citation === "Charted the Pyro run" && jack.awards[0].at === Date.UTC(2025, 10, 2, 12) &&
+     jack.ribbons.length === 1 && jack.record.some(e => e.kind === "deployment" && e.src === "22nd.space crawl") &&
+     jack.orders.length === 1 && jack.orders[0].text.startsWith("ASSIGNMENT ORDER"),
+     "seats, certs, the cited award, the ribbon, the record and the verbatim orders all land, tagged with their source");
+  ok(jack.record.find(e => e.kind === "enlist").at === Date.UTC(2024, 2, 1, 12), "the enlistment entry takes the imported date");
+  r = await api("POST", "/api/personnel/import", snap, doc);
+  ok(r.body.created === 0 && r.body.updated === 2 && r.body.applied === 0, "re-running the snapshot changes nothing — nothing is doubled");
+  r = await api("GET", "/api/personnel", null, doc);
+  const oldHand = r.body.roster.find(p => p.callsign === "OLD HAND");
+  ok(oldHand && oldHand.rank.abbr === "—" && oldHand.status === "reserve", "an unranked reservist stays honest");
+  r = await api("GET", "/api/loa", null, doc);
+  ok(r.body.active.some(l => l.discordId === oldHand.discordId && l.reason === "Deployed IRL"), "…and arrives on leave with the reason");
+  r = await api("POST", "/api/login", { mockId: "9009", mockName: "Sheridan" });
+  ok(r.status === 200 && r.body.account.role === "member" && r.body.account.callsign === "JACK SHERIDAN",
+     "when that Discord id signs in, the record is already theirs — no queue, no merge");
+  await api("POST", "/api/bot/muster", { members: [{ id: "9009", username: "Sheridan", handle: "sheridan", nick: null, roles: [] }] }, "Bot bot-secret-test");
+  r = await api("GET", "/api/personnel/9009", null, doc);
+  ok(r.body.profile.manual === false, "seen on Discord, the pre-filed record stops being a stand-in");
+
+  /* the go-live reset: a dry run inventories, RESET applies, imports and identities survive */
+  r = await api("POST", "/api/admin/reset-baseline", { dryRun: true }, doc);
+  ok(r.status === 200 && r.body.dryRun === true && r.body.inventory.records.awards >= 1 && r.body.inventory.logistics.orders >= 1 && r.body.inventory.mast >= 1,
+     "the reset dry run inventories what would go");
+  r = await api("POST", "/api/admin/reset-baseline", { confirm: "RESET" }, oak);
+  ok(r.status === 403, "the reset is management's alone");
+  r = await api("POST", "/api/admin/reset-baseline", {}, doc);
+  ok(r.status === 200 && r.body.dryRun === true, "without the typed word it stays a dry run");
+  r = await api("POST", "/api/admin/reset-baseline", { confirm: "RESET" }, doc);
+  ok(r.status === 200 && r.body.dryRun === false, "COMMAND resets to the imported baseline");
+  r = await api("GET", "/api/personnel/9009", null, doc);
+  ok(r.body.profile.awards.length === 1 && r.body.profile.orders.length === 1 && r.body.profile.record.some(e => e.kind === "enlist") &&
+     r.body.profile.rank.abbr === "PO1" && r.body.profile.units.squadrons.includes("mg-212") && r.body.profile.department === vac4.d.name + " · " + tiber4.name,
+     "the imported record survives whole — award, orders, enlistment, rank, muster, seat");
+  r = await api("GET", "/api/personnel/2002", null, doc);
+  ok(r.body.profile.awards.length === 0 && r.body.profile.ribbons.length === 1 && r.body.profile.ribbons[0].ribbonId === "good-conduct" &&
+     r.body.profile.scopes.length === 0 && r.body.profile.record.some(e => e.kind === "enlist") && r.body.profile.rank.abbr === "PO1",
+     "test-session decorations and purviews are gone; the spreadsheet's ribbon, identity, enlistment and rank stay");
+  r = await api("GET", "/api/logistics", null, doc);
+  ok(r.body.orders.length === 0 && r.body.inventory.length === 0 && r.body.claims.length === 0, "the logistics desk is clean");
+  r = await api("GET", "/api/mast", null, doc);
+  ok(r.body.mine.length === 0 && r.body.inbox.length === 0, "no mast cases remain");
+  r = await api("GET", "/api/audit?limit=5", null, doc);
+  ok(r.body.entries.some(e => e.action === "reset-baseline"), "the reset itself is on the ledger");
+
+  /* editable public copy */
+  r = await api("GET", "/api/content?page=join.html");
+  ok(r.status === 200 && r.body.ok && Object.keys(r.body.blocks).length === 0, "the public copy store answers without a sign-in");
+  const dirtyHtml = "Enlist <b>today</b><script>alert(1)</script><a href=\"javascript:x\" onclick=\"y\">x</a> <img src=\"https://evil.example/x.png\">";
+  r = await api("POST", "/api/content", { key: "join.html:abc123", page: "join.html", orig: "Enlist", html: dirtyHtml }, oak);
+  ok(r.status === 403, "only management edits the public copy");
+  r = await api("POST", "/api/content", { key: "join.html:abc123", page: "join.html", orig: "Enlist", html: dirtyHtml }, doc);
+  ok(r.status === 200 && r.body.block.v === 1 && !/script|javascript|onclick|evil/.test(r.body.block.html) && /<b>today<\/b>/.test(r.body.block.html),
+     "copy is published sanitized — bold stays; scripts, handlers and foreign images go");
+  r = await api("POST", "/api/content", { key: "join.html:abc123", page: "join.html", orig: "Enlist", html: "Enlist <i>now</i>" }, doc);
+  r = await api("GET", "/api/content?page=join.html");
+  ok(r.body.blocks["join.html:abc123"].v === 2 && /now/.test(r.body.blocks["join.html:abc123"].html), "the newest version is what the page prints");
+  r = await api("GET", "/api/content/history?key=join.html:abc123", null, doc);
+  ok(r.body.versions.length === 2 && r.body.versions[0].v === 2, "every version is kept");
+  r = await api("POST", "/api/content", { key: "join.html:abc123", restore: 1 }, doc);
+  r = await api("GET", "/api/content?page=join.html");
+  ok(r.body.blocks["join.html:abc123"].v === 3 && /today/.test(r.body.blocks["join.html:abc123"].html), "a restore republishes an old version as a new one");
+  r = await api("POST", "/api/content", { key: "join.html:abc123", clear: true }, doc);
+  r = await api("GET", "/api/content?page=join.html");
+  ok(!r.body.blocks["join.html:abc123"], "clearing a block puts the printed copy back");
+  r = await api("POST", "/api/docs", { name: "hero.png", data: pngB3, tag: "public" }, doc);
+  ok(r.status === 200 && r.body.file.tag === "public", "management uploads a public image");
+  const pubImg = r.body.file.id;
+  r = await rawGet("/api/content/img/" + pubImg);
+  ok(r.status === 200 && r.headers["content-type"] === "image/png", "…which the site serves to anyone");
+  r = await api("POST", "/api/docs", { name: "hero2.png", data: pngB3, tag: "public" }, oak);
+  ok(r.status === 403, "…but members cannot");
+  r = await api("GET", "/api/docs", null, oak);
+  ok(!r.body.files.some(f => f.tag === "public"), "public images stay out of the course library");
+
   await stop();
   fs.rmSync(dataDir, { recursive: true, force: true });
   console.log("\n✔ PORTAL API PASS — profiles, bulk actions, CoC, availability, events, SSO and the bot door hold their gates");
