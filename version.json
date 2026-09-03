@@ -1,4 +1,4 @@
 {
-  "version": "1.4.2",
-  "notes": "FleetComm 1.4.2 — the garble, found. The stretched, doubled radio on some launches was the audio output running at the wrong rate after a headset changed format (a Bluetooth headset dropping to its headset profile when the mic opens is the classic), not a busy machine. The app now notices within three seconds, re-opens the output itself and tells you in the COMM LOG (\"audio output re-opened\" then \"back on rate\") — no relaunch. CAM: while you stream, MY CAM shows STREAMING with the window you are sending. Callsigns: the callsign you enter is for this session only — it no longer changes your callsign on the fleet site."
+  "version": "1.4.3",
+  "notes": "FleetComm 1.4.3 — COMMAND: every row on ACCOUNTS & ACCESS now has SET CALLSIGN. Click it, type the callsign the fleet site should carry for that member, press Enter — it updates the site and the list at once (Esc cancels). Use it to put back any callsign the app renamed before 1.4.2."
 }
