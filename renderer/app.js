@@ -492,14 +492,14 @@ setInterval(pollPads, 16);
 window.addEventListener("gamepadconnected", () => pollPads());
 
 /* ══ AUDIO ══ */
-const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+let ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });   /* replaceable: see rebuildAudioEngine() */
 /* ── master busses ──
    Two independent levels in the header: VOICE scales everything the nets play
    locally (every RX chain, chirps, squelch tails — one gain node they all
    route through), 1MC scales how loud clips are piped — both what the fleet
    hears and the sender's own monitor. Per-net volume knobs still do their job
    underneath; these are the room-level trims. */
-const masterGain = ctx.createGain();
+let masterGain = ctx.createGain();
 masterGain.connect(ctx.destination);
 let masterVol = Math.max(0, Math.min(150, Number(store.get("masterVol", 100)) || 100));
 /* 1MC clips at 100% flattened the stress test — everyone starts at 35 now.
@@ -787,16 +787,57 @@ function audioClockSample(audioMs, wallMs) {
       (ratio < 1 ? "slower" : "faster") + " than the engine renders it, so voice sounds " + (ratio < 1 ? "stretched" : "rushed") +
       " (a headset that changed format \u2014 Bluetooth switching to its headset profile is the classic) \u2014 re-opening the output");
   }
-  if (clockWatch.healed >= 3) {
+  if (clockWatch.healed >= 4) {
     if (now - clockWatch.said > 300000) {
       clockWatch.said = now;
-      addLog("sys", "", "audio engine clock still off rate (" + pct + "%) after re-opening the output three times \u2014 restart FleetComm; if it comes back, set the output device to 48000 Hz in Windows sound settings");
+      addLog("sys", "", "audio engine clock still off rate (" + pct + "%) after re-opening the output and rebuilding the engine \u2014 restart FleetComm; if it comes back, set the output device to 48000 Hz in Windows sound settings and say which headset");
     }
     return null;
   }
   if (now - clockWatch.lastHeal < 20000) return null;
   clockWatch.lastHeal = now; clockWatch.healed++; clockWatch.off = 0;
-  return healAudioClock(pct);
+  /* first try the cheap detour (a new output stream, no silence); if the
+     clock is still off after that, the device parameters Chromium holds are
+     stale and only a NEW engine re-asks the device — rebuild */
+  return clockWatch.healed === 1 ? healAudioClock(pct) : rebuildAudioEngine("clock at " + pct + "%");
+}
+/* ── the full rebuild ──
+   The renderer caches an output device's parameters (rate, buffer) when a
+   sink is first opened; a headset that changed format after that (Bluetooth
+   dropping to its headset profile when the mic opened) keeps being driven
+   with the old numbers, and a new stream on the same cached sink inherits
+   them — which is why "restart FleetComm" was the only cure in the field.
+   Closing the context, letting the sink cache expire, and building a fresh
+   engine re-asks the device. Everything that hung off the old context is
+   rebuilt: master bus, every tuned net's chain, the capture worklet, the
+   noise bed; decoder cursors restart against the new clock. */
+let REBUILD_PAUSE_MS = 6000;                       /* the rig shortens it */
+let audioRebuilds = 0;
+async function rebuildAudioEngine(reason) {
+  audioRebuilds++;
+  const micWasOpen = !!capNode;
+  addLog("sys", "", "audio engine rebuild \u2014 " + reason + "; " + (REBUILD_PAUSE_MS / 1000) + " s of silence while the device is re-asked for its format");
+  const old = ctx;
+  if (capNode) { try { capNode.disconnect(); } catch (e) {} capNode = null; }
+  for (const n of nets) {
+    (n.fxNodes || []).forEach(x => { try { x.disconnect(); } catch (e) {} });
+    if (n.noiseSrc) { try { n.noiseSrc.stop(); } catch (e) {} n.noiseSrc = null; }
+    [n.gainNode, n.panNode, n.noiseGain].forEach(x => { if (x) { try { x.disconnect(); } catch (e) {} } });
+  }
+  try { await old.close(); } catch (e) {}
+  await new Promise(r => setTimeout(r, REBUILD_PAUSE_MS));
+  ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+  masterGain = ctx.createGain(); masterGain.connect(ctx.destination); masterGain.gain.value = masterVol / 100;
+  noiseBuf = null;
+  for (const n of nets) if (n.gainNode) makeChain(n);   /* a tuned net's chain, on the new engine */
+  for (const d of decoders.values()) d.cursor = 0;
+  ensureMic.workletLoaded = false;                       /* the worklet module is per context */
+  if (outDevice) { try { await applyOutputDevice(); } catch (e) {} }
+  if (ctx.state !== "running") { try { await ctx.resume(); } catch (e) {} }
+  if (micWasOpen) await ensureMic();
+  clockWatch.t = performance.now(); clockWatch.c = ctx.currentTime;
+  addLog("sys", "", "audio engine rebuilt \u2014 " + ctx.state + " @ " + ctx.sampleRate + " Hz, output latency " +
+    Math.round((ctx.outputLatency || ctx.baseLatency || 0) * 1000) + " ms" + (micWasOpen ? ", microphone re-opened" : "") + "; watching");
 }
 async function healAudioClock(pct) {
   audioHeals++;
@@ -2828,6 +2869,7 @@ function camMayWatch(dm, a) {
   const mode = dm === undefined ? discordMode : dm;
   const account = a === undefined ? acct : a;
   if (!mode || !account) return true;                    /* legacy = open */
+  if (account.account.role === "allied") return account.account.orgLead === true;   /* allied command watches */
   return ["element", "command"].includes(account.account.role);
 }
 const camCanon = (s) => String(s || "").toUpperCase().replace(/[^A-Z0-9]+/g, "-").replace(/^-+|-+$/g, "");
@@ -4118,6 +4160,26 @@ if (bridge.autotestHost) {
       L("audio-clock-heal-logged", sysLines.length >= logs0 + 2 && /re-opened/.test(sysLines.join("\n")));
       audioClockSample(1000, 1000); audioClockSample(1000, 1000); audioClockSample(1000, 1000);
       L("audio-clock-recovers", !clockWatch.ailing && /back on rate/.test(sysLines.join("\n")));
+      /* the second heal is a full engine rebuild: new context, every chain and the mic on it, frames still play */
+      {
+        const pauseWas = REBUILD_PAUSE_MS; REBUILD_PAUSE_MS = 300;
+        const oldCtx = ctx, micOpen = !!capNode, r0 = audioRebuilds;
+        await rebuildAudioEngine("rig");
+        const k = nets.findIndex(n => n.tuned && n.gainNode);
+        const chainsFresh = nets.filter(n => n.gainNode).every(n => n.gainNode.context === ctx && n.panNode.context === ctx);
+        let played = false;
+        if (k >= 0) { try { playFrame(nets[k], 434343, silentOpus()); played = true; } catch (e) { played = "threw:" + e.message; } }
+        await new Promise(r => setTimeout(r, 1200));
+        const ratio = (ctx.currentTime - clockWatch.c) * 1000 / (performance.now() - clockWatch.t);
+        L("audio-rebuild-playable", audioRebuilds === r0 + 1 && ctx !== oldCtx && oldCtx.state === "closed" && ctx.state === "running" && chainsFresh && played === true && Math.abs(ratio - 1) < 0.15 && (!micOpen || !!capNode) && masterGain.context === ctx);
+        if (!(audioRebuilds === r0 + 1 && ctx !== oldCtx && oldCtx.state === "closed" && ctx.state === "running" && chainsFresh && played === true && Math.abs(ratio - 1) < 0.15 && (!micOpen || !!capNode) && masterGain.context === ctx))
+          L("audio-rebuild-detail", JSON.stringify({ closed: oldCtx.state, state: ctx.state, chainsFresh, played, ratio, mic: !!capNode, micOpen }));
+        REBUILD_PAUSE_MS = pauseWas;
+        /* a stale cursor from the OLD clock would sit far in the new clock's future; played frames may be in the past */
+        const decodersOk = [...decoders.values()].every(d => d.cursor < ctx.currentTime + 2);
+        L("audio-rebuild-cursors", decodersOk);
+        L("cam-lead-may-watch", camMayWatch(true, { account: { role: "allied", orgLead: true } }) === true && camMayWatch(true, { account: { role: "allied", orgLead: false } }) === false);
+      }
     }
     /* fleet identity: ACCOUNTS rows read rank + name from the roster, the sign-in
        card says who the fleet thinks you are, and nothing on this page can edit a name */

@@ -129,6 +129,9 @@ function stop() {
   ok(r.status === 200 && r.body.account.orgLead === true, "COMMAND makes an allied operator an organization lead");
   r = await api("GET", "/api/me", null, blue);
   ok(r.body.account.orgLead === true && r.body.account.orgNets.includes("BLUE FLEET COMMAND") && !r.body.account.orgNets.includes("JTF COORD"), "the lead's /api/me lists its org's own nets apart from the JOINT ones");
+  r = await api("POST", "/api/callsign", { callsign: "Blue Actual" }, blue);
+  r = await api("GET", "/api/cam-viewers", null, doc);
+  ok(r.status === 200 && r.body.viewers.includes("BLUE ACTUAL"), "an organization lead is a cleared helmet-cam viewer under the callsign they are on the air with");
   r = await api("POST", "/api/accounts/oak/orglead", { lead: true }, doc);
   ok(r.status === 400, "only an ALLIED account can lead an organization");
   r = await api("POST", "/api/accounts/blue-1/orglead", { lead: true }, blue);
