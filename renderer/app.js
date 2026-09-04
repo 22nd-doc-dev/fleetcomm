@@ -2596,6 +2596,13 @@ function renderAccts(data) {
     const btns =
       (x.role === "pending" ? '<button class="ann lit-g" data-role="member">APPROVE</button>' : "") +
       (x.role === "member" ? '<button class="ann lit-g" data-role="element" title="May watch helmet cams; no COMMAND powers">ELEMENT LEAD</button>' : "") +
+      /* an ally who sits in the fleet's Discord arrives as pending/member: file them under their org */
+      (["pending", "member", "element"].includes(x.role) && alliedOrgs.length
+        ? '<select class="orgsel" data-toallied title="File this account as ALLIED under an organization"><option value="">TO ALLIED\u2026</option>' +
+          alliedOrgs.map(g => '<option value="' + escAttr(g.guildId) + '">' + esc(g.name) + '</option>').join("") + '</select>' : "") +
+      (x.role === "allied" && alliedOrgs.length > 1
+        ? '<select class="orgsel" data-toallied title="Move this operator to another organization">' +
+          alliedOrgs.map(g => '<option value="' + escAttr(g.guildId) + '"' + (x.orgGuild === g.guildId ? " selected" : "") + '>' + esc(g.name) + '</option>').join("") + '</select>' : "") +
       (x.role === "allied" ? '<button class="ann' + (x.orgLead ? " lit-a" : "") + '" data-orglead="' + (x.orgLead ? "0" : "1") + '" title="An organization lead may create, rename and delete nets inside their own organization\u2019s nets">' + (x.orgLead ? "ORG LEAD ✓" : "MAKE ORG LEAD") + '</button>' : "") +
       (x.role === "element" || x.role === "allied" ? '<button class="ann" data-role="member">TO MEMBER</button>' : "") +
       (x.role === "member" || x.role === "element" ? '<button class="ann lit-c" data-role="command">PROMOTE</button>' : "") +
@@ -2767,6 +2774,12 @@ $("acctList").addEventListener("click", async (e) => {
   const id = b.closest(".acctrow").dataset.id;
   const r = await ipcRenderer.invoke("acct", { method: "POST", path: "/api/accounts/" + id + "/role", body: { role: b.dataset.role } });
   if (!r.ok) toast(r.error); else { toast("Role updated."); refreshAccts(); }
+});
+$("acctList").addEventListener("change", async (e) => {
+  const sel = e.target.closest("[data-toallied]"); if (!sel || !sel.value) return;
+  const id = sel.closest(".acctrow").dataset.id;
+  const r = await ipcRenderer.invoke("acct", { method: "POST", path: "/api/accounts/" + id + "/role", body: { role: "allied", orgGuild: sel.value } });
+  if (!r.ok) { toast(r.error); sel.value = ""; } else { toast("Filed as ALLIED · " + sel.options[sel.selectedIndex].textContent + "."); refreshAccts(); }
 });
 $("netAccess").addEventListener("change", async (e) => {
   const s2 = e.target.closest("[data-lvl]"); if (!s2) return;
@@ -4146,6 +4159,9 @@ if (bridge.autotestHost) {
       const leadRow = $("acctList").querySelector(".acctrow");
       L("acct-org-lead-row", !!leadRow && leadRow.querySelector(".rolelbl").textContent === "ALLIED LEAD · Blue Fleet" && !!leadRow.querySelector('[data-orglead="0"]'));
       renderAllied([{ guildId: "90000000000000002", name: "Blue Fleet", accounts: 3 }]);
+      renderAccts({ accounts: [{ discordId: "424260", discordName: "guest", callsign: "Guest", role: "member" }], access: {} });
+      const toSel = $("acctList").querySelector("[data-toallied]");
+      L("acct-to-allied-picker", !!toSel && [...toSel.options].some(o => o.value === "90000000000000002" && /Blue Fleet/.test(o.textContent)) && toSel.value === "");
       L("allied-org-row", /Blue Fleet/.test($("alliedList").textContent) && /3 ON THE ROLLS/.test($("alliedList").textContent) && !!$("alliedList").querySelector("[data-gremove]"));
       renderAccts({ accounts: [], access: { "COMMAND NET": "org:90000000000000002" } });
       const orgSel = $("netAccess").querySelector('.narow[data-net="COMMAND NET"] select');

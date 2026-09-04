@@ -107,6 +107,23 @@ function stop() {
   r = await api("GET", "/api/me", null, r.body.token);
   ok(!r.body.account.jointNets.includes("BLUE FLEET COMMAND") && r.body.account.jointNets.includes("JTF COORD"), "another org's operator does not see Blue Fleet's own net");
 
+  /* an ally who sits in the fleet's Discord: COMMAND files them under an org */
+  r = await api("POST", "/api/login", { mockId: "guest", mockName: "Guest" });
+  const guest = r.body.token;
+  ok(r.body.account.role === "pending", "a fleet-Discord arrival starts pending as before");
+  r = await api("POST", "/api/accounts/guest/role", { role: "allied" }, doc);
+  ok(r.status === 400, "ALLIED standing without an organization is refused");
+  r = await api("POST", "/api/accounts/guest/role", { role: "allied", orgGuild: "90000000000000009" }, doc);
+  ok(r.status === 400, "an unlisted organization is refused");
+  r = await api("POST", "/api/accounts/guest/role", { role: "allied", orgGuild: "90000000000000002" }, doc);
+  ok(r.status === 200 && r.body.account.role === "allied" && r.body.account.org === "Blue Fleet" && r.body.account.orgGuild === "90000000000000002", "COMMAND files a fleet-Discord account as ALLIED under Blue Fleet");
+  r = await api("GET", "/api/me", null, guest);
+  ok(r.body.account.role === "allied" && r.body.account.jointNets.includes("BLUE FLEET COMMAND"), "the converted account sees its organization's nets");
+  r = await api("POST", "/api/accounts/guest/role", { role: "allied", orgGuild: "90000000000000001" }, doc);
+  ok(r.status === 200 && r.body.account.org === "Seeded Squadron", "COMMAND moves an allied operator to another organization");
+  r = await api("POST", "/api/login", { mockId: "guest", mockName: "Guest" });
+  ok(r.body.account.role === "allied" && r.body.account.org === "Seeded Squadron", "a later sign-in through the fleet Discord keeps ALLIED standing and the org");
+
   /* ORG LEAD: COMMAND flags an allied operator; they may manage their org's nets (relay-enforced) */
   r = await api("POST", "/api/accounts/blue-1/orglead", { lead: true }, doc);
   ok(r.status === 200 && r.body.account.orgLead === true, "COMMAND makes an allied operator an organization lead");

@@ -57,11 +57,16 @@ count 30–80.
    task-force nets to *JOINT — allied task force too*, each command net to its organization's
    *… ONLY (+ COMMAND)* entry (those entries appear once the org is on the list). A nest that
    holds allied nets needs the same level as its nets.
-4. **Flag the leads** — once each organization's lead has signed in once (they appear on the
+4. **Allies who sit in the 22nd's own Discord** (liaison officers, guests) arrive as PENDING or
+   MEMBER, not ALLIED — the fleet's Discord wins at sign-in. On their roster row, pick their
+   organization in the **TO ALLIED…** dropdown; they become ALLIED under that org, keep it on
+   every later sign-in, and disappear from the fleet's personnel rolls. The same dropdown on
+   an ALLIED row moves someone to another organization.
+5. **Flag the leads** — once each organization's lead has signed in once (they appear on the
    roster as ALLIED · <org>), press MAKE ORG LEAD on their row. From then on they can add
    nets under their organization's command net themselves (right-click ▸ new net); a new
    subnet inherits its parent's access, so it is theirs automatically.
-5. **Send each organization the briefing below** and test with one volunteer from each:
+6. **Send each organization the briefing below** and test with one volunteer from each:
    sign in, tune TASK FORCE AEGIS COMMAND, radio check.
 
 ## Briefing to send each organization
@@ -111,6 +116,6 @@ task-force nets back to OPEN or delete them. The 22nd's own nets were never touc
 ## Droplet checklist (Andy, before leaving — the only part outside the app)
 
 Relay (`/etc/mumble-server.ini`, then restart when nobody is on): `users=600`,
-`autobanSuccessfulConnections=false`, `autobanAttempts=30`. Accounts service at v1.4.7 or later
-(ALLIED standing, JOINT and per-org levels, org leads, the first-sign-in ACL sync), pulled from
-the tag — one file, backup kept.
+`autobanSuccessfulConnections=false`, `autobanAttempts=30`. Accounts service at v1.4.8 or later
+(ALLIED standing, JOINT and per-org levels, org leads, the first-sign-in ACL sync, TO ALLIED
+conversion), pulled from the tag — one file, backup kept.

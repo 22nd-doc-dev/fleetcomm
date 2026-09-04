@@ -341,7 +341,7 @@ function tokensFor(acc) {
   return [acc.relayToken];
 }
 function pub(acc, id) {
-  return { discordId: id, discordName: acc.discordName, callsign: acc.callsign || null, onAir: liveCallsign(id), role: acc.role, org: acc.org || null, orgLead: acc.orgLead === true, lastSeen: acc.lastSeen || null, createdAt: acc.createdAt };
+  return { discordId: id, discordName: acc.discordName, callsign: acc.callsign || null, onAir: liveCallsign(id), role: acc.role, org: acc.org || null, orgGuild: acc.orgGuild || null, orgLead: acc.orgLead === true, lastSeen: acc.lastSeen || null, createdAt: acc.createdAt };
 }
 /* what an allied client needs to draw its board: the nets it may enter (JOINT
    + its org's), its org's own nets (what an org lead may edit), and the flag */
@@ -624,6 +624,15 @@ const server = http.createServer(async (req, res) => {
       const b = await body(req);
       if (!["pending", "allied", "member", "element", "command", "revoked"].includes(b.role)) return send(res, 400, { ok: false, error: "bad role" });
       if (m[1] === a.id && b.role !== "command") return send(res, 400, { ok: false, error: "cannot demote yourself" });
+      /* ALLIED standing needs an organization: an ally who sits in the fleet's
+         own Discord arrives as pending/member, and COMMAND files them under
+         their org here. The org must be on the allied list. */
+      const orgGuild = b.orgGuild !== undefined ? String(b.orgGuild || "").trim() : null;
+      if (b.role === "allied") {
+        const target0 = db.accounts[m[1]];
+        const chosen = orgGuild || (target0 && target0.orgGuild) || "";
+        if (!chosen || !db.allied[chosen]) return send(res, 400, { ok: false, error: "ALLIED standing needs one of the listed allied organizations (orgGuild)" });
+      }
       const updated = await serializeMutation(async () => {
         const target = db.accounts[m[1]];
         if (!target) throw Object.assign(new Error("no such account"), { statusCode: 404 });
@@ -637,6 +646,10 @@ const server = http.createServer(async (req, res) => {
         const previousRole = target.role;
         const removedSessions = {};
         target.role = b.role;
+        if (b.role === "allied") {
+          const chosen = orgGuild || target.orgGuild;
+          target.orgGuild = chosen; target.org = db.allied[chosen].name;
+        } else if (b.role !== "revoked") { delete target.orgLead; }   /* a fleet standing carries no org lead */
         audit(a.acc.callsign || a.acc.discordName, a.id, "standing",
           (target.callsign || target.discordName || m[1]) + ": " + previousRole + " -> " + b.role);
         try { portal.onStanding(m[1], previousRole, b.role); } catch (error) { console.error("[portal] onStanding:", error.message); }
