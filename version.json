@@ -1,4 +1,4 @@
 {
-  "version": "1.4.9",
-  "notes": "FleetComm 1.4.9 — audio: if a first-launch garble is detected and re-opening the output does not fix it, the app now rebuilds its whole audio engine (six seconds of silence, once) — the in-app equivalent of the restart that used to be the only cure. Both steps are written to SETTINGS ▸ SYSTEM LOG; if it happens to you, COPY that log and send it to Andy with your headset model. Joint task force: an organization lead (COMMAND flags them on ACCOUNTS) can now watch helmet cams."
+  "version": "1.4.10",
+  "notes": "FleetComm 1.4.10 — COMMAND: the approval queue can now tell a recruit from an ally. Filter chips above the roster (ALL · AWAITING APPROVAL · AWAITING, IN AN ALLIED DISCORD · ALLIED · MEMBERS · COMMAND · REVOKED) with live counts, combining with the search box; rows say which allied Discords a person is also in, and a queue row for someone in exactly one allied Discord gets a one-click FILE AS <ORG>. The header count is a click straight to the queue."
 }
