@@ -1161,7 +1161,7 @@ module.exports = function createPortalApi(deps) {
          callsign (the app files it per session); the account's own callsign
          stays in the list for anyone on the air under it */
       const now = Date.now(), viewers = new Set();
-      const cleared = (id2) => { const a2 = db.accounts[id2]; return !!a2 && ["element", "command"].includes(a2.role); };
+      const cleared = (id2) => { const a2 = db.accounts[id2]; return !!a2 && (["element", "command"].includes(a2.role) || (a2.role === "allied" && a2.orgLead === true)); };
       for (const [id2, a2] of Object.entries(db.accounts)) if (cleared(id2) && a2.callsign) viewers.add(a2.callsign);
       for (const sess of Object.values(db.sessions || {})) {
         if (sess && sess.callsign && sess.expiresAt > now && cleared(sess.discordId)) viewers.add(sess.callsign);
