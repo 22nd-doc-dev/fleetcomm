@@ -442,6 +442,16 @@
   .camsrc b{display:block;font-family:var(--font-display);font-weight:600;font-size:1rem;letter-spacing:.04em;text-transform:uppercase;
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .acctrow .onair{color:var(--grn)}
+  .acctrow .alsoin{color:var(--gold)}
+  #acctChips{display:flex;flex-wrap:wrap;gap:6px;max-width:780px;margin:0 0 12px}
+  #acctChips .chip{font-family:var(--font-mono);font-size:.62rem;letter-spacing:.14em;padding:5px 9px;background:transparent;
+    border:1px solid var(--line);color:var(--muted);cursor:pointer}
+  #acctChips .chip .num{color:var(--ink2);margin-left:4px}
+  #acctChips .chip:hover{border-color:var(--gold);color:var(--ink)}
+  #acctChips .chip.on{border-color:var(--gold);color:var(--gold)}
+  #acctChips .chip.hot{border-color:var(--amber);color:var(--amber)}
+  #acctChips .chip.hot.on{background:rgba(var(--amberRGB, 201, 169, 106), .12)}
+  #acctPending{cursor:pointer}
   #alliedAdd{display:flex;gap:8px;align-items:center;margin:8px 0 6px}
   #alliedAdd input{flex:1;min-width:0;font-size:.8rem;padding:8px 10px;background:var(--bez);border:1px solid var(--line-strong);color:var(--ink)}
   #alliedBanner .v{color:var(--gold)}
@@ -1037,6 +1047,7 @@
           placeholder="SEARCH — callsign, discord name, standing, net, frequency">
         <span id="acctCount"></span>
       </div>
+      <div id="acctChips"></div>
       <div class="miniheading" style="margin-top:0">REGISTERED OPERATORS</div>
       <div id="acctList" style="max-width:780px"></div>
       <div class="miniheading">NET ACCESS — WHO MAY TUNE EACH NET (RELAY-ENFORCED)</div>

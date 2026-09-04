@@ -196,12 +196,15 @@ function discordGet(pathName, token) {
    { allied: { id, name } } for someone who is only in a listed allied Discord,
    and throws for everyone else. The fleet wins when both apply. */
 async function requireGuildMember(token) {
-  if (!GUILD_ID) return { fleet: true };      /* gate not configured — allow */
+  if (!GUILD_ID) return { fleet: true, alliedIn: [] };      /* gate not configured — allow */
   const guilds = await discordGet("/users/@me/guilds", token);
   if (!Array.isArray(guilds)) throw new Error("discord returned an unexpected guild list");
-  if (guilds.some(g => String(g && g.id) === GUILD_ID)) return { fleet: true };
+  /* every LISTED allied Discord the person is in — the approval queue's way to
+     tell a recruit from an ally who joined the fleet's Discord as a guest */
+  const alliedIn = guilds.filter(g => g && db.allied[String(g.id)]).map(g => String(g.id));
+  if (guilds.some(g => String(g && g.id) === GUILD_ID)) return { fleet: true, alliedIn };
   const allied = guilds.find(g => g && db.allied[String(g.id)]);
-  if (allied) return { allied: { id: String(allied.id), name: db.allied[String(allied.id)].name } };
+  if (allied) return { allied: { id: String(allied.id), name: db.allied[String(allied.id)].name }, alliedIn };
   throw new Error(Object.keys(db.allied).length
     ? "not a member of the fleet Discord or of an allied task-force Discord"
     : "not a member of the fleet Discord");
@@ -341,7 +344,8 @@ function tokensFor(acc) {
   return [acc.relayToken];
 }
 function pub(acc, id) {
-  return { discordId: id, discordName: acc.discordName, callsign: acc.callsign || null, onAir: liveCallsign(id), role: acc.role, org: acc.org || null, orgGuild: acc.orgGuild || null, orgLead: acc.orgLead === true, lastSeen: acc.lastSeen || null, createdAt: acc.createdAt };
+  return { discordId: id, discordName: acc.discordName, callsign: acc.callsign || null, onAir: liveCallsign(id), role: acc.role, org: acc.org || null, orgGuild: acc.orgGuild || null, orgLead: acc.orgLead === true,
+    inFleet: acc.inFleet === undefined ? null : acc.inFleet === true, alliedIn: Array.isArray(acc.alliedIn) ? acc.alliedIn : [], lastSeen: acc.lastSeen || null, createdAt: acc.createdAt };
 }
 /* what an allied client needs to draw its board: the nets it may enter (JOINT
    + its org's), its org's own nets (what an org lead may edit), and the flag */
@@ -439,11 +443,13 @@ const server = http.createServer(async (req, res) => {
       const who = await verifyDiscord(b);
       /* fleet Discord membership is checked before ANY account state is touched,
          so a non-member never lands in the queue in the first place */
-      let gate = { fleet: true };
+      let gate = { fleet: true, alliedIn: [] };
       if (!MOCK && b.discordToken) gate = await requireGuildMember(String(b.discordToken));
       else if (MOCK && b.mockAllied) {            /* the rig's stand-in for an allied Discord */
         if (!db.allied[String(b.mockAllied)]) return send(res, 403, { ok: false, error: "not a member of the fleet Discord or of an allied task-force Discord" });
-        gate = { allied: { id: String(b.mockAllied), name: db.allied[String(b.mockAllied)].name } };
+        gate = { allied: { id: String(b.mockAllied), name: db.allied[String(b.mockAllied)].name }, alliedIn: [String(b.mockAllied)] };
+      } else if (MOCK && Array.isArray(b.mockAlsoIn)) {   /* a fleet-Discord member who is ALSO in listed allied Discords */
+        gate = { fleet: true, alliedIn: b.mockAlsoIn.map(String).filter(id => db.allied[id]) };
       }
       let acc = db.accounts[who.id];
       /* an allied operator never enters the approval queue and never becomes
@@ -494,6 +500,7 @@ const server = http.createServer(async (req, res) => {
       }
       if (acc.role === "revoked") return send(res, 403, { ok: false, error: "access revoked by COMMAND" });
       acc.discordName = who.username; acc.lastSeen = Date.now();
+      acc.inFleet = !!gate.fleet; acc.alliedIn = gate.alliedIn || [];   /* refreshed on every sign-in */
       const token = crypto.randomBytes(24).toString("hex");
       db.sessions[token] = { discordId: who.id, createdAt: Date.now(), expiresAt: Date.now() + SESSION_TTL_MS };
       cleanSessions();

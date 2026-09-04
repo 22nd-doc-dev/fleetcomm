@@ -2632,12 +2632,37 @@ function renderAccts(data) {
   const pend = d.accounts.filter(x => x.role === "pending").length;
   $("acctPending").textContent = pend ? pend + " AWAITING APPROVAL" : "";
   const order = { pending: 0, command: 1, element: 2, member: 3, allied: 4, revoked: 5 };
-  const shownAccts = d.accounts.filter(x => acctHits(terms, [fleetName(x), x.callsign, x.discordName, x.role, x.org, x.discordId, x.onAir].map(v => String(v || "")).join(" ").toLowerCase()));
+  /* ── the queue filter ──
+     Chips narrow the roster before the search box does. "Awaiting · in an
+     allied Discord" is the one that matters on a joint-op week: an ally who
+     joined the fleet's Discord as a guest lands in the queue like a recruit,
+     and the service now records which listed allied Discords they are also
+     in, so those rows can be filed under their org in one click. */
+  const alsoIn = (x) => (x.alliedIn || []).map(id => alliedOrgs.find(g => g.guildId === String(id))).filter(Boolean);
+  const CHIPS = {
+    all: { label: "ALL", test: () => true },
+    awaiting: { label: "AWAITING APPROVAL", test: (x) => x.role === "pending" },
+    awaitingAllied: { label: "AWAITING \u00b7 IN AN ALLIED DISCORD", test: (x) => x.role === "pending" && alsoIn(x).length > 0 },
+    allied: { label: "ALLIED", test: (x) => x.role === "allied" },
+    members: { label: "MEMBERS", test: (x) => x.role === "member" || x.role === "element" },
+    command: { label: "COMMAND", test: (x) => x.role === "command" },
+    revoked: { label: "REVOKED", test: (x) => x.role === "revoked" }
+  };
+  if (!CHIPS[acctChip]) acctChip = "all";
+  $("acctChips").innerHTML = Object.entries(CHIPS).map(([k, c]) => {
+    const n = d.accounts.filter(c.test).length;
+    return '<button class="chip' + (k === acctChip ? " on" : "") + (k === "awaitingAllied" && n ? " hot" : "") + '" data-chip="' + k + '">' + c.label + ' <span class="num">' + n + "</span></button>";
+  }).join("");
+  const shownAccts = d.accounts.filter(CHIPS[acctChip].test)
+    .filter(x => acctHits(terms, [fleetName(x), x.callsign, x.discordName, x.role, x.org, x.discordId, x.onAir].concat(alsoIn(x).map(g => g.name)).map(v => String(v || "")).join(" ").toLowerCase()));
   const html = shownAccts.sort((x, y) => ((order[x.role] ?? 9) - (order[y.role] ?? 9)) || String(x.discordName).localeCompare(String(y.discordName))).map(x => {
     const btns =
       (x.role === "pending" ? '<button class="ann lit-g" data-role="member">APPROVE</button>' : "") +
       (x.role === "member" ? '<button class="ann lit-g" data-role="element" title="May watch helmet cams; no COMMAND powers">ELEMENT LEAD</button>' : "") +
-      /* an ally who sits in the fleet's Discord arrives as pending/member: file them under their org */
+      /* an ally who sits in the fleet's Discord arrives as pending/member: file them under their org —
+         one click when the service saw them in exactly one listed allied Discord */
+      (["pending", "member", "element"].includes(x.role) && alsoIn(x).length === 1
+        ? '<button class="ann lit-g" data-fileas="' + escAttr(alsoIn(x)[0].guildId) + '" title="Also in this organization\u2019s Discord \u2014 file them as ALLIED under it">FILE AS ' + esc(alsoIn(x)[0].name.toUpperCase()) + '</button>' : "") +
       (["pending", "member", "element"].includes(x.role) && alliedOrgs.length
         ? '<select class="orgsel" data-toallied title="File this account as ALLIED under an organization"><option value="">TO ALLIED\u2026</option>' +
           alliedOrgs.map(g => '<option value="' + escAttr(g.guildId) + '">' + esc(g.name) + '</option>').join("") + '</select>' : "") +
@@ -2652,7 +2677,9 @@ function renderAccts(data) {
                             : '<button class="ann lit-g" data-role="' + (x.org ? "allied" : "member") + '">REINSTATE</button>');
     return '<div class="acctrow" data-id="' + escAttr(x.discordId) + '"><div class="nm"><b>' + markHits(fleetName(x), terms) + '</b>' +
       '<span>discord: ' + markHits(x.discordName, terms) + " · " + (x.lastSeen ? "seen " + new Date(x.lastSeen).toLocaleString() : "never seen") +
-      (x.onAir ? ' · <span class="onair">on air as ' + markHits(x.onAir, terms) + "</span>" : "") + "</span></div>" +
+      (x.onAir ? ' · <span class="onair">on air as ' + markHits(x.onAir, terms) + "</span>" : "") +
+      (alsoIn(x).length ? ' · <span class="alsoin">also in ' + markHits(alsoIn(x).map(g => g.name).join(", "), terms) + "</span>" : "") +
+      (x.inFleet === false ? ' · <span class="alsoin">not in the fleet Discord</span>' : "") + "</span></div>" +
       '<span class="ann rolelbl ' + (x.role === "command" ? "lit-a" : x.role === "member" || x.role === "element" ? "lit-g" : "") + '">' + (x.role === "element" ? "ELEMENT LEADER" : x.role === "allied" ? (x.orgLead ? "ALLIED LEAD" : "ALLIED") + (x.org ? " · " + esc(x.org) : "") : esc(String(x.role).toUpperCase())) + "</span>" + btns + "</div>";
   }).join("");
   $("acctList").innerHTML = html || '<span class="hint">No operator matches “' + esc($("acctSearch").value) + '”.</span>';
@@ -2761,6 +2788,12 @@ $("sysLogCopy").addEventListener("click", async () => {
   try { await navigator.clipboard.writeText(sysLines.join("\n")); toast("System log copied — " + sysLines.length + " lines."); }
   catch (e) { toast("Couldn't copy: " + e.message); }
 });
+let acctChip = "all";                             /* the queue filter chip in force */
+$("acctChips").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-chip]"); if (!b) return;
+  acctChip = b.dataset.chip; renderAccts();
+});
+$("acctPending").addEventListener("click", () => { acctChip = "awaiting"; renderAccts(); });
 $("acctSearch").addEventListener("input", () => renderAccts());
 $("acctSearch").addEventListener("keydown", (e) => {
   if (e.key === "Escape") { e.preventDefault(); $("acctSearch").value = ""; renderAccts(); }
@@ -2804,6 +2837,13 @@ async function loadIdentity() {
   showSignedAs(null);
 }
 $("acctList").addEventListener("click", async (e) => {
+  const fa = e.target.closest("[data-fileas]");
+  if (fa) {
+    const id = fa.closest(".acctrow").dataset.id;
+    const r = await ipcRenderer.invoke("acct", { method: "POST", path: "/api/accounts/" + id + "/role", body: { role: "allied", orgGuild: fa.dataset.fileas } });
+    if (!r.ok) toast(r.error); else { toast("Filed as ALLIED \u00b7 " + fa.textContent.replace(/^FILE AS /, "") + "."); refreshAccts(); }
+    return;
+  }
   const lb = e.target.closest("[data-orglead]");
   if (lb) {
     const id = lb.closest(".acctrow").dataset.id;
@@ -4224,6 +4264,27 @@ if (bridge.autotestHost) {
       renderAccts({ accounts: [{ discordId: "424260", discordName: "guest", callsign: "Guest", role: "member" }], access: {} });
       const toSel = $("acctList").querySelector("[data-toallied]");
       L("acct-to-allied-picker", !!toSel && [...toSel.options].some(o => o.value === "90000000000000002" && /Blue Fleet/.test(o.textContent)) && toSel.value === "");
+      /* the queue filter: chips count, narrow, combine with the search box; an ally in the fleet Discord is one click */
+      {
+        const fixture = { accounts: [
+          { discordId: "424270", discordName: "recruit", callsign: "Recruit", role: "pending", inFleet: true, alliedIn: [] },
+          { discordId: "424271", discordName: "liaison", callsign: "Liaison", role: "pending", inFleet: true, alliedIn: ["90000000000000002"] },
+          { discordId: "424272", discordName: "sailor", callsign: "Sailor", role: "member", inFleet: true, alliedIn: [] },
+          { discordId: "424273", discordName: "gone", callsign: "Gone", role: "revoked" }], access: {} };
+        acctChip = "all"; renderAccts(fixture);
+        const chipCount = (k) => +$("acctChips").querySelector('[data-chip="' + k + '"] .num').textContent;
+        const countsOk = chipCount("all") === 4 && chipCount("awaiting") === 2 && chipCount("awaitingAllied") === 1 && chipCount("members") === 1 && chipCount("revoked") === 1;
+        $("acctChips").querySelector('[data-chip="awaitingAllied"]').click(); renderAccts(fixture);
+        const rows = [...$("acctList").querySelectorAll(".acctrow")];
+        const narrowed = rows.length === 1 && rows[0].dataset.id === "424271" && /also in Blue Fleet/.test(rows[0].textContent) && !!rows[0].querySelector('[data-fileas="90000000000000002"]');
+        $("acctSearch").value = "zzz"; renderAccts(fixture);
+        const combined = $("acctList").querySelectorAll(".acctrow").length === 0;
+        $("acctSearch").value = ""; $("acctPending").click(); renderAccts(fixture);
+        const viaPending = acctChip === "awaiting" && $("acctList").querySelectorAll(".acctrow").length === 2;
+        acctChip = "all";
+        L("acct-queue-filter", countsOk && narrowed && combined && viaPending);
+        if (!(countsOk && narrowed && combined && viaPending)) L("acct-queue-filter-detail", JSON.stringify({ countsOk, narrowed, combined, viaPending, rows: rows.map(r => r.dataset.id) }));
+      }
       L("allied-org-row", /Blue Fleet/.test($("alliedList").textContent) && /3 ON THE ROLLS/.test($("alliedList").textContent) && !!$("alliedList").querySelector("[data-gremove]"));
       renderAccts({ accounts: [], access: { "COMMAND NET": "org:90000000000000002" } });
       const orgSel = $("netAccess").querySelector('.narow[data-net="COMMAND NET"] select');

@@ -108,9 +108,13 @@ function stop() {
   ok(!r.body.account.jointNets.includes("BLUE FLEET COMMAND") && r.body.account.jointNets.includes("JTF COORD"), "another org's operator does not see Blue Fleet's own net");
 
   /* an ally who sits in the fleet's Discord: COMMAND files them under an org */
-  r = await api("POST", "/api/login", { mockId: "guest", mockName: "Guest" });
+  r = await api("POST", "/api/login", { mockId: "guest", mockName: "Guest", mockAlsoIn: ["90000000000000002", "90000000000000009"] });
   const guest = r.body.token;
   ok(r.body.account.role === "pending", "a fleet-Discord arrival starts pending as before");
+  ok(r.body.account.inFleet === true && JSON.stringify(r.body.account.alliedIn) === JSON.stringify(["90000000000000002"]),
+     "the sign-in records which LISTED allied Discords the person is also in (unlisted ones ignored)");
+  r = await api("GET", "/api/accounts", null, doc);
+  ok(r.body.accounts.find(x => x.discordId === "guest").alliedIn.includes("90000000000000002"), "COMMAND sees the queue entry's allied Discords");
   r = await api("POST", "/api/accounts/guest/role", { role: "allied" }, doc);
   ok(r.status === 400, "ALLIED standing without an organization is refused");
   r = await api("POST", "/api/accounts/guest/role", { role: "allied", orgGuild: "90000000000000009" }, doc);
