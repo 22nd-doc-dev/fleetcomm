@@ -1,4 +1,4 @@
 {
-  "version": "1.4.8",
-  "notes": "FleetComm 1.4.8 — COMMAND: an ally who sits in the 22nd’s own Discord arrives as pending or member; on their ACCOUNTS row, pick their organization in the TO ALLIED… dropdown and they become ALLIED under it, on every later sign-in too. The same dropdown on an allied row moves someone between organizations."
+  "version": "1.4.9",
+  "notes": "FleetComm 1.4.9 — audio: if a first-launch garble is detected and re-opening the output does not fix it, the app now rebuilds its whole audio engine (six seconds of silence, once) — the in-app equivalent of the restart that used to be the only cure. Both steps are written to SETTINGS ▸ SYSTEM LOG; if it happens to you, COPY that log and send it to Andy with your headset model. Joint task force: an organization lead (COMMAND flags them on ACCOUNTS) can now watch helmet cams."
 }
