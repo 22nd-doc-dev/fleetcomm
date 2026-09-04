@@ -1032,8 +1032,16 @@ module.exports = function createPortalApi(deps) {
     const need = (ok, code, msg) => { if (!ok) { send(res, code, { ok: false, error: msg }); return true; } return false; };
     if (!/^\/api\/(catalog|personnel|coc|availability|events|sso|activity|loa|roster|squadrons|record|export|bot|cam-viewers|audit|fleet|mast|logistics|uex|docs|rsi|backups|content|admin|policy|me\/permissions)/.test(p)) return false;
     if (need(actor, 401, "unauthorized")) return true;
+    /* One reading is open to an allied operator, and only this one: the cleared
+       helmet-cam viewer list. The caller is the STREAMER, not the viewer —
+       every operator may stream, and a streaming client fetches this list to
+       decide whom to announce the cam to. Refusing an allied streamer makes
+       that client fail OPEN, which is worse than the reading: the answer is
+       callsigns of cleared viewers and nothing else, no personnel at all. */
+    const alliedCamRead = p === "/api/cam-viewers" && req.method === "GET" &&
+      !!(actor.acc && actor.acc.role === "allied");
     /* pending accounts can see nothing but their own approval state */
-    if (need(actor.bot || actor.member, 403, actor.acc && actor.acc.role === "allied"
+    if (!alliedCamRead && need(actor.bot || actor.member, 403, actor.acc && actor.acc.role === "allied"
       ? "allied guest — the portal is for fleet members; your radio access is on FleetComm" : "awaiting COMMAND approval")) return true;
     const audit = (action, detail) => { try { deps.audit(actor.name, actor.id, action, detail); } catch (e) {} };
 

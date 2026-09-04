@@ -941,7 +941,10 @@ const rsiServer = http.createServer((req, res) => {
   /* ── allied guests: radio-only standing, never a fleet record ── */
   r = await api("POST", "/api/login", { mockId: "8008", mockName: "Guest Pilot" });
   const guest = r.body.token;
-  r = await api("POST", "/api/accounts/8008/role", { role: "allied" }, doc);
+  /* ALLIED standing is filed under an allied organization (accounts v1.4.8+),
+     so register one first; older services ignore the extra field */
+  await api("POST", "/api/allied", { guildId: "700700700700700700", name: "Blue Fleet Task Force" }, doc);
+  r = await api("POST", "/api/accounts/8008/role", { role: "allied", orgGuild: "700700700700700700" }, doc);
   if (r.status === 200) {
     r = await api("GET", "/api/personnel", null, guest);
     ok(r.status === 403 && /allied guest/.test(r.body.error), "an allied guest is told the portal is for fleet members");
@@ -952,7 +955,7 @@ const rsiServer = http.createServer((req, res) => {
     r = await api("GET", "/api/public");
     const soulsBefore = r.body.fleet.souls;
     await api("POST", "/api/login", { mockId: "8009", mockName: "Guest Two" });
-    await api("POST", "/api/accounts/8009/role", { role: "allied" }, doc);
+    await api("POST", "/api/accounts/8009/role", { role: "allied", orgGuild: "700700700700700700" }, doc);
     r = await api("GET", "/api/public");
     ok(r.body.fleet.souls === soulsBefore, "…and do not count on the public site");
     r = await api("POST", "/api/personnel/bulk", { ids: ["8008"], action: { type: "note", text: "x" } }, doc);
@@ -965,6 +968,15 @@ const rsiServer = http.createServer((req, res) => {
     ok(r.status === 200 && r.body.linked === 0, "…and the muster passes them by");
     r = await api("GET", "/api/personnel/unmatched", null, doc);
     ok(!r.body.arrivals.some(a => a.id === "8008"), "…nor does the merge desk list them");
+    /* the one door an allied operator may open: the cleared helmet-cam list.
+       The caller is the STREAMER — a 403 there fails their client OPEN. */
+    r = await api("GET", "/api/cam-viewers", null, guest);
+    ok(r.status === 200 && Array.isArray(r.body.viewers),
+       "an allied operator reads the cleared helmet-cam list — refusing it fails their streaming client open");
+    ok(!JSON.stringify(r.body).includes("discordId") && !JSON.stringify(r.body).includes("rank"),
+       "…and it carries callsigns only, no personnel");
+    r = await api("GET", "/api/loa", null, guest);
+    ok(r.status === 403, "…and no other door opened with it");
   } else console.log("  (allied standing not in this accounts service — guest checks skipped: " + r.status + " " + (r.body.error || "") + ")");
 
   /* ── the activity tracker: one report → the channel and every listed record ── */
