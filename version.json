@@ -1,4 +1,4 @@
 {
-  "version": "1.4.7",
-  "notes": "FleetComm 1.4.7 — joint task force, field-tested. An allied operator now gets relay access the moment they first sign in (the previous build could show a net and then refuse it). COMMAND: MAKE ORG LEAD on an allied row lets that organization’s lead create, rename and delete nets inside their own organization’s nets, and nowhere else — the relay enforces it. Allied operators see subnets under their nets as they are added."
+  "version": "1.4.8",
+  "notes": "FleetComm 1.4.8 — COMMAND: an ally who sits in the 22nd’s own Discord arrives as pending or member; on their ACCOUNTS row, pick their organization in the TO ALLIED… dropdown and they become ALLIED under it, on every later sign-in too. The same dropdown on an allied row moves someone between organizations."
 }
