@@ -1082,6 +1082,50 @@ const rsiServer = http.createServer((req, res) => {
   r = await api("POST", "/api/admin/repair-dates", {}, oak);
   ok(r.status === 403, "the sweep is management's alone");
 
+  /* ── COMMAND's hand on a service record: write, correct, strike ── */
+  r = await api("POST", "/api/personnel/2002/record", { at: "2026-05-04", kind: "commendation", text: "Steadied the line off Yela" }, doc);
+  ok(r.status === 200 && r.body.entry.id && r.body.entry.kind === "commendation", "COMMAND writes a line onto a record, dated when it happened");
+  const rEntry = r.body.entry.id;
+  r = await api("GET", "/api/personnel/2002", null, doc);
+  ok(r.body.profile.record.some(e => e.id === rEntry && e.at === Date.UTC(2026, 4, 4, 12)), "…and it files in date order, not at the bottom");
+  ok(r.body.profile.record.every(e => e.id), "every line on a record carries an id, old ones included");
+  r = await api("POST", "/api/personnel/2002/record", { text: "x" }, oak);
+  ok(r.status === 403, "writing on someone's record is COMMAND's alone");
+  r = await api("POST", "/api/personnel/2002/record/" + rEntry, { text: "Steadied the line off Yela under fire" }, doc);
+  ok(r.status === 200 && /under fire/.test(r.body.entry.text) && r.body.entry.correctedBy, "COMMAND corrects a line and the correction is stamped");
+  r = await api("POST", "/api/personnel/2002/record/" + rEntry, { text: "x" }, oak);
+  ok(r.status === 403, "correcting one is COMMAND's alone");
+  r = await api("POST", "/api/personnel/2002/record/" + rEntry + "/delete", {}, doc);
+  ok(r.status === 200, "COMMAND strikes a line");
+  r = await api("GET", "/api/personnel/2002", null, doc);
+  ok(!r.body.profile.record.some(e => e.id === rEntry), "…and it is gone from the record");
+  r = await api("POST", "/api/personnel/2002/record/" + rEntry + "/delete", {}, doc);
+  ok(r.status === 404, "…and striking it twice says so");
+
+  /* a decoration granted in error comes back off, and takes its line with it */
+  await api("POST", "/api/catalog", { ribbons: (await api("GET", "/api/catalog", null, doc)).body.catalog.ribbons
+    .concat({ id: "joint-operations-ribbon", name: "Joint Operations Ribbon", img: "", description: "" }) }, doc);
+  await api("POST", "/api/personnel/bulk", { ids: ["2002"], action: { type: "ribbon", ribbonId: "joint-operations-ribbon", note: "wrong one" } }, doc);
+  r = await api("GET", "/api/personnel/2002", null, doc);
+  const hadRibbon = r.body.profile.ribbons.some(x => x.ribbonId === "joint-operations-ribbon");
+  const hadLine = r.body.profile.record.some(e => e.kind === "ribbon" && /Joint Operations/.test(e.text));
+  ok(hadRibbon && hadLine, "a ribbon goes on with its record line");
+  r = await api("POST", "/api/personnel/bulk", { ids: ["2002"], action: { type: "ribbon-remove", ribbonId: "joint-operations-ribbon", reason: "granted in error" } }, doc);
+  ok(r.body.results["2002"].ok, "COMMAND takes it back off");
+  r = await api("GET", "/api/personnel/2002", null, doc);
+  ok(!r.body.profile.ribbons.some(x => x.ribbonId === "joint-operations-ribbon"), "…the ribbon is off the rack");
+  ok(!r.body.profile.record.some(e => e.kind === "ribbon" && /Ribbon: Joint Operations/.test(e.text)), "…the line that granted it went with it");
+  ok(r.body.profile.record.some(e => /Struck Joint Operations/.test(e.text) && /granted in error/.test(e.text)), "…and the record says why");
+  await api("POST", "/api/personnel/bulk", { ids: ["2002"], action: { type: "award", awardId: "navigators-star", citation: "Charted the long dark" } }, doc);
+  r = await api("POST", "/api/personnel/bulk", { ids: ["2002"], action: { type: "award-edit", awardId: "navigators-star", citation: "Read true through the Halo" } }, doc);
+  ok(r.body.results["2002"].ok, "a citation that reads wrong can be corrected");
+  r = await api("GET", "/api/personnel/2002", null, doc);
+  ok(r.body.profile.awards.some(a => a.awardId === "navigators-star" && /Read true/.test(a.citation)), "…and the new citation stands");
+  r = await api("POST", "/api/personnel/bulk", { ids: ["2002"], action: { type: "award-remove", awardId: "navigators-star" } }, oak);
+  ok(r.status === 403, "taking a decoration back is COMMAND's alone");
+  r = await api("POST", "/api/personnel/bulk", { ids: ["2002"], action: { type: "cert-remove", certId: "nonesuch" } }, doc);
+  ok(r.body.results["2002"].ok === false, "striking something not on the record is refused per-member");
+
   /* the treasury ledger as a spreadsheet */
   r = await api("POST", "/api/logistics/contributions", { kind: "auec", amount: 40000, proof: "shot-9" }, doc);
   await api("POST", "/api/logistics/contributions/" + r.body.contribution.id + "/verify", {}, doc);

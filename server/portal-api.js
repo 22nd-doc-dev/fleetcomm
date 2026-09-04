@@ -202,7 +202,7 @@ module.exports = function createPortalApi(deps) {
     const rec = recFor(id);
     if (rec.record.some(e => e.kind === "enlist")) return;
     const when = Number(at) || Date.now();
-    rec.record.push({ at: when, by: "BUREAU OF NAVAL PERSONNEL", kind: "enlist",
+    rec.record.push({ id: crypto.randomBytes(6).toString("hex"), at: when, by: "BUREAU OF NAVAL PERSONNEL", kind: "enlist",
       text: "Enlisted in the 22nd Expeditionary Fleet — " + fleetDate(when) });
     rec.record.sort((a, b2) => a.at - b2.at);
   }
@@ -375,6 +375,15 @@ module.exports = function createPortalApi(deps) {
   /* no public crafting-blueprint dataset exists for the current patch —
      the library starts empty and says so; Logistics fills it by hand */
   if (!pdb.fleet.treasury) pdb.fleet.treasury = "Keleus_Harper";
+  /* older entries were written without one; a record line COMMAND may correct
+     has to be addressable, so mint the missing ids once */
+  {
+    let minted = 0;
+    for (const rec of Object.values(pdb.personnel))
+      for (const e of (rec && rec.record) || [])
+        if (!e.id) { e.id = crypto.randomBytes(6).toString("hex"); minted++; }
+    if (minted) persist("personnel");
+  }
   const lgId = () => crypto.randomBytes(6).toString("hex");
   /* every requisition carries a number Logistics can call it by — REQ-0001,
      issued in the order they were filed and never reused */
@@ -701,7 +710,8 @@ module.exports = function createPortalApi(deps) {
   }
   /* extra rides along on the entry — the importers stamp their source there */
   function logEntry(rec, by, kind, text, extra) {
-    rec.record.push(Object.assign({ at: Date.now(), by, kind, text: String(text).slice(0, 400) }, extra || {}));
+    rec.record.push(Object.assign({ id: crypto.randomBytes(6).toString("hex"),
+      at: Date.now(), by, kind, text: String(text).slice(0, 400) }, extra || {}));
     if (rec.record.length > 500) rec.record.splice(0, rec.record.length - 500);
   }
   /* one profile shape everywhere: identity from the accounts registry,
@@ -1199,8 +1209,8 @@ module.exports = function createPortalApi(deps) {
         const rec = recFor(id2);
         if (ev) {
           if (!rec.record.some(e => e.kind === "event" && e.eventId === rep.eventId))
-            rec.record.push({ at, by: rep.byName, kind: "event", eventId: rep.eventId, reportId: rep.id, text: "Attended: " + ev.title + " (" + when + ")" });
-        } else rec.record.push({ at, by: rep.byName, kind: "activity", reportId: rep.id, text: "Activity: " + mission + " (" + when + ")" + (ships ? " — " + ships : "") });
+            rec.record.push({ id: crypto.randomBytes(6).toString("hex"), at, by: rep.byName, kind: "event", eventId: rep.eventId, reportId: rep.id, text: "Attended: " + ev.title + " (" + when + ")" });
+        } else rec.record.push({ id: crypto.randomBytes(6).toString("hex"), at, by: rep.byName, kind: "activity", reportId: rep.id, text: "Activity: " + mission + " (" + when + ")" + (ships ? " — " + ships : "") });
         rec.record.sort((x, y) => x.at - y.at);
         if (rec.record.length > 500) rec.record.splice(0, rec.record.length - 500);
       }
@@ -1277,7 +1287,7 @@ module.exports = function createPortalApi(deps) {
       for (const id2 of attendees) {
         const rec = recFor(id2);
         if (!rec.record.some(e => e.kind === "event" && e.eventId === m[1]))
-          rec.record.push({ at: ev.at, by: actor.name, kind: "event", eventId: m[1],
+          rec.record.push({ id: crypto.randomBytes(6).toString("hex"), at: ev.at, by: actor.name, kind: "event", eventId: m[1],
             text: "Attended: " + ev.title + " (" + when + ")" });
       }
       ev.aar = { at: Date.now(), by: actor.name, attendees, ships: String(b.ships || "").slice(0, 200),
@@ -2059,6 +2069,36 @@ module.exports = function createPortalApi(deps) {
                 rec.insignia.push({ insigniaId: item.id, at: Date.now(), by, note: String(act.note || "").slice(0, 200) });
                 logEntry(rec, by, "insignia", "Insignia: " + item.name + (act.note ? " — " + act.note : ""));
               }
+            } else if (/^(award|ribbon|insignia|cert)-(remove|edit)$/.test(act.type || "")) {
+              /* a decoration granted in error, or a citation that reads wrong */
+              const [what, how] = act.type.split("-");
+              const listName = what === "cert" ? "certs" : what === "insignia" ? "insignia" : what + "s";
+              const keyName = what === "cert" ? "certId" : what === "insignia" ? "insigniaId" : what + "Id";
+              const wanted = String(act[keyName] || act.id || "");
+              if (!wanted) throw new Error("which " + what + "?");
+              const cat = what === "award" ? pdb.catalog.awards : what === "cert" ? pdb.catalog.certs
+                : what === "ribbon" ? (pdb.catalog.ribbons || []) : (pdb.catalog.insignia || []);
+              const def = cat.find(x => x.id === wanted);
+              const label = (def && def.name) || wanted;
+              const list = rec[listName] || (rec[listName] = []);
+              /* a member can hold the same award twice — `at` picks the one meant */
+              const at = Number(act.at);
+              let idx = Number.isFinite(at) ? list.findIndex(x => x[keyName] === wanted && x.at === at) : -1;
+              if (idx < 0) idx = list.map(x => x[keyName]).lastIndexOf(wanted);
+              if (idx < 0) throw new Error("not on this record");
+              if (how === "edit") {
+                const field = what === "award" ? "citation" : "note";
+                list[idx][field] = String(act[field] != null ? act[field] : act.text || "").slice(0, 400);
+                logEntry(rec, by, what, "Corrected " + label + (list[idx][field] ? " — " + list[idx][field] : ""));
+              } else {
+                const grantedAt = list[idx].at;
+                list.splice(idx, 1);
+                /* the line that granted it goes with it, when it is unmistakable */
+                const li = rec.record.findIndex(e => e.kind === what && Math.abs((e.at || 0) - (grantedAt || 0)) < 2000 &&
+                  String(e.text || "").includes(label));
+                if (li >= 0) rec.record.splice(li, 1);
+                logEntry(rec, by, what, "Struck " + label + " from the record" + (act.reason ? " — " + String(act.reason).slice(0, 200) : ""));
+              }
             } else if (act.type === "status") {
               const to = act.status === "reserve" ? "reserve" : "active";
               if (!isAdmin(actor) && !canApproveFor(actor, id)) throw new Error("no authority over this member");
@@ -2470,6 +2510,68 @@ module.exports = function createPortalApi(deps) {
     /* ── self-submitted record entries: pending until someone with authority
        over that member approves — visible meanwhile only to owner and
        approvers ── */
+    /* ── COMMAND's hand on a service record ──
+       Adding a line, correcting one, striking one. Every change is on the
+       fleet's audit ledger; the member's own record stays readable, which is
+       the point of letting it be corrected at all. ── */
+    if ((m = /^\/api\/personnel\/([A-Za-z0-9-]{1,40})\/record$/.exec(p)) && m[1] !== "me" && req.method === "POST") {
+      if (need(fleetAccount(m[1]), 404, "no such member")) return true;
+      if (need(isAdmin(actor), 403, "management access required")) return true;
+      const b = await body(req);
+      const text = String(b.text || "").trim().slice(0, 400);
+      if (need(text, 400, "an entry needs its text")) return true;
+      const at = b.at != null && b.at !== "" ? parseWhen(b.at) : Date.now();
+      if (need(at != null, 400, "date unreadable (DDMONYYYY, YYYY-MM-DD or MM/DD/YYYY)")) return true;
+      const rec = recFor(m[1]);
+      const entry = { id: crypto.randomBytes(6).toString("hex"), at, by: actor.name,
+        kind: String(b.kind || "note").toLowerCase().replace(/[^a-z0-9-]+/g, "-").slice(0, 24) || "note", text };
+      rec.record.push(entry);
+      rec.record.sort((x, y) => x.at - y.at);
+      persist("personnel");
+      audit("record", "entered on " + displayName(m[1]) + ": " + text.slice(0, 120));
+      send(res, 200, { ok: true, entry, profile: profile(m[1]) });
+      return true;
+    }
+    if ((m = /^\/api\/personnel\/([A-Za-z0-9-]{1,40})\/record\/([a-f0-9]{12})$/.exec(p)) && req.method === "POST") {
+      if (need(fleetAccount(m[1]), 404, "no such member")) return true;
+      if (need(isAdmin(actor), 403, "management access required")) return true;
+      const rec = recFor(m[1]);
+      const entry = rec.record.find(e => e.id === m[2]);
+      if (need(entry, 404, "no such entry on this record")) return true;
+      const b = await body(req);
+      const was = entry.text;
+      if (typeof b.text === "string") {
+        const t = b.text.trim().slice(0, 400);
+        if (need(t, 400, "an entry needs its text")) return true;
+        entry.text = t;
+      }
+      if (typeof b.kind === "string" && b.kind.trim())
+        entry.kind = b.kind.toLowerCase().replace(/[^a-z0-9-]+/g, "-").slice(0, 24) || entry.kind;
+      if (b.at != null && b.at !== "") {
+        const t = parseWhen(b.at);
+        if (need(t != null, 400, "date unreadable")) return true;
+        entry.at = t;
+      }
+      entry.correctedBy = actor.name;
+      entry.correctedAt = Date.now();
+      rec.record.sort((x, y) => x.at - y.at);
+      persist("personnel");
+      audit("record", "corrected on " + displayName(m[1]) + ": " + was.slice(0, 80) + " → " + entry.text.slice(0, 80));
+      send(res, 200, { ok: true, entry, profile: profile(m[1]) });
+      return true;
+    }
+    if ((m = /^\/api\/personnel\/([A-Za-z0-9-]{1,40})\/record\/([a-f0-9]{12})\/delete$/.exec(p)) && req.method === "POST") {
+      if (need(fleetAccount(m[1]), 404, "no such member")) return true;
+      if (need(isAdmin(actor), 403, "management access required")) return true;
+      const rec = recFor(m[1]);
+      const i = rec.record.findIndex(e => e.id === m[2]);
+      if (need(i >= 0, 404, "no such entry on this record")) return true;
+      const [gone] = rec.record.splice(i, 1);
+      persist("personnel");
+      audit("record", "struck from " + displayName(m[1]) + ": " + String(gone.text || "").slice(0, 120));
+      send(res, 200, { ok: true, struck: gone, profile: profile(m[1]) });
+      return true;
+    }
     if (p === "/api/personnel/me/record" && req.method === "POST" && !actor.bot) {
       const b = await body(req);
       const text = String(b.text || "").trim().slice(0, 400);
@@ -2746,7 +2848,7 @@ module.exports = function createPortalApi(deps) {
           const acc = created && dryRun ? { callsign } : db.accounts[id];
           const rec = created && dryRun ? { rank: "—", awards: [], certs: [], ribbons: [], insignia: [], record: [], orders: [] } : recFor(id);
           if (!Array.isArray(rec.orders)) rec.orders = [];
-          const pushRec = (at, who, kind, text) => rec.record.push({ at, by: String(who || byDefault).slice(0, 80), kind, text: String(text).slice(0, 400), src: source });
+          const pushRec = (at, who, kind, text) => rec.record.push({ id: crypto.randomBytes(6).toString("hex"), at, by: String(who || byDefault).slice(0, 80), kind, text: String(text).slice(0, 400), src: source });
           const setField = (obj, k, v, what) => { if (obj[k] !== v) { chg.push(what + " → " + (v === true ? "yes" : v === false ? "no" : v)); if (!dryRun) obj[k] = v; } };
           if (callsign && !created && callsign !== String(acc.callsign || "").toUpperCase()) {
             chg.push("name → " + callsign); if (!dryRun) { acc.callsign = callsign; byCallsign.set(callsign, id); }
@@ -2899,7 +3001,7 @@ module.exports = function createPortalApi(deps) {
             if (!dryRun) rec.orders.push({ id: crypto.randomBytes(6).toString("hex"), at: t, by: String((o && o.by) || byDefault).slice(0, 80),
               unit: String((o && o.unit) || "").slice(0, 80), title, text, src: source });
           }
-          if (created && !dryRun) rec.record.push({ at: Date.now(), by: byDefault, kind: "note", text: "Imported from " + source, src: source });
+          if (created && !dryRun) rec.record.push({ id: crypto.randomBytes(6).toString("hex"), at: Date.now(), by: byDefault, kind: "note", text: "Imported from " + source, src: source });
           if (!dryRun) {
             rec.record.sort((x, y) => x.at - y.at);
             if (rec.record.length > 500) rec.record.splice(0, rec.record.length - 500);
