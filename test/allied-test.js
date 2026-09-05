@@ -165,6 +165,15 @@ function stop() {
   r = await api("POST", "/api/accounts/blue-1/role", { role: "member" }, doc);
   ok(r.status === 200, "an allied operator can be made a fleet member if they join the fleet");
 
+  /* join dates ride along with the account: the queue's home-org hint */
+  r = await api("POST", "/api/login", { mockId: "admiral", mockName: "Admiral", mockAlsoIn: ["90000000000000002"], mockJoined: { "90000000000000002": 1500000000000, "80000000000000001": 1700000000000, "not-an-id": 5 } });
+  ok(r.status === 200 && r.body.account.guildJoined && r.body.account.guildJoined["90000000000000002"] === 1500000000000 && !("not-an-id" in r.body.account.guildJoined), "sign-in records when the person joined each Discord that matters");
+  r = await api("GET", "/api/accounts", null, doc);
+  const admiral = r.body.accounts.find(x => x.discordId === "admiral");
+  ok(admiral && admiral.guildJoined["80000000000000001"] === 1700000000000 && r.body.relaySync && typeof r.body.relaySync.settling === "boolean", "the roster carries the join dates and the relay sync state");
+  r = await api("POST", "/api/accounts/admiral/role", { role: "allied", orgGuild: "90000000000000002" }, doc);
+  ok(r.status === 200 && r.body.relaySync && "settling" in r.body.relaySync, "a standing change answers with the relay sync state instead of waiting on the relay");
+
   /* removing an org */
   r = await api("POST", "/api/allied/90000000000000002/remove", {}, doc);
   ok(r.status === 200, "COMMAND removes an allied org");

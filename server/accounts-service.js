@@ -34,6 +34,19 @@ if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) throw new Error("invali
 const DATA = process.env.DATA_DIR || path.join(__dirname, "data");
 const SUPW = process.env.SUPW_B64 ? Buffer.from(process.env.SUPW_B64, "base64").toString("utf8") : (process.env.SUPW || "");
 const MUMBLE_HOST = process.env.MUMBLE_HOST || "127.0.0.1";
+const MUMBLE_PORT = Number(process.env.MUMBLE_PORT) || 64738;
+/* ── the relay's message budget ──
+   murmur meters every client's control messages through a leaky bucket:
+   `messageburst` may arrive at once, then `messagelimit` per second (the
+   1.5 defaults are 5 and 1), and everything over the line is DROPPED — no
+   error, no PermissionDenied, nothing on the socket. A 63-channel ACL sync
+   paced at 75 ms therefore landed exactly eight writes per run for two days
+   while this service reported success (handoff §27). These two MUST match the
+   relay's ini; the defaults are murmur's own. Set them higher only after the
+   relay's messagelimit/messageburst were raised AND the relay restarted. */
+const RELAY_MSG_LIMIT = Math.max(0.2, Number(process.env.RELAY_MSG_LIMIT) || 1);
+const RELAY_MSG_BURST = Math.max(1, Math.floor(Number(process.env.RELAY_MSG_BURST) || 5));
+const ACL_QUERY_TIMEOUT_MS = Math.max(300, Number(process.env.ACL_QUERY_TIMEOUT_MS) || 5000);
 const RELAY_PASSWORD = process.env.RELAY_PASSWORD || "";
 const ROOT_CHANNEL = process.env.ROOT_CHANNEL || "22ND EXPEDITIONARY FLEET";
 const BOOTSTRAP_TOKEN = process.env.BOOTSTRAP_TOKEN || "";
@@ -202,14 +215,33 @@ async function requireGuildMember(token) {
   /* every LISTED allied Discord the person is in — the approval queue's way to
      tell a recruit from an ally who joined the fleet's Discord as a guest */
   const alliedIn = guilds.filter(g => g && db.allied[String(g.id)]).map(g => String(g.id));
-  if (guilds.some(g => String(g && g.id) === GUILD_ID)) return { fleet: true, alliedIn };
+  const fleet = guilds.some(g => String(g && g.id) === GUILD_ID);
+  const joined = await guildJoinDates(token, (fleet ? [GUILD_ID] : []).concat(alliedIn));
+  if (fleet) return { fleet: true, alliedIn, joined };
   const allied = guilds.find(g => g && db.allied[String(g.id)]);
-  if (allied) return { allied: { id: String(allied.id), name: db.allied[String(allied.id)].name }, alliedIn };
+  if (allied) return { allied: { id: String(allied.id), name: db.allied[String(allied.id)].name }, alliedIn, joined };
   throw new Error(Object.keys(db.allied).length
     ? "not a member of the fleet Discord or of an allied task-force Discord"
     : "not a member of the fleet Discord");
 }
 
+/* When the person joined each Discord that matters — the fleet's and every
+   listed allied one they are in. Whichever they joined FIRST is very likely
+   their home: an ally guesting in the fleet's Discord joined their own org
+   long before; a recruit joined the fleet's first. Needs the
+   guilds.members.read scope (the app asks for it since 1.4.11); an older
+   consent, or a Discord hiccup, just yields no date — a hint, never a gate. */
+async function guildJoinDates(token, ids) {
+  const out = {};
+  await Promise.all(ids.map(async id => {
+    try {
+      const m = await discordGet("/users/@me/guilds/" + id + "/member", token);
+      const t = Date.parse(m && m.joined_at);
+      if (Number.isFinite(t)) out[id] = t;
+    } catch (error) { /* scope not granted, or throttled */ }
+  }));
+  return out;
+}
 function verifyDiscord(body) {
   /* a real token verifies for real even on a mock rig — the web OAuth flow
      (portal callback) coexists with mock dev sign-ins */
@@ -282,36 +314,79 @@ function rootAcls() {
     .concat(allowedAccounts("command").map(account => ({ applyHere: true, applySubs: true,
       group: "#" + account.relayToken, grant: commandGrant })));
 }
+/* The budget never lets a SuperUser session exceed the relay's numbers. It
+   starts under the line (Version + Authenticate already drew on the bucket,
+   and the 5 s keepalive ping shares it) and, when a read-back gets no answer
+   — a dropped query — halves its rate for the rest of the process: a service
+   configured faster than the relay converges instead of timing out forever. */
+const relayBudget = { rate: RELAY_MSG_LIMIT, burst: RELAY_MSG_BURST, slowed: 0 };
+class MessageBudget {
+  constructor() { this.level = 2; this.last = Date.now(); }          /* the handshake's two messages */
+  rate() { return Math.max(0.2, relayBudget.rate * 0.9 - 0.25); }    /* margin + the keepalive's share */
+  async take() {
+    const now = Date.now();
+    this.level = Math.max(0, this.level - (now - this.last) / 1000 * relayBudget.rate);
+    this.last = now;
+    const cap = Math.max(1, relayBudget.burst - 1);
+    if (this.level + 1 > cap) {
+      const wait = Math.ceil((this.level + 1 - cap) / this.rate() * 1000);
+      await pause(wait);
+      this.level = Math.max(0, this.level - wait / 1000 * relayBudget.rate);
+      this.last = Date.now();
+    }
+    this.level += 1;
+  }
+  static slow() {
+    relayBudget.rate = Math.max(0.5, relayBudget.rate / 2); relayBudget.burst = 1; relayBudget.slowed++;
+    console.error("[acl] the relay dropped a query — pacing down to " + relayBudget.rate.toFixed(2) + " msg/s (RELAY_MSG_LIMIT/RELAY_MSG_BURST should match the relay's messagelimit/messageburst)");
+  }
+}
 async function withSuperUser(work) {
   if (ACL_SYNC_DISABLED) return;
   if (!SUPW) throw new Error("service has no SuperUser access configured");
-  const c = new MumbleClient({ host: MUMBLE_HOST, username: "SuperUser", password: SUPW, release: "FleetComm-Accounts" });
-  try { await c.connect(); await pause(350); await work(c); }
+  const c = new MumbleClient({ host: MUMBLE_HOST, port: MUMBLE_PORT, username: "SuperUser", password: SUPW, release: "FleetComm-Accounts" });
+  c.budget = new MessageBudget();
+  try { await c.connect(); await pause(350); return await work(c); }
   finally { c.disconnect(); }
 }
-function applyAcl(c, channelId, acls) {
+async function writeAcl(c, channelId, acls) {
+  await c.budget.take();
   c.send("ACL", { channelId, inheritAcls: true, groups: [], acls, query: false });
-  /* ACL writes are not subject to murmur's channel-CREATION throttle (that is
-     what the 400ms seeding pace guards); 75ms is plain courtesy. At 350ms a
-     full-tree sync of the 59-channel fleet took ~21s — past our own request
-     timeout, so every role change died mid-flight with ECONNRESET. */
-  return pause(75);
 }
-async function applyNetAccess(netName, level) {
-  await withSuperUser(async c => {
-    const id = c.channelByName(channelName(netName));
-    if (id == null) throw new Error("net not found on relay: " + netName);
-    await applyAcl(c, id, accessAcls(level));
+/* murmur answers an ACL query with the channel's list — its own entries plus
+   the inherited ones flagged as such. No answer inside the timeout means the
+   query itself was dropped (or the relay is a stand-in that ignores ACLs). */
+function queryAcl(c, channelId) {
+  return new Promise((resolve) => {
+    const t = setTimeout(() => { c.off("ACL", on); resolve(null); }, ACL_QUERY_TIMEOUT_MS);
+    const on = (m) => { if (Number(m.channelId || 0) === Number(channelId)) { clearTimeout(t); c.off("ACL", on); resolve(m); } };
+    c.on("ACL", on);
+    c.budget.take().then(() => c.send("ACL", { channelId, query: true }));
   });
 }
+/* an ACL entry as murmur stores it: the fields that decide access, defaults
+   applied, inherited ones dropped — so a read-back compares to what we sent */
+function normalizeAcl(entries, fromRelay) {
+  return (entries || []).filter(e => e && (!fromRelay || e.inherited === false))
+    .map(e => JSON.stringify({ h: e.applyHere !== false, s: e.applySubs !== false, u: e.userId == null ? null : Number(e.userId),
+      g: String(e.group || ""), a: Number(e.grant || 0), d: Number(e.deny || 0) })).sort().join("|");
+}
+const aclClean = new Set();                 /* channels read back with no local ACLs since this process started */
+let relayAnswersQueries = true;
+/* ── the sync ──
+   Root carries the standing grants; every gated net (JOINT / COMMAND / an
+   org's) gets its own list; every other channel under the root must carry
+   NO local ACLs, or a stale grant would override the inherited gate. Writes
+   are paced to the relay's budget, then every gated net — and, once per
+   process, every open channel — is read back; whatever the relay dropped is
+   written again and read again, three rounds. A net named in NET ACCESS
+   that is not on the relay (yet) is simply not there to write. */
 async function syncRelayAcls() {
+  const report = { written: 0, verified: 0, rewritten: 0, skipped: 0 };
   await withSuperUser(async c => {
     const rootId = c.channelByName(channelName(ROOT_CHANNEL));
     if (rootId == null) throw new Error("org root channel not found on relay");
-    await applyAcl(c, rootId, rootAcls());
     const configured = new Map(Object.entries(db.netAccess).map(([name, level]) => [channelName(name), level]));
-    /* Clear stale local ACLs from every descendant.  Otherwise an old
-       channel-level grant could override the inherited org gate. */
     const inside = new Set([rootId]);
     let changed = true;
     while (changed) {
@@ -320,22 +395,92 @@ async function syncRelayAcls() {
         if (!inside.has(id) && inside.has(channel.parent)) { inside.add(id); changed = true; }
       }
     }
-    for (const [id, channel] of c.channels) {
-      if (id !== rootId && inside.has(id))
-        await applyAcl(c, id, accessAcls(configured.get(channel.name) || "open"));
+    const nameOf = (id) => (c.channels.get(id) || {}).name || ("#" + id);
+    const plan = [[rootId, rootAcls()]];
+    for (const [id, channel] of c.channels) if (id !== rootId && inside.has(id)) plan.push([id, accessAcls(configured.get(channel.name) || "open")]);
+    /* write pass: the gated lists. Open channels are only READ (below) — and
+       once found clean, not even that again until the service restarts */
+    let pending = [];
+    for (const [id, acls] of plan) {
+      if (!acls.length && aclClean.has(nameOf(id))) { report.skipped++; continue; }
+      if (acls.length) { await writeAcl(c, id, acls); report.written++; }
+      pending.push([id, acls]);
+    }
+    /* read-back rounds */
+    let timeouts = 0;
+    for (let round = 0; round < 3 && pending.length && relayAnswersQueries; round++) {
+      const next = [];
+      for (const [id, acls] of pending) {
+        if (!relayAnswersQueries) { next.push([id, acls]); continue; }
+        const reply = await queryAcl(c, id);
+        if (!reply) {
+          timeouts++;
+          if (report.verified === 0 && timeouts >= 4) { relayAnswersQueries = false; console.error("[acl] the relay does not answer ACL queries — writes go unverified"); }
+          else MessageBudget.slow();
+          next.push([id, acls]); continue;
+        }
+        report.verified++;
+        const same = normalizeAcl(reply.acls, true) === normalizeAcl(acls, false);
+        if (same) { if (!acls.length) aclClean.add(nameOf(id)); continue; }
+        if (round < 2) { await writeAcl(c, id, acls); report.rewritten++; }
+        next.push([id, acls]);
+      }
+      pending = next;
+    }
+    if (!relayAnswersQueries) {
+      /* a relay that never answers (a stand-in): write the open channels blind, as before */
+      for (const [id, acls] of pending) if (!acls.length) { await writeAcl(c, id, acls); report.written++; }
+    } else if (pending.length) {
+      throw new Error("the relay kept dropping ACL writes on " + pending.map(([id]) => nameOf(id)).join(", "));
     }
   });
+  return report;
 }
 async function syncRelayAclsWithRetry() {
   let lastError;
   for (let attempt = 0; attempt < 5; attempt++) {
-    try { await syncRelayAcls(); return; }
+    try { return await syncRelayAcls(); }
     catch (error) {
       lastError = error;
       if (attempt < 4) await pause(500 * (2 ** attempt));
     }
   }
   throw lastError || new Error("relay ACL synchronization failed");
+}
+/* ── the background runner ──
+   A standing change answers at once; the relay follows within the budget
+   (seconds on a relay whose limits were raised, half a minute on murmur's
+   defaults). Until it has, /api/me and /api/accounts say `relaySync.settling`
+   — the app holds "RESTRICTED" back as "ACCESS PENDING" and re-tunes when the
+   relay has caught up. One run covers every change queued while it ran; a
+   failing relay is retried with backoff, forever, and the error is shown. */
+const relaySync = { running: false, queued: false, since: 0, settledAt: 0, error: null, last: null };
+function relaySyncState() {
+  return { settling: relaySync.running || relaySync.queued, since: relaySync.since || null, settledAt: relaySync.settledAt || null,
+    error: relaySync.error, last: relaySync.last, budget: { limit: relayBudget.rate, burst: relayBudget.burst, slowed: relayBudget.slowed } };
+}
+function requestRelaySync(reason) {
+  relaySync.queued = true;
+  if (relaySync.running) return;
+  relaySync.running = true; relaySync.since = Date.now();
+  (async () => {
+    let failures = 0;
+    while (relaySync.queued) {
+      relaySync.queued = false;
+      const t0 = Date.now();
+      try {
+        const report = await syncRelayAclsWithRetry();
+        relaySync.error = null; failures = 0;
+        relaySync.last = Object.assign({ at: Date.now(), ms: Date.now() - t0, reason }, report || {});
+        if (!ACL_SYNC_DISABLED) console.log("[acl] relay in step (" + reason + ", " + (Date.now() - t0) + " ms): " + JSON.stringify(report));
+      } catch (error) {
+        failures++; relaySync.error = error.message; relaySync.queued = true;
+        console.error("[acl] relay sync failed (" + reason + ", attempt " + failures + "): " + error.message);
+        await pause(Math.min(60000, 5000 * failures));
+      }
+    }
+    relaySync.running = false; relaySync.settledAt = Date.now();
+  })();
 }
 
 /* ── helpers ── */
@@ -345,7 +490,8 @@ function tokensFor(acc) {
 }
 function pub(acc, id) {
   return { discordId: id, discordName: acc.discordName, callsign: acc.callsign || null, onAir: liveCallsign(id), role: acc.role, org: acc.org || null, orgGuild: acc.orgGuild || null, orgLead: acc.orgLead === true,
-    inFleet: acc.inFleet === undefined ? null : acc.inFleet === true, alliedIn: Array.isArray(acc.alliedIn) ? acc.alliedIn : [], lastSeen: acc.lastSeen || null, createdAt: acc.createdAt };
+    inFleet: acc.inFleet === undefined ? null : acc.inFleet === true, alliedIn: Array.isArray(acc.alliedIn) ? acc.alliedIn : [],
+    guildJoined: acc.guildJoined && typeof acc.guildJoined === "object" ? acc.guildJoined : {}, lastSeen: acc.lastSeen || null, createdAt: acc.createdAt };
 }
 /* what an allied client needs to draw its board: the nets it may enter (JOINT
    + its org's), its org's own nets (what an org lead may edit), and the flag */
@@ -436,7 +582,7 @@ const server = http.createServer(async (req, res) => {
     if (await portal.handle(req, res, url)) return;
     if (p === "/api/health" && req.method === "GET") return send(res, 200, { ok: true, service: "fleetcomm-accounts" });
     if (p === "/api/status" && req.method === "GET")
-      return send(res, 200, { ok: true, initialized: hasCommand(), mock: MOCK });
+      return send(res, 200, { ok: true, initialized: hasCommand(), mock: MOCK, relaySync: relaySyncState() });
 
     if (p === "/api/login" && req.method === "POST") {
       const b = await body(req);
@@ -451,6 +597,8 @@ const server = http.createServer(async (req, res) => {
       } else if (MOCK && Array.isArray(b.mockAlsoIn)) {   /* a fleet-Discord member who is ALSO in listed allied Discords */
         gate = { fleet: true, alliedIn: b.mockAlsoIn.map(String).filter(id => db.allied[id]) };
       }
+      if (MOCK && b.mockJoined && typeof b.mockJoined === "object")   /* the rig's join dates, guildId -> ms */
+        gate.joined = Object.fromEntries(Object.entries(b.mockJoined).filter(([k, v]) => /^[0-9]{5,25}$/.test(k) && Number.isFinite(Number(v))).map(([k, v]) => [k, Number(v)]));
       let acc = db.accounts[who.id];
       /* an allied operator never enters the approval queue and never becomes
          a fleet record: standing ALLIED from the first sign-in, org attached.
@@ -459,15 +607,10 @@ const server = http.createServer(async (req, res) => {
         const fresh = !acc || acc.role !== "allied" || !acc.relayToken;
         if (!acc) acc = db.accounts[who.id] = { discordName: who.username, role: "allied", createdAt: Date.now() };
         acc.role = "allied"; acc.org = gate.allied.name; acc.orgGuild = gate.allied.id;
-        /* A NEW token is worthless until the relay's ACLs list it — the first
-           allied sign-in used to answer instantly and the operator met
-           RESTRICTED on their own org's net. Sync before answering; a few
-           seconds once, and the board works the moment it opens. */
-        if (fresh) {
-          tokensFor(acc); persist();
-          try { await serializeMutation(() => syncRelayAclsWithRetry()); }
-          catch (error) { console.error("[allied] first sign-in ACL sync failed:", error.message); return send(res, 503, { ok: false, error: "the relay did not accept the new account yet \u2014 try again in a minute" }); }
-        }
+        /* A NEW token is worthless until the relay's ACLs list it. The sync
+           runs in the background; the answer says the relay is settling and
+           the app holds RESTRICTED back as ACCESS PENDING until it has. */
+        if (fresh) { tokensFor(acc); persist(); requestRelaySync("allied sign-in " + who.username); }
       }
       const initialized = hasCommand();
       if (!initialized) {
@@ -484,12 +627,12 @@ const server = http.createServer(async (req, res) => {
           acc = db.accounts[who.id] || (db.accounts[who.id] = { discordName: who.username, role: "command", createdAt: Date.now() });
           acc.role = "command";
           tokensFor(acc);
-          try { persist(); await syncRelayAcls(); }
+          try { persist(); }
           catch (error) {
             if (previous) db.accounts[who.id] = previous; else delete db.accounts[who.id];
-            persist();
             throw error;
           }
+          requestRelaySync("bootstrap");
         });
         /* A concurrent request may have lost the claim to another identity;
            it still gets a normal pending account instead of a phantom COMMAND. */
@@ -501,11 +644,12 @@ const server = http.createServer(async (req, res) => {
       if (acc.role === "revoked") return send(res, 403, { ok: false, error: "access revoked by COMMAND" });
       acc.discordName = who.username; acc.lastSeen = Date.now();
       acc.inFleet = !!gate.fleet; acc.alliedIn = gate.alliedIn || [];   /* refreshed on every sign-in */
+      if (gate.joined && Object.keys(gate.joined).length) acc.guildJoined = Object.assign({}, acc.guildJoined || {}, gate.joined);
       const token = crypto.randomBytes(24).toString("hex");
       db.sessions[token] = { discordId: who.id, createdAt: Date.now(), expiresAt: Date.now() + SESSION_TTL_MS };
       cleanSessions();
       persist();
-      return send(res, 200, { ok: true, token, account: Object.assign(pub(acc, who.id), alliedView(acc)), relay: relayFor(acc) });
+      return send(res, 200, { ok: true, token, account: Object.assign(pub(acc, who.id), alliedView(acc)), relay: relayFor(acc), relaySync: relaySyncState() });
     }
 
     const a = auth(req);
@@ -514,7 +658,7 @@ const server = http.createServer(async (req, res) => {
     if (p === "/api/me" && req.method === "GET") {
       if (Date.now() - (a.acc.lastSeen || 0) > 60000) { a.acc.lastSeen = Date.now(); persist(); }
       const me = Object.assign(pub(a.acc, a.id), { sessionCallsign: a.session.callsign || null }, alliedView(a.acc));
-      return send(res, 200, { ok: true, account: me, relay: relayFor(a.acc) });
+      return send(res, 200, { ok: true, account: me, relay: relayFor(a.acc), relaySync: relaySyncState() });
     }
     /* sign out: the presenting session dies server-side, not just in the
        browser — a shared machine can't resurrect it from a saved token */
@@ -547,14 +691,10 @@ const server = http.createServer(async (req, res) => {
       if (!target) return send(res, 404, { ok: false, error: "no such account" });
       if (target.role !== "allied") return send(res, 400, { ok: false, error: "only an ALLIED account can lead an organization" });
       const lead = b.lead === true;
-      await serializeMutation(async () => {
-        const was = target.orgLead === true;
-        target.orgLead = lead; tokensFor(target); persist();
-        try { await syncRelayAcls(); }
-        catch (error) { target.orgLead = was; persist(); throw error; }
-      });
+      await serializeMutation(async () => { target.orgLead = lead; tokensFor(target); persist(); });
       audit(a.acc.callsign || a.acc.discordName, a.id, "standing", (target.callsign || target.discordName || leadRoute[1]) + ": org lead " + (lead ? "granted" : "removed") + " (" + (target.org || "?") + ")");
-      return send(res, 200, { ok: true, account: pub(target, leadRoute[1]) });
+      requestRelaySync("org lead " + (target.discordName || leadRoute[1]));
+      return send(res, 200, { ok: true, account: pub(target, leadRoute[1]), relaySync: relaySyncState() });
     }
     if (p === "/api/allied" && req.method === "GET") {
       return send(res, 200, { ok: true, allied: Object.entries(db.allied).map(([id, g]) => ({ guildId: id, name: g.name, addedAt: g.addedAt || null,
@@ -579,7 +719,7 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { ok: true });
     }
     if (p === "/api/accounts" && req.method === "GET") {
-      return send(res, 200, { ok: true, accounts: Object.entries(db.accounts).map(([id, acc]) => pub(acc, id)) });
+      return send(res, 200, { ok: true, accounts: Object.entries(db.accounts).map(([id, acc]) => pub(acc, id)), relaySync: relaySyncState(), fleetGuild: GUILD_ID || null });
     }
 
     let m;
@@ -667,16 +807,10 @@ const server = http.createServer(async (req, res) => {
           }
         }
         persist();
-        try { await syncRelayAcls(); }
-        catch (error) {
-          target.role = previousRole;
-          Object.assign(db.sessions, removedSessions);
-          persist();
-          throw error;
-        }
         return pub(target, m[1]);
       });
-      return send(res, 200, { ok: true, account: updated });
+      requestRelaySync("standing " + (updated.discordName || m[1]));
+      return send(res, 200, { ok: true, account: updated, relaySync: relaySyncState() });
     }
     if (p === "/api/nets/access" && req.method === "GET") {
       return send(res, 200, { ok: true, access: db.netAccess });
@@ -687,23 +821,9 @@ const server = http.createServer(async (req, res) => {
       const orgLevel = /^org:(\d{5,25})$/.exec(String(b.level || ""));
       if (!netName || (!["open", "joint", "member", "command"].includes(b.level) && !orgLevel)) return send(res, 400, { ok: false, error: "need net + level(open|joint|member|command|org:<guildId>)" });
       if (orgLevel && !db.allied[orgLevel[1]]) return send(res, 400, { ok: false, error: "no allied organization with that Discord id" });
-      await serializeMutation(async () => {
-        const hadPrevious = Object.prototype.hasOwnProperty.call(db.netAccess, netName);
-        const previous = db.netAccess[netName];
-        /* Persist the desired policy first.  If the relay rejects it, roll the
-           JSON state back; a restart will then re-apply the last known policy. */
-        db.netAccess[netName] = b.level;
-        try {
-          persist();
-          await applyNetAccess(netName, b.level);
-        } catch (error) {
-          console.error("[netaccess] " + netName + " -> " + b.level + " failed: " + error.message);
-          if (hadPrevious) db.netAccess[netName] = previous; else delete db.netAccess[netName];
-          try { persist(); } catch (persistError) {}
-          throw error;
-        }
-      });
-      return send(res, 200, { ok: true, access: db.netAccess });
+      await serializeMutation(async () => { db.netAccess[netName] = b.level; persist(); });
+      requestRelaySync("net access " + netName + " -> " + b.level);
+      return send(res, 200, { ok: true, access: db.netAccess, relaySync: relaySyncState() });
     }
     return send(res, 404, { ok: false, error: "no such route" });
   } catch (e) {
@@ -717,9 +837,5 @@ server.requestTimeout = 45000;
 server.headersTimeout = 16000;
 server.keepAliveTimeout = 5000;
 server.maxRequestsPerSocket = 100;
-syncRelayAclsWithRetry().then(() => {
-  server.listen(PORT, HOST, () => console.log("[fleetcomm-accounts] listening on " + HOST + ":" + PORT + (MOCK ? " (MOCK DISCORD MODE)" : "")));
-}).catch(error => {
-  console.error("[fleetcomm-accounts] ACL synchronization failed:", error.message);
-  process.exitCode = 1;
-});
+server.listen(PORT, HOST, () => console.log("[fleetcomm-accounts] listening on " + HOST + ":" + PORT + (MOCK ? " (MOCK DISCORD MODE)" : "")));
+requestRelaySync("startup");

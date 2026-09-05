@@ -57,16 +57,19 @@ count 30–80.
    task-force nets to *JOINT — allied task force too*, each command net to its organization's
    *… ONLY (+ COMMAND)* entry (those entries appear once the org is on the list). A nest that
    holds allied nets needs the same level as its nets.
-4. **Allies who sit in the 22nd's own Discord** (liaison officers, guests) arrive as PENDING or
-   MEMBER, not ALLIED — the fleet's Discord wins at sign-in. Press the **AWAITING · IN AN ALLIED
-   DISCORD** chip above the roster: it lists everyone in the queue whom the service also saw in
-   a listed allied Discord, each row saying "also in <org>", and a one-click **FILE AS <ORG>**
-   makes them ALLIED under it (kept on every later sign-in; off the fleet's personnel rolls).
-   For anyone else, the **TO ALLIED…** dropdown on the row picks the organization by hand; the
-   same dropdown on an ALLIED row moves someone to another organization. The chips (ALL ·
-   AWAITING APPROVAL · ALLIED · MEMBERS · COMMAND · REVOKED) combine with the search box.
-5. **Flag the leads** — once each organization's lead has signed in once (they appear on the
-   roster as ALLIED · <org>), press MAKE ORG LEAD on their row. From then on they can add
+4. **Allies who sit in the 22nd's own Discord** (liaison officers, guests) arrive in the
+   **AWAITING APPROVAL** group, not as ALLIED — the fleet's Discord wins at sign-in. Each row
+   says which allied Discords they are in and, when Discord told us when they joined each,
+   since when; the button on the row is the recommendation: **FILE AS <ORG>** for the Discord
+   they joined first (their home), **APPROVE** for a recruit who joined the fleet's first,
+   **PICK THEIR ORG ▸** when they are in several and there are no dates — then use the row's
+   **CHANGE STANDING…** dropdown (the orgs they are in are listed first). The same dropdown
+   moves an ALLIED operator to another organization or to fleet standing. The roster is
+   grouped: the queue, one fold per allied organization, the fleet's rolls, the revoked.
+   Above it, the relay line: **RELAY SYNC IN PROGRESS** for the seconds after any change,
+   **RELAY IN STEP** once the relay has it — a RESTRICTED report only counts after IN STEP.
+5. **Flag the leads** — once each organization's lead has signed in once (they appear in their
+   organization's group), press MAKE LEAD on their row. From then on they can add
    nets under their organization's command net themselves (right-click ▸ new net); a new
    subnet inherits its parent's access, so it is theirs automatically.
 6. **Send each organization the briefing below** and test with one volunteer from each:
@@ -96,8 +99,11 @@ count 30–80.
 - **Someone can't sign in** ("not a member…"): wrong Discord account, or their organization is
   not on the ALLIED ORGANIZATIONS list, or they are not in that server. Add the org / have them
   join / use the right account. Nothing to approve.
-- **A net says RESTRICTED for someone who should have it**: its level is wrong (or its nest's).
-  Fix the dropdown; they re-TUNE — no relaunch.
+- **A net says ACCESS PENDING — RELAY SYNCING**: COMMAND just changed something and the relay
+  is catching up; the app re-tunes by itself within about half a minute. Nothing to do.
+- **A net says RESTRICTED for someone who should have it** (and ACCOUNTS says RELAY IN STEP):
+  its level is wrong (or its nest's), or the person's standing is — an org's net admits that
+  org's ALLIED operators and 22nd COMMAND, not MEMBERs. Fix the dropdown; they re-TUNE.
 - **Someone must go**: roster ▸ REVOKE. Off the relay at once; REINSTATE brings them back.
 - **An org lead cannot create a net**: they are creating it outside their organization's nets
   (the relay refuses) — a new net goes under their own command net, or a 22nd COMMAND creates it.
@@ -118,8 +124,10 @@ task-force nets back to OPEN or delete them. The 22nd's own nets were never touc
 
 ## Droplet checklist (Andy, before leaving — the only part outside the app)
 
-Relay (`/etc/mumble-server.ini`, then restart when nobody is on): `users=600`,
-`autobanSuccessfulConnections=false`, `autobanAttempts=30`. Accounts service at v1.4.10 or later
-(ALLIED standing, JOINT and per-org levels, org leads, the first-sign-in ACL sync, TO ALLIED
-conversion, the queue filter), pulled from the tag — accounts-service.js and portal-api.js,
-backups kept.
+Relay (`/etc/mumble/mumble-server.ini` — the file the unit actually reads; `/etc/mumble-server.ini` is a dead file — then restart when nobody is on): `users=600`,
+`autobanSuccessfulConnections=false`, `autobanAttempts=30`. Accounts service at v1.4.11 or later
+(ALLIED standing, JOINT and per-org levels, org leads, the read-back ACL sync that survives
+the relay's message limit, join dates), pulled from the tag — accounts-service.js and
+portal-api.js, backups kept. The relay's live ini is `/etc/mumble/mumble-server.ini`: users,
+messagelimit=10, messageburst=50 and the autoban lines belong THERE (restart needed), and
+RELAY_MSG_LIMIT/RELAY_MSG_BURST in the service env must match it.

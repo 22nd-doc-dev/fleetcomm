@@ -492,8 +492,12 @@ ipcMain.handle("discord-login", async (ev, request) => {
   const redirect = "http://127.0.0.1:" + OAUTH_PORT + "/callback";
   const authUrl = "https://discord.com/oauth2/authorize?response_type=code&client_id=" + cfg.discordClientId +
     /* `guilds` lets the ACCOUNTS SERVICE confirm the operator is in the fleet's
-       Discord. The check happens there, against Discord, never in this client. */
-    "&scope=identify%20guilds&redirect_uri=" + encodeURIComponent(redirect) + "&state=" + state +
+       Discord; `guilds.members.read` lets it ask WHEN they joined each server
+       that matters — the approval queue's home-organization hint (an ally
+       guesting in the fleet's Discord joined their own org years earlier).
+       The checks happen there, against Discord, never in this client. Adding
+       a scope makes Discord show its consent screen once more, to everyone. */
+    "&scope=identify%20guilds%20guilds.members.read&redirect_uri=" + encodeURIComponent(redirect) + "&state=" + state +
     "&code_challenge=" + challenge + "&code_challenge_method=S256";
   let code;
   try {
@@ -883,13 +887,19 @@ app.whenReady().then(async () => {
      video is helmet-cam screen capture through the legacy desktop-capture
      constraint path (chromeMediaSourceId from the in-app picker). The overlay
      window is never granted capture of anything. */
+  /* media for the main window, and WRITING to the clipboard (SETTINGS ▸ SYSTEM
+     LOG ▸ COPY — the bug-report path — was refused by this very gate, so the
+     one time an operator needed to hand over a log, the button did nothing) */
+  const clipboardWrite = (permission) => permission === "clipboard-sanitized-write";
   session.defaultSession.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) => {
     const isMainWindow = win && webContents === win.webContents;
+    if (isMainWindow && clipboardWrite(permission)) return true;
     return !!(isMainWindow && permission === "media" &&
       (!details || !details.mediaType || details.mediaType === "audio" || details.mediaType === "video"));
   });
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
     const isMainWindow = win && webContents === win.webContents;
+    if (isMainWindow && clipboardWrite(permission)) return callback(true);
     callback(!!(isMainWindow && permission === "media" &&
       (!details.mediaTypes || details.mediaTypes.every(t => t === "audio" || t === "video"))));
   });

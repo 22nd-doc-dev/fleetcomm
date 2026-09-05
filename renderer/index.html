@@ -335,6 +335,8 @@
   .denied{width:100%;margin-top:6px;border:1px solid var(--red);padding:4px;
     font-family:var(--font-mono);font-size:.64rem;font-weight:500;letter-spacing:.16em;color:var(--red);
     text-align:center;background:var(--red-tint)}
+  /* a refusal while COMMAND's change is still landing on the relay: held, not final */
+  .denied.wait{border-color:var(--amber);color:var(--amber);background:rgba(var(--amberRGB, 201, 169, 106), .08);animation:holdpulse 1.8s ease-in-out infinite}
   /* the primary action on an untuned net must survive the card's dimming —
      QI measured the muted version at 2.1:1, invisible at arm's length */
   .tunebtn{width:100%;margin-top:5px;border:1px solid var(--line-strong);color:var(--ink2);
@@ -443,14 +445,28 @@
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .acctrow .onair{color:var(--grn)}
   .acctrow .alsoin{color:var(--gold)}
-  #acctChips{display:flex;flex-wrap:wrap;gap:6px;max-width:780px;margin:0 0 12px}
-  #acctChips .chip{font-family:var(--font-mono);font-size:.62rem;letter-spacing:.14em;padding:5px 9px;background:transparent;
-    border:1px solid var(--line);color:var(--muted);cursor:pointer}
-  #acctChips .chip .num{color:var(--ink2);margin-left:4px}
-  #acctChips .chip:hover{border-color:var(--gold);color:var(--ink)}
-  #acctChips .chip.on{border-color:var(--gold);color:var(--gold)}
-  #acctChips .chip.hot{border-color:var(--amber);color:var(--amber)}
-  #acctChips .chip.hot.on{background:rgba(var(--amberRGB, 201, 169, 106), .12)}
+  /* the relay sync line: in progress (amber, pulsing) · in step (quiet) · failed (red) */
+  #acctSync{font-family:var(--font-mono);font-size:.64rem;letter-spacing:.14em;max-width:780px;margin:0 0 12px;padding:7px 10px;
+    border:1px solid var(--amber);color:var(--amber);background:rgba(var(--amberRGB, 201, 169, 106), .08);animation:holdpulse 1.8s ease-in-out infinite}
+  #acctSync.err{border-color:var(--red);color:var(--red);background:var(--red-tint);animation:none}
+  #acctSync.ok{border-color:var(--line);color:var(--muted);background:transparent;animation:none}
+  /* the roster groups: a heading that folds, rows inside */
+  .acctgrp{max-width:780px;margin:0 0 8px}
+  .grph{display:flex;align-items:center;gap:10px;width:100%;text-align:left;cursor:pointer;background:var(--tint);border:1px solid var(--line-strong);
+    padding:8px 12px;font-family:var(--font-mono);font-size:.66rem;font-weight:500;letter-spacing:.2em;color:var(--ink);text-transform:uppercase}
+  .grph:hover{border-color:var(--gold)}
+  .grph .caret{color:var(--muted);width:10px}
+  .grph .num{color:var(--holo);margin-left:2px}
+  .grph .sub{margin-left:auto;color:var(--muted);letter-spacing:.12em;font-weight:400}
+  .acctgrp.hot .grph{border-color:var(--amber)}
+  .acctgrp.hot .grph .num{color:var(--amber)}
+  .grpbody{padding:6px 0 2px 10px;border-left:1px solid var(--line)}
+  /* one request in flight per row: its controls lock and say so */
+  .acctrow .busynote{display:none;font-family:var(--font-mono);font-size:.6rem;letter-spacing:.16em;color:var(--amber)}
+  .acctrow.busy .ann,.acctrow.busy select{opacity:.4;pointer-events:none}
+  .acctrow.busy .busynote{display:inline;animation:holdpulse 1.8s ease-in-out infinite}
+  .acctrow .ann.dim{opacity:.7;cursor:default}
+  .orgsel.standing{max-width:240px}
   #acctPending{cursor:pointer}
   #alliedAdd{display:flex;gap:8px;align-items:center;margin:8px 0 6px}
   #alliedAdd input{flex:1;min-width:0;font-size:.8rem;padding:8px 10px;background:var(--bez);border:1px solid var(--line-strong);color:var(--ink)}
@@ -904,7 +920,7 @@
   @keyframes holdpulse{0%,100%{opacity:1}50%{opacity:.5}}
   @media (prefers-reduced-motion:reduce){
     *,*::before,*::after{animation-duration:.001s !important;transition-duration:.001s !important}
-    #pttRow.unbound #bindActive,.relinking{animation:none}
+    #pttRow.unbound #bindActive,.relinking,.denied.wait,#acctSync,.acctrow.busy .busynote{animation:none}
   }
 </style>
 </head>
@@ -1047,8 +1063,8 @@
           placeholder="SEARCH — callsign, discord name, standing, net, frequency">
         <span id="acctCount"></span>
       </div>
-      <div id="acctChips"></div>
-      <div class="miniheading" style="margin-top:0">REGISTERED OPERATORS</div>
+      <div id="acctSync" style="display:none"></div>
+      <div class="miniheading" style="margin-top:0">REGISTERED OPERATORS <span class="hint" style="font-weight:400;letter-spacing:.06em">— the queue, then each allied organization, then the fleet's rolls; fold a group by its heading</span></div>
       <div id="acctList" style="max-width:780px"></div>
       <div class="miniheading">NET ACCESS — WHO MAY TUNE EACH NET (RELAY-ENFORCED)</div>
       <div id="netAccess" style="max-width:780px"></div>
@@ -1058,7 +1074,7 @@
         <input id="alliedId" class="mono" placeholder="Discord server id (Server Settings ▸ Widget)" maxlength="25">
         <input id="alliedName" class="mono" placeholder="Organization name" maxlength="60">
         <button class="btn" id="alliedAddBtn">ADD ORG</button></div>
-      <p class="hint" style="max-width:780px;text-align:left;padding-bottom:20px">Anyone in one of these Discords — and not in the fleet's — signs in as ALLIED: no approval queue, their org on the roster, and the relay admits them only to nets marked JOINT above. Remove an org to stop new sign-ins; revoke people on the roster.</p>
+      <p class="hint" style="max-width:780px;text-align:left;padding-bottom:20px">Anyone in one of these Discords — and not in the fleet's — signs in as ALLIED: no approval queue, their org on the roster, and the relay admits them only to nets marked JOINT above. An ally who also sits in the fleet's Discord lands in the queue instead; the queue says which allied Discords they are in and, when Discord told us when they joined each, which one is their home. Remove an org to stop new sign-ins; revoke people on the roster.</p>
     </div>
   </div>
 

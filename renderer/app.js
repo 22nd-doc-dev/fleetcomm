@@ -40,6 +40,7 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
 };
 const $ = (id) => document.getElementById(id);
+let relaySettling = false;   /* the accounts service is still writing COMMAND's last change to the relay */
 
 /* ── persisted prefs ── */
 let fx = store.get("fx", true), fxPreset = store.get("fxPreset", "standard");
@@ -738,6 +739,9 @@ function playFrame(n, session, opusBuf) {
   const view = new DataView(pcm);
   for (let i = 0; i < cnt; i++) chd[i] = view.getInt16(i * 2, true) / 32768;
   const src = ctx.createBufferSource(); src.buffer = ab; src.connect(n.gainNode);
+  /* the output off rate (see the watchdog): play every source faster by the
+     same factor, so the device's slow pull nets out to real time */
+  if (clockFix !== 1) src.playbackRate.value = clockFix;
   /* a context that isn't running never advances currentTime: frames would
      queue at a frozen cursor and all fire at once when it wakes */
   if (ctx.state !== "running") { try { ctx.resume(); } catch (e) {} }
@@ -748,9 +752,18 @@ function playFrame(n, session, opusBuf) {
      Past 750 ms of backlog, drop THIS frame: what is queued plays out clean,
      the delay stays bounded, a syllable is lost instead of the transmission. */
   if (d.cursor > ctx.currentTime + 0.75) { d.dropped = (d.dropped || 0) + 1; audioDrops++; return; }
-  src.start(d.cursor); d.cursor += cnt / 48000;
+  src.start(d.cursor); d.cursor += cnt / 48000 / clockFix;
 }
 let audioDrops = 0, audioHeals = 0;
+/* ── the rate correction ──
+   The context clock runs at the rate the output device pulls frames. When
+   that is 2/3 of real time, voice plays at 2/3 speed — "sssoiuuunnddd slow".
+   The heals below re-open the output; between the drift and the heal, and
+   for as long as any heal fails to hold, every source is played 1/ratio
+   faster instead: a 20 ms frame scheduled 13 ms of context time apart plays
+   in 20 ms of wall time, at pitch. Set from two consecutive off-rate
+   seconds, cleared by the first on-rate one. */
+let clockFix = 1;
 /* ── audio-clock watchdog ──
    currentTime is frames RENDERED ÷ sample rate, and the output device is what
    pulls the frames — so the context clock tracks wall time exactly as long as
@@ -772,6 +785,7 @@ function audioClockSample(audioMs, wallMs) {
   const off = ctx.state === "running" && (ratio < 0.85 || ratio > 1.15);
   if (!off) {
     clockWatch.off = 0;
+    if (clockFix !== 1) { clockFix = 1; for (const d of decoders.values()) d.cursor = 0; }
     if (clockWatch.ailing && ++clockWatch.ok >= 3) {
       clockWatch.ailing = false; clockWatch.healed = 0;
       addLog("sys", "", "audio engine clock back on rate (" + pct + "%)");
@@ -779,27 +793,45 @@ function audioClockSample(audioMs, wallMs) {
     return null;
   }
   clockWatch.ok = 0;
-  if (++clockWatch.off < 3) return null;          /* three flat seconds, not one hiccup */
+  clockWatch.off++;
+  if (clockWatch.off >= 2) {                        /* two flat seconds: correct the rate now, heal below */
+    const fix = Math.min(2, Math.max(0.5, 1 / ratio));
+    if (Math.abs(fix - clockFix) > 0.02) { clockFix = fix; for (const d of decoders.values()) d.cursor = 0; }
+  }
+  if (clockWatch.off < 3) return null;          /* three flat seconds before a heal, not one hiccup */
   const now = Date.now();
   if (!clockWatch.ailing) {
     clockWatch.ailing = true;
     addLog("sys", "", "audio engine clock off rate \u2014 advanced " + Math.round(audioMs) + " ms in " + Math.round(wallMs) + " ms (" + pct + "%): the output device is taking audio " +
       (ratio < 1 ? "slower" : "faster") + " than the engine renders it, so voice sounds " + (ratio < 1 ? "stretched" : "rushed") +
-      " (a headset that changed format \u2014 Bluetooth switching to its headset profile is the classic) \u2014 re-opening the output");
-  }
-  if (clockWatch.healed >= 4) {
-    if (now - clockWatch.said > 300000) {
-      clockWatch.said = now;
-      addLog("sys", "", "audio engine clock still off rate (" + pct + "%) after re-opening the output and rebuilding the engine \u2014 restart FleetComm; if it comes back, set the output device to 48000 Hz in Windows sound settings and say which headset");
-    }
-    return null;
+      " (a headset that changed format \u2014 Bluetooth switching to its headset profile is the classic) \u2014 playback rate-corrected \u00d7" + clockFix.toFixed(2) + ", re-opening the output");
+    outputLabel().then(l => addLog("sys", "", "audio output in use: " + l + " \u2014 engine @ " + ctx.sampleRate + " Hz, output latency " +
+      Math.round((ctx.outputLatency || ctx.baseLatency || 0) * 1000) + " ms" + (capNode ? ", mic open" : ", mic closed") +
+      "; window " + document.visibilityState + (document.hasFocus() ? ", focused" : ", unfocused")));   /* is a game in front? */
   }
   if (now - clockWatch.lastHeal < 20000) return null;
-  clockWatch.lastHeal = now; clockWatch.healed++; clockWatch.off = 0;
-  /* first try the cheap detour (a new output stream, no silence); if the
-     clock is still off after that, the device parameters Chromium holds are
-     stale and only a NEW engine re-asks the device — rebuild */
-  return clockWatch.healed === 1 ? healAudioClock(pct) : rebuildAudioEngine("clock at " + pct + "%");
+  clockWatch.lastHeal = now; clockWatch.healed++; clockWatch.heals = (clockWatch.heals || 0) + 1; clockWatch.off = 0;
+  /* No cap. The field showed the output falling off rate again minutes after
+     a heal; giving up after four left the operator at 66% until a relaunch
+     ("restart, fine, then laggy again"). Between heals playback is
+     rate-corrected, so an episode costs a few seconds of stretched voice. */
+  if (clockWatch.heals >= 3 && now - clockWatch.said > 600000) {
+    clockWatch.said = now;
+    addLog("sys", "", "the audio output keeps falling off rate (" + clockWatch.heals + " heals this session) \u2014 playback is rate-corrected between heals; say which headset in the report: if it is Bluetooth, set Windows to use it as headphones only (disable its Hands-Free Telephony service), or use a wired headset");
+  }
+  /* the cheap detour first (a new output stream, no silence); if the clock
+     falls off again inside the same episode, the device parameters Chromium
+     holds are stale and only a NEW engine re-asks the device — rebuild; then
+     alternate for as long as it takes */
+  return clockWatch.healed % 2 === 1 ? healAudioClock(pct) : rebuildAudioEngine("clock at " + pct + "%");
+}
+/* which output the engine is on, for the log — the report needs the headset's name */
+async function outputLabel() {
+  try {
+    const outs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "audiooutput");
+    const want = outDevice ? outs.find(d => d.deviceId === outDevice) : (outs.find(d => d.deviceId === "default") || outs[0]);
+    return want && want.label ? want.label : (outDevice ? "device " + String(outDevice).slice(0, 8) + "\u2026" : "system default");
+  } catch (e) { return "unknown"; }
 }
 /* ── the full rebuild ──
    The renderer caches an output device's parameters (rate, buffer) when a
@@ -831,6 +863,7 @@ async function rebuildAudioEngine(reason) {
   noiseBuf = null;
   for (const n of nets) if (n.gainNode) makeChain(n);   /* a tuned net's chain, on the new engine */
   for (const d of decoders.values()) d.cursor = 0;
+  clockFix = 1;
   ensureMic.workletLoaded = false;                       /* the worklet module is per context */
   if (outDevice) { try { await applyOutputDevice(); } catch (e) {} }
   if (ctx.state !== "running") { try { await ctx.resume(); } catch (e) {} }
@@ -849,6 +882,7 @@ async function healAudioClock(pct) {
     if (ctx.state !== "running") await ctx.resume();
   } catch (e) { addLog("sys", "", "couldn't re-open the audio output: " + e.message); try { await ctx.resume(); } catch (e2) {} }
   for (const d of decoders.values()) d.cursor = 0;  /* schedule fresh against the healed clock */
+  clockFix = 1;
   if (capNode) {                                    /* re-pair echo cancellation with the new output stream */
     try { capNode.disconnect(); } catch (e) {}
     capNode = null; await ensureMic();
@@ -1070,7 +1104,9 @@ function renderNets() {
         '<label>L\u00b7R</label><input type="range" class="pan" min="-100" max="100" value="' + n.pan + '" data-pan></div>';
     } else {
       h += n.denied
-        ? '<div class="denied" title="' + escAttr(n.denied) + '">RESTRICTED — NO ACCESS</div>'
+        ? (n.retune && relaySettling
+          ? '<div class="denied wait" title="' + escAttr(n.denied) + '">ACCESS PENDING — RELAY SYNCING</div>'
+          : '<div class="denied" title="' + escAttr(n.denied) + '">RESTRICTED — NO ACCESS</div>')
         : n.relinking
         ? '<div class="relinking">RECONNECTING…</div>'
         : '<button class="tunebtn" data-tune>TUNE ▸</button>';
@@ -1403,10 +1439,15 @@ async function tuneNet(i, silent) {
        leaving you pressing a control that does nothing. */
     const denied = /don't have access|PermissionDenied|refused you access/i.test(r.error || "");
     n.denied = denied ? (r.error || "").replace(/\s*\(PermissionDenied[^)]*\)/, "") : null;
+    /* while COMMAND's last change is still landing on the relay a refusal is
+       not a verdict: hold it as PENDING and try again once the relay settles */
+    n.retune = denied && relaySettling;
     if (!silent) toast(denied
-      ? n.cfg.name + " is restricted — your account doesn't have access to it."
+      ? (relaySettling
+        ? n.cfg.name + " — access pending: the relay is still applying COMMAND's changes; FleetComm retries by itself."
+        : n.cfg.name + " is restricted — your account doesn't have access to it.")
       : "Tune failed: " + r.error);
-    if (denied) addLog("sys", n.cfg.name, "ACCESS DENIED — restricted net");
+    if (denied) addLog("sys", n.cfg.name, relaySettling ? "ACCESS PENDING — relay still syncing, retrying when it settles" : "ACCESS DENIED — restricted net");
     renderNets();
     return false;
   }
@@ -2082,8 +2123,29 @@ $("connectBtn").addEventListener("click", function () { doConnect($("csIn").valu
 $("connectLegacyBtn").addEventListener("click", function () { doConnect($("csInLegacy").value.trim().toUpperCase(), this); });
 
 /* Discord sign-in flow */
+/* ── the relay settling ──
+   A standing or net-access change answers at once on the service; the relay
+   follows within its message budget (seconds when its limits were raised,
+   half a minute on murmur's defaults). Sign-in and every heartbeat say
+   whether it has caught up. While it hasn't, a refused TUNE is shown as
+   ACCESS PENDING instead of RESTRICTED; when it has, held nets are tuned
+   again by themselves. Before 1.4.11 the first minute after any change
+   showed RESTRICTED for good — the "flip them to MEMBER and back" ritual. */
+function noteRelaySync(state) {
+  const was = relaySettling;
+  relaySettling = !!(state && state.settling);
+  if (was === relaySettling) return;
+  if (!relaySettling) {
+    const retry = nets.map((n, i) => n.denied && n.retune ? i : -1).filter(i => i >= 0);
+    for (const n of nets) if (n.denied) { n.denied = null; n.retune = false; }
+    if (retry.length) addLog("sys", "", "relay caught up — re-tuning " + retry.length + " held net" + (retry.length === 1 ? "" : "s"));
+    (async () => { for (const i of retry) await tuneNet(i, true); })();
+  }
+  if (nets.length) renderNets();
+}
 function applyLogin(r) {
   acct = { account: r.account, authorized: !!r.authorized };
+  noteRelaySync(r.relaySync);
   cmdToken = r.account.role === "command" ? "account-command" : "";
   refreshSounds();   /* COMMAND gates the 1MC; the fleet library loads at sign-in */
   if (connected) {
@@ -2281,6 +2343,7 @@ function pollOps() {
     if (discordMode) {
       const current = await ipcRenderer.invoke("acct", { method: "GET", path: "/api/me" });
       if (current && current.ok && current.account) applyAlliedMode(current.account);
+      if (current && current.ok) noteRelaySync(current.relaySync);
       const verdict = bridge.acctHeartbeat.assess(current, acctFails);
       acctFails = verdict.fails;
       if (verdict.warn) addLog("sys", "", "accounts service unreachable — staying on comms, still checking");
@@ -2631,58 +2694,96 @@ function renderAccts(data) {
   const terms = acctTerms();
   const pend = d.accounts.filter(x => x.role === "pending").length;
   $("acctPending").textContent = pend ? pend + " AWAITING APPROVAL" : "";
-  const order = { pending: 0, command: 1, element: 2, member: 3, allied: 4, revoked: 5 };
-  /* ── the queue filter ──
-     Chips narrow the roster before the search box does. "Awaiting · in an
-     allied Discord" is the one that matters on a joint-op week: an ally who
-     joined the fleet's Discord as a guest lands in the queue like a recruit,
-     and the service now records which listed allied Discords they are also
-     in, so those rows can be filed under their org in one click. */
-  const alsoIn = (x) => (x.alliedIn || []).map(id => alliedOrgs.find(g => g.guildId === String(id))).filter(Boolean);
-  const CHIPS = {
-    all: { label: "ALL", test: () => true },
-    awaiting: { label: "AWAITING APPROVAL", test: (x) => x.role === "pending" },
-    awaitingAllied: { label: "AWAITING \u00b7 IN AN ALLIED DISCORD", test: (x) => x.role === "pending" && alsoIn(x).length > 0 },
-    allied: { label: "ALLIED", test: (x) => x.role === "allied" },
-    members: { label: "MEMBERS", test: (x) => x.role === "member" || x.role === "element" },
-    command: { label: "COMMAND", test: (x) => x.role === "command" },
-    revoked: { label: "REVOKED", test: (x) => x.role === "revoked" }
+  renderAcctSync(d.relaySync);
+  const orgOf = (id) => alliedOrgs.find(g => g.guildId === String(id));
+  const alsoIn = (x) => (x.alliedIn || []).map(orgOf).filter(Boolean);
+  const joinedAt = (x, gid) => (gid && x.guildJoined && Number.isFinite(Number(x.guildJoined[gid]))) ? Number(x.guildJoined[gid]) : null;
+  const day = (t) => new Date(t).toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" }).toUpperCase().replace(/,/g, "");
+  /* ── the home-org recommendation ──
+     Whichever Discord a person joined FIRST is almost certainly their home:
+     an ally guesting in the fleet's Discord joined their own org long before
+     (a 12th Battle Group admiral: their server years ago, ours this week);
+     a recruit joined the fleet's first. The dates come from Discord at
+     sign-in (1.4.11+, guilds.members.read); without them the only safe
+     recommendation is a single listed org — several without dates gets
+     no button, so nobody is filed under the wrong flag by reflex. */
+  const home = (x) => {
+    const orgs = alsoIn(x);
+    if (!orgs.length) return null;
+    const dated = orgs.map(g => ({ org: g, t: joinedAt(x, g.guildId) }));
+    const fleetT = x.inFleet === false ? null : joinedAt(x, d.fleetGuild);
+    if (dated.every(o => o.t) && (x.inFleet === false || fleetT)) {
+      dated.sort((p, q) => p.t - q.t);
+      if (fleetT && fleetT < dated[0].t) return { fleet: true, t: fleetT };
+      return { org: dated[0].org, t: dated[0].t };
+    }
+    return orgs.length === 1 ? { org: orgs[0], t: dated[0].t || null } : null;
   };
-  if (!CHIPS[acctChip]) acctChip = "all";
-  $("acctChips").innerHTML = Object.entries(CHIPS).map(([k, c]) => {
-    const n = d.accounts.filter(c.test).length;
-    return '<button class="chip' + (k === acctChip ? " on" : "") + (k === "awaitingAllied" && n ? " hot" : "") + '" data-chip="' + k + '">' + c.label + ' <span class="num">' + n + "</span></button>";
+  const since = (x) => {
+    const orgs = alsoIn(x).map(g => { const t = joinedAt(x, g.guildId); return g.name + (t ? " since " + day(t) : ""); });
+    const fleetT = x.inFleet === false ? null : joinedAt(x, d.fleetGuild);
+    return (orgs.length ? ' \u00b7 <span class="alsoin">in ' + markHits(orgs.join(", "), terms) + "</span>" : "") +
+      (x.inFleet === false ? ' \u00b7 <span class="alsoin">not in the fleet Discord</span>' : fleetT ? " \u00b7 the fleet\u2019s Discord since " + esc(day(fleetT)) : "");
+  };
+  const roleLabel = (x) => x.role === "element" ? "ELEMENT LEADER"
+    : x.role === "allied" ? (x.orgLead ? "ALLIED LEAD" : "ALLIED") + (x.org ? " \u00b7 " + esc(x.org) : "")
+    : esc(String(x.role).toUpperCase());
+  /* one row: name · standing · the one obvious action (if any) · CHANGE STANDING… · LEAD */
+  const row = (x) => {
+    const orgs = alsoIn(x), mine = orgs.map(g => g.guildId);
+    const h = x.role === "pending" ? home(x) : null;
+    let primary = "";
+    if (x.role === "revoked") primary = '<button class="ann lit-g" data-role="' + (orgOf(x.orgGuild) ? "allied" : "member") + '">REINSTATE</button>';
+    else if (x.role === "pending") {
+      if (h && h.org) primary = '<button class="ann lit-g" data-fileas="' + escAttr(h.org.guildId) + '" title="' + (h.t ? "Joined this organization\u2019s Discord first (" + escAttr(day(h.t)) + ")" : "The one listed allied Discord they are in") + '">FILE AS ' + esc(h.org.name.toUpperCase()) + '</button>';
+      else if (!orgs.length || (h && h.fleet)) primary = '<button class="ann lit-g" data-role="member" title="' + (h && h.fleet ? "Joined the fleet\u2019s Discord before any allied one (" + escAttr(day(h.t)) + ")" : "A fleet recruit \u2014 approve as MEMBER") + '">APPROVE</button>';
+      else primary = '<span class="ann dim" title="In several allied Discords and no join dates to go on \u2014 pick their organization in the dropdown">PICK THEIR ORG \u25b8</span>';
+    }
+    const opt = (v, label) => '<option value="' + escAttr(v) + '">' + label + "</option>";
+    const opts = [opt("", "CHANGE STANDING\u2026")];
+    for (const g of alliedOrgs) if (mine.includes(g.guildId) && !(x.role === "allied" && x.orgGuild === g.guildId)) opts.push(opt("allied:" + g.guildId, "ALLIED \u00b7 " + esc(g.name.toUpperCase()) + " \u2014 in their Discord"));
+    if (x.role !== "member") opts.push(opt("member", "MEMBER"));
+    if (x.role !== "element") opts.push(opt("element", "ELEMENT LEAD \u2014 may watch cams"));
+    if (x.role !== "command") opts.push(opt("command", "COMMAND"));
+    for (const g of alliedOrgs) if (!mine.includes(g.guildId) && !(x.role === "allied" && x.orgGuild === g.guildId)) opts.push(opt("allied:" + g.guildId, "ALLIED \u00b7 " + esc(g.name.toUpperCase())));
+    if (x.role !== "revoked") opts.push(opt("revoked", "REVOKE \u2014 off the relay"));
+    const lead = x.role === "allied" ? '<button class="ann' + (x.orgLead ? " lit-a" : "") + '" data-orglead="' + (x.orgLead ? "0" : "1") + '" title="An organization lead may create, rename and delete nets inside their own organization\u2019s nets, and watch its helmet cams">' + (x.orgLead ? "LEAD \u2713" : "MAKE LEAD") + "</button>" : "";
+    return '<div class="acctrow" data-id="' + escAttr(x.discordId) + '"><div class="nm"><b>' + markHits(fleetName(x), terms) + "</b>" +
+      '<span>discord: ' + markHits(x.discordName, terms) + " \u00b7 " + (x.lastSeen ? "seen " + new Date(x.lastSeen).toLocaleString() : "never seen") +
+      (x.onAir ? ' \u00b7 <span class="onair">on air as ' + markHits(x.onAir, terms) + "</span>" : "") + since(x) + "</span></div>" +
+      '<span class="ann rolelbl ' + (x.role === "command" ? "lit-a" : x.role === "member" || x.role === "element" ? "lit-g" : "") + '">' + roleLabel(x) + "</span>" +
+      primary + '<select class="orgsel standing" data-standing title="Change this account\u2019s standing">' + opts.join("") + "</select>" + lead +
+      '<span class="busynote">SYNCING\u2026</span></div>';
+  };
+  /* ── the groups: the queue, one per allied organization, the fleet, the revoked ── */
+  const match = (x) => acctHits(terms, [fleetName(x), x.callsign, x.discordName, x.role, x.org, x.discordId, x.onAir].concat(alsoIn(x).map(g => g.name)).map(v => String(v || "")).join(" ").toLowerCase());
+  const byName = (p, q) => fleetName(p).localeCompare(fleetName(q));
+  const rank = { command: 0, element: 1, member: 2 };
+  const groups = [{ key: "awaiting", title: "AWAITING APPROVAL", hot: true, empty: "Nobody is waiting.",
+    rows: d.accounts.filter(x => x.role === "pending").sort((p, q) => (p.createdAt || 0) - (q.createdAt || 0)) }];
+  for (const g of alliedOrgs) groups.push({ key: "org:" + g.guildId, title: "ALLIED \u00b7 " + g.name.toUpperCase(), empty: "No operator from this organization has signed in yet.",
+    rows: d.accounts.filter(x => x.role === "allied" && x.orgGuild === g.guildId).sort((p, q) => ((q.orgLead === true) - (p.orgLead === true)) || byName(p, q)) });
+  const stray = d.accounts.filter(x => x.role === "allied" && !orgOf(x.orgGuild));
+  if (stray.length) groups.push({ key: "org:?", title: "ALLIED \u00b7 ORGANIZATION NO LONGER LISTED", rows: stray.sort(byName) });
+  const fleet = d.accounts.filter(x => rank[x.role] !== undefined).sort((p, q) => (rank[p.role] - rank[q.role]) || byName(p, q));
+  const count = (r) => fleet.filter(x => x.role === r).length;
+  groups.push({ key: "fleet", title: String(pkg.rootChannel || "THE FLEET").toUpperCase(), empty: "No fleet accounts yet.", rows: fleet,
+    sub: count("command") + " COMMAND \u00b7 " + count("element") + " ELEMENT \u00b7 " + count("member") + " MEMBERS" });
+  groups.push({ key: "revoked", title: "REVOKED", empty: "Nobody is revoked.", rows: d.accounts.filter(x => x.role === "revoked").sort(byName) });
+  const closed = acctClosedGroups();
+  let shown = 0;
+  const html = groups.map(g => {
+    const hits = terms.length ? g.rows.filter(match) : g.rows;
+    if (terms.length && !hits.length) return "";
+    const isOpen = terms.length ? true : !closed.has(g.key);   /* a search opens every group it hits */
+    shown += hits.length;
+    return '<div class="acctgrp' + (isOpen ? " open" : "") + (g.hot && hits.length ? " hot" : "") + '" data-grp="' + escAttr(g.key) + '">' +
+      '<button class="grph"><span class="caret">' + (isOpen ? "\u25be" : "\u25b8") + "</span>" + esc(g.title) +
+      '<span class="num">' + hits.length + (terms.length && hits.length !== g.rows.length ? " OF " + g.rows.length : "") + "</span>" +
+      (g.sub ? '<span class="sub">' + esc(g.sub) + "</span>" : "") + "</button>" +
+      (isOpen ? '<div class="grpbody">' + (hits.map(row).join("") || '<span class="hint">' + esc(g.empty || "Nobody here.") + "</span>") + "</div>" : "") + "</div>";
   }).join("");
-  const shownAccts = d.accounts.filter(CHIPS[acctChip].test)
-    .filter(x => acctHits(terms, [fleetName(x), x.callsign, x.discordName, x.role, x.org, x.discordId, x.onAir].concat(alsoIn(x).map(g => g.name)).map(v => String(v || "")).join(" ").toLowerCase()));
-  const html = shownAccts.sort((x, y) => ((order[x.role] ?? 9) - (order[y.role] ?? 9)) || String(x.discordName).localeCompare(String(y.discordName))).map(x => {
-    const btns =
-      (x.role === "pending" ? '<button class="ann lit-g" data-role="member">APPROVE</button>' : "") +
-      (x.role === "member" ? '<button class="ann lit-g" data-role="element" title="May watch helmet cams; no COMMAND powers">ELEMENT LEAD</button>' : "") +
-      /* an ally who sits in the fleet's Discord arrives as pending/member: file them under their org —
-         one click when the service saw them in exactly one listed allied Discord */
-      (["pending", "member", "element"].includes(x.role) && alsoIn(x).length === 1
-        ? '<button class="ann lit-g" data-fileas="' + escAttr(alsoIn(x)[0].guildId) + '" title="Also in this organization\u2019s Discord \u2014 file them as ALLIED under it">FILE AS ' + esc(alsoIn(x)[0].name.toUpperCase()) + '</button>' : "") +
-      (["pending", "member", "element"].includes(x.role) && alliedOrgs.length
-        ? '<select class="orgsel" data-toallied title="File this account as ALLIED under an organization"><option value="">TO ALLIED\u2026</option>' +
-          alliedOrgs.map(g => '<option value="' + escAttr(g.guildId) + '">' + esc(g.name) + '</option>').join("") + '</select>' : "") +
-      (x.role === "allied" && alliedOrgs.length > 1
-        ? '<select class="orgsel" data-toallied title="Move this operator to another organization">' +
-          alliedOrgs.map(g => '<option value="' + escAttr(g.guildId) + '"' + (x.orgGuild === g.guildId ? " selected" : "") + '>' + esc(g.name) + '</option>').join("") + '</select>' : "") +
-      (x.role === "allied" ? '<button class="ann' + (x.orgLead ? " lit-a" : "") + '" data-orglead="' + (x.orgLead ? "0" : "1") + '" title="An organization lead may create, rename and delete nets inside their own organization\u2019s nets">' + (x.orgLead ? "ORG LEAD ✓" : "MAKE ORG LEAD") + '</button>' : "") +
-      (x.role === "element" || x.role === "allied" ? '<button class="ann" data-role="member">TO MEMBER</button>' : "") +
-      (x.role === "member" || x.role === "element" ? '<button class="ann lit-c" data-role="command">PROMOTE</button>' : "") +
-      (x.role === "command" ? '<button class="ann" data-role="member">DEMOTE</button>' : "") +
-      (x.role !== "revoked" ? '<button class="ann" style="border-color:var(--red);color:var(--red)" data-role="revoked">REVOKE</button>'
-                            : '<button class="ann lit-g" data-role="' + (x.org ? "allied" : "member") + '">REINSTATE</button>');
-    return '<div class="acctrow" data-id="' + escAttr(x.discordId) + '"><div class="nm"><b>' + markHits(fleetName(x), terms) + '</b>' +
-      '<span>discord: ' + markHits(x.discordName, terms) + " · " + (x.lastSeen ? "seen " + new Date(x.lastSeen).toLocaleString() : "never seen") +
-      (x.onAir ? ' · <span class="onair">on air as ' + markHits(x.onAir, terms) + "</span>" : "") +
-      (alsoIn(x).length ? ' · <span class="alsoin">also in ' + markHits(alsoIn(x).map(g => g.name).join(", "), terms) + "</span>" : "") +
-      (x.inFleet === false ? ' · <span class="alsoin">not in the fleet Discord</span>' : "") + "</span></div>" +
-      '<span class="ann rolelbl ' + (x.role === "command" ? "lit-a" : x.role === "member" || x.role === "element" ? "lit-g" : "") + '">' + (x.role === "element" ? "ELEMENT LEADER" : x.role === "allied" ? (x.orgLead ? "ALLIED LEAD" : "ALLIED") + (x.org ? " · " + esc(x.org) : "") : esc(String(x.role).toUpperCase())) + "</span>" + btns + "</div>";
-  }).join("");
-  $("acctList").innerHTML = html || '<span class="hint">No operator matches “' + esc($("acctSearch").value) + '”.</span>';
+  $("acctList").innerHTML = html || '<span class="hint">No operator matches \u201c' + esc($("acctSearch").value) + '\u201d.</span>';
   /* one option per allied organisation as well: that org's operators + the fleet's COMMAND */
   const levels = ["open", "joint", "member", "command"].concat(alliedOrgs.map(g => "org:" + g.guildId));
   const levelLabel = (l) => l === "open" ? "OPEN — anyone approved" : l === "joint" ? "JOINT — allied task force too" : l === "member" ? "MEMBERS+" : l === "command" ? "COMMAND ONLY"
@@ -2696,8 +2797,31 @@ function renderAccts(data) {
       '<option value="' + l + '"' + (r.level === l ? " selected" : "") + ">" + levelLabel(l) + "</option>").join("") + "</select></div>"
   ).join("") || '<span class="hint">No net matches.</span>';
   $("acctCount").textContent = terms.length
-    ? shownAccts.length + " OF " + d.accounts.length + " OPERATORS · " + shownNets.length + " OF " + rows.length + " NETS"
+    ? shown + " OF " + d.accounts.length + " OPERATORS · " + shownNets.length + " OF " + rows.length + " NETS"
     : d.accounts.length + " OPERATORS · " + rows.length + " NETS";
+}
+/* ── the relay sync line above the roster ──
+   COMMAND sees what the relay has actually accepted: SYNC IN PROGRESS while a
+   change is landing (the roster re-polls every 3 s until it has), IN STEP with
+   the last run's numbers once it has, FAILED with the reason while the
+   service keeps retrying. */
+let acctSyncTimer = 0;
+function renderAcctSync(state) {
+  const el = $("acctSync"); if (!el) return;
+  clearTimeout(acctSyncTimer);
+  if (!state || (!state.settling && !state.error && !state.last)) { el.style.display = "none"; el.textContent = ""; return; }
+  el.style.display = "";
+  const hhmm = (t) => new Date(t).toLocaleTimeString();
+  if (state.error) { el.className = "err"; el.textContent = "RELAY SYNC FAILED \u2014 " + state.error + " \u2014 the service keeps retrying"; }
+  else if (state.settling) {
+    el.className = "";
+    el.textContent = "RELAY SYNC IN PROGRESS" + (state.since ? " (since " + hhmm(state.since) + ")" : "") + " \u2014 access changes are landing on the relay; operators see ACCESS PENDING until it settles";
+    acctSyncTimer = setTimeout(() => { if ($("pgAcct").classList.contains("on")) refreshAccts(); }, 3000);
+  } else {
+    const l = state.last;
+    el.className = "ok";
+    el.textContent = "RELAY IN STEP \u2014 last sync " + hhmm(l.at) + ": " + l.written + " net" + (l.written === 1 ? "" : "s") + " written, " + l.verified + " read back, " + l.rewritten + " rewritten" + (l.ms ? " (" + (l.ms / 1000).toFixed(1) + " s)" : "");
+  }
 }
 /* ── ALLIED ORGANIZATIONS ──
    A joint op puts other organisations on the relay. COMMAND lists their
@@ -2784,16 +2908,29 @@ function addSysLog(msg) {
   feed.appendChild(d); while (feed.children.length > 400) feed.removeChild(feed.firstChild);
   feed.scrollTop = feed.scrollHeight;
 }
+/* the clipboard API needs a permission the window's gate used to refuse; the
+   selection route needs none — both are tried, so a bug report always copies */
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch (e) { /* fall through */ }
+  const ta = document.createElement("textarea");
+  ta.value = text; ta.setAttribute("readonly", ""); ta.style.position = "fixed"; ta.style.opacity = "0";
+  document.body.appendChild(ta); ta.select();
+  let ok = false; try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+  ta.remove();
+  return ok;
+}
 $("sysLogCopy").addEventListener("click", async () => {
-  try { await navigator.clipboard.writeText(sysLines.join("\n")); toast("System log copied — " + sysLines.length + " lines."); }
-  catch (e) { toast("Couldn't copy: " + e.message); }
+  toast((await copyText(sysLines.join("\n"))) ? "System log copied — " + sysLines.length + " lines." : "Couldn't copy — select the log and press Ctrl+C.");
 });
-let acctChip = "all";                             /* the queue filter chip in force */
-$("acctChips").addEventListener("click", (e) => {
-  const b = e.target.closest("[data-chip]"); if (!b) return;
-  acctChip = b.dataset.chip; renderAccts();
+let acctClosed = null;                            /* roster groups COMMAND has folded (the fleet's rolls and the revoked, by default) */
+function acctClosedGroups() {
+  if (!acctClosed) { const saved = store.get("acctClosed", null); acctClosed = new Set(Array.isArray(saved) ? saved : ["fleet", "revoked"]); }
+  return acctClosed;
+}
+$("acctPending").addEventListener("click", () => {
+  acctClosedGroups().delete("awaiting"); renderAccts();
+  const g = $("acctList").querySelector('[data-grp="awaiting"]'); if (g) g.scrollIntoView({ block: "start" });
 });
-$("acctPending").addEventListener("click", () => { acctChip = "awaiting"; renderAccts(); });
 $("acctSearch").addEventListener("input", () => renderAccts());
 $("acctSearch").addEventListener("keydown", (e) => {
   if (e.key === "Escape") { e.preventDefault(); $("acctSearch").value = ""; renderAccts(); }
@@ -2836,31 +2973,41 @@ async function loadIdentity() {
   } catch (e) { /* no personnel API on an older service */ }
   showSignedAs(null);
 }
+/* one request in flight per row: the controls lock (the relay takes seconds
+   to follow, and a second click used to post the same change again) */
+async function acctAct(row, req, doneMsg) {
+  if (!row || row.classList.contains("busy")) return;
+  row.classList.add("busy");
+  const r = await ipcRenderer.invoke("acct", req);
+  if (!r.ok) { row.classList.remove("busy"); toast(r.error); return; }
+  toast(doneMsg + (r.relaySync && r.relaySync.settling ? " Landing on the relay\u2026" : ""));
+  if (r.relaySync) renderAcctSync(r.relaySync);
+  refreshAccts();
+}
 $("acctList").addEventListener("click", async (e) => {
+  const gh = e.target.closest(".grph");
+  if (gh) {
+    const key = gh.closest(".acctgrp").dataset.grp, closed = acctClosedGroups();
+    if (closed.has(key)) closed.delete(key); else closed.add(key);
+    store.set("acctClosed", [...closed]);
+    renderAccts();
+    return;
+  }
+  const row = e.target.closest(".acctrow"); if (!row) return;
+  const id = row.dataset.id;
   const fa = e.target.closest("[data-fileas]");
-  if (fa) {
-    const id = fa.closest(".acctrow").dataset.id;
-    const r = await ipcRenderer.invoke("acct", { method: "POST", path: "/api/accounts/" + id + "/role", body: { role: "allied", orgGuild: fa.dataset.fileas } });
-    if (!r.ok) toast(r.error); else { toast("Filed as ALLIED \u00b7 " + fa.textContent.replace(/^FILE AS /, "") + "."); refreshAccts(); }
-    return;
-  }
+  if (fa) return acctAct(row, { method: "POST", path: "/api/accounts/" + id + "/role", body: { role: "allied", orgGuild: fa.dataset.fileas } }, "Filed as ALLIED \u00b7 " + fa.textContent.replace(/^FILE AS /, "") + ".");
   const lb = e.target.closest("[data-orglead]");
-  if (lb) {
-    const id = lb.closest(".acctrow").dataset.id;
-    const r = await ipcRenderer.invoke("acct", { method: "POST", path: "/api/accounts/" + id + "/orglead", body: { lead: lb.dataset.orglead === "1" } });
-    if (!r.ok) toast(r.error); else { toast(lb.dataset.orglead === "1" ? "Organization lead granted." : "Organization lead removed."); refreshAccts(); }
-    return;
-  }
-  const b = e.target.closest("[data-role]"); if (!b) return;
-  const id = b.closest(".acctrow").dataset.id;
-  const r = await ipcRenderer.invoke("acct", { method: "POST", path: "/api/accounts/" + id + "/role", body: { role: b.dataset.role } });
-  if (!r.ok) toast(r.error); else { toast("Role updated."); refreshAccts(); }
+  if (lb) return acctAct(row, { method: "POST", path: "/api/accounts/" + id + "/orglead", body: { lead: lb.dataset.orglead === "1" } }, lb.dataset.orglead === "1" ? "Organization lead granted." : "Organization lead removed.");
+  const b = e.target.closest("[data-role]");
+  if (b) return acctAct(row, { method: "POST", path: "/api/accounts/" + id + "/role", body: { role: b.dataset.role } }, "Standing updated.");
 });
 $("acctList").addEventListener("change", async (e) => {
-  const sel = e.target.closest("[data-toallied]"); if (!sel || !sel.value) return;
-  const id = sel.closest(".acctrow").dataset.id;
-  const r = await ipcRenderer.invoke("acct", { method: "POST", path: "/api/accounts/" + id + "/role", body: { role: "allied", orgGuild: sel.value } });
-  if (!r.ok) { toast(r.error); sel.value = ""; } else { toast("Filed as ALLIED · " + sel.options[sel.selectedIndex].textContent + "."); refreshAccts(); }
+  const sel = e.target.closest("[data-standing]"); if (!sel || !sel.value) return;
+  const row = sel.closest(".acctrow"), id = row.dataset.id;
+  const v = sel.value, org = /^allied:(\d+)$/.exec(v), label = sel.options[sel.selectedIndex].textContent;
+  sel.value = "";
+  acctAct(row, { method: "POST", path: "/api/accounts/" + id + "/role", body: org ? { role: "allied", orgGuild: org[1] } : { role: v } }, "Standing \u2192 " + label + ".");
 });
 $("netAccess").addEventListener("change", async (e) => {
   const s2 = e.target.closest("[data-lvl]"); if (!s2) return;
@@ -4135,6 +4282,7 @@ if (bridge.autotestHost) {
         { discordId: "4", discordName: "newguy", callsign: "", role: "pending", lastSeen: 0 }
       ], access: { "COMMAND NET": "command" } };
       const dataWas = acctData; acctData = fake;
+      const closedWas = acctClosed; acctClosed = new Set();   /* every group open: the counts below are of rows */
       $("acctSearch").value = ""; renderAccts();
       const all = $("acctList").querySelectorAll(".acctrow").length;
       $("acctSearch").value = "tiber"; renderAccts();
@@ -4151,7 +4299,7 @@ if (bridge.autotestHost) {
       const byFreq = $("netAccess").querySelectorAll(".narow").length;
       L("acct-search", all === 4 && tiber === 2 && tiberNets > 0 && marked && multi === 1 && byRole === 1 && none === 0 && noneHint && byFreq === 1 &&
         /^0 OF 4 OPERATORS · 1 OF \d+ NETS$/.test($("acctCount").textContent));   /* the last render was the frequency search */
-      $("acctSearch").value = ""; acctData = dataWas; if (dataWas) renderAccts(); else { $("acctList").innerHTML = ""; $("netAccess").innerHTML = ""; $("acctCount").textContent = ""; }
+      $("acctSearch").value = ""; acctData = dataWas; acctClosed = closedWas; if (dataWas) renderAccts(); else { $("acctList").innerHTML = ""; $("netAccess").innerHTML = ""; $("acctCount").textContent = ""; }
     }
     const silentOpus = () => { const e = new OpusScript(48000, 1, OpusScript.Application.VOIP); const f = e.encode(new ArrayBuffer(FRAME * 2), FRAME); try { e.delete(); } catch (x) {} return f; };
     /* cam pop-out: a real window of ours plays the same stream with the burn-in; closes with the tile */
@@ -4200,6 +4348,32 @@ if (bridge.autotestHost) {
       L("audio-clock-heal-logged", sysLines.length >= logs0 + 2 && /re-opened/.test(sysLines.join("\n")));
       audioClockSample(1000, 1000); audioClockSample(1000, 1000); audioClockSample(1000, 1000);
       L("audio-clock-recovers", !clockWatch.ailing && /back on rate/.test(sysLines.join("\n")));
+      /* rate correction: two off-rate seconds set the playback fix (sources 1.5x, frames 13 ms apart); one on-rate second clears it */
+      {
+        audioClockSample(667, 1000); audioClockSample(667, 1000);
+        const fixed = Math.abs(clockFix - 1.5) < 0.05 && !clockWatch.ailing;
+        const k = nets.findIndex(n => n.tuned && n.gainNode);
+        let step = null;
+        if (k >= 0) {
+          playFrame(nets[k], 434344, silentOpus());
+          const dk = decoders.get(nets[k].cfg.freq + ":434344"), c1 = dk.cursor;
+          playFrame(nets[k], 434344, silentOpus()); step = dk.cursor - c1;
+        }
+        audioClockSample(1000, 1000);
+        const compOk = fixed && clockFix === 1 && (k < 0 || Math.abs(step - FRAME / 48000 / 1.5) < 0.0005);
+        L("audio-clock-compensates", compOk);
+        if (!compOk) L("audio-clock-compensates-detail", JSON.stringify({ fixed, clockFix, step, k, expect: FRAME / 48000 / 1.5 }));
+      }
+      /* no cap on heals: a fifth episode still heals */
+      {
+        const h5 = audioHeals + audioRebuilds;
+        clockWatch.heals = 6; clockWatch.healed = 0; clockWatch.lastHeal = 0; clockWatch.said = 0;
+        audioClockSample(660, 1000); audioClockSample(660, 1000); const p5 = audioClockSample(660, 1000);
+        const fired = p5 instanceof Promise && audioHeals + audioRebuilds === h5 + 1 && /keeps falling off rate \(7 heals/.test(sysLines.join("\n"));
+        await p5; audioClockSample(1000, 1000); audioClockSample(1000, 1000); audioClockSample(1000, 1000);
+        L("audio-clock-no-cap", fired && !clockWatch.ailing);
+        if (!(fired && !clockWatch.ailing)) L("audio-clock-no-cap-detail", JSON.stringify({ fired, ailing: clockWatch.ailing, heals: clockWatch.heals }));
+      }
       /* the second heal is a full engine rebuild: new context, every chain and the mic on it, frames still play */
       {
         const pauseWas = REBUILD_PAUSE_MS; REBUILD_PAUSE_MS = 300;
@@ -4228,12 +4402,13 @@ if (bridge.autotestHost) {
       acctRoster = new Map([["424242", { discordId: "424242", rank: { abbr: "PO1" }, rating: "GM1", callsign: "Jack Sheridan" }]]);
       const fixture = { accounts: [{ discordId: "424242", discordName: "GM1 Jack Sheridan", callsign: "Jack Sheridan", role: "member", onAir: "TIBER TAC 2" },
         { discordId: "424243", discordName: "nailo", callsign: "Nailo", role: "member" }], access: {} };
+      const closedWas2 = acctClosed; acctClosed = new Set();
       renderAccts(fixture);
       const rows = [...$("acctList").querySelectorAll(".acctrow .nm b")].map(b => b.textContent);
       const onAir = /on air as TIBER TAC 2/.test($("acctList").textContent);
       $("acctSearch").value = "gm1"; renderAccts(fixture);        /* the rig never fetched acctData — hand it the fixture */
       const bySearch = $("acctList").querySelectorAll(".acctrow").length;
-      $("acctSearch").value = ""; acctRoster = new Map();
+      $("acctSearch").value = ""; acctRoster = new Map(); acctClosed = closedWas2;
       const identityOk = rows[0] === "GM1 JACK SHERIDAN" && rows[1] === "NAILO" && bySearch === 1 && !$("acctList").querySelector("[data-setcs]") && onAir;
       L("acct-fleet-identity", identityOk);
       if (!identityOk) L("acct-fleet-identity-detail", JSON.stringify({ rows, bySearch, onAir }));
@@ -4248,49 +4423,98 @@ if (bridge.autotestHost) {
       addLog("sys", "COMMAND NET", "ACCESS DENIED — restricted net");
       L("syslog-split", sysLines.length === s0 + 1 && logFeed.children.length === c0 + 1 && /audio engine test line/.test($("sysFeed").textContent) && !/audio engine test line/.test(logFeed.textContent));
     }
-    /* joint task force: the JOINT level exists, ALLIED rows render with their org, the allied list renders */
+    /* joint task force: the JOINT level exists, the roster is grouped, one standing control per row, the home-org hint */
     {
       $("acctSearch").value = "";
-      renderAccts({ accounts: [{ discordId: "424250", discordName: "Blue One", callsign: "Blue One", role: "allied", org: "Blue Fleet" }], access: { "COMMAND NET": "joint" } });
-      const row = $("acctList").querySelector(".acctrow");
-      const label = row && row.querySelector(".rolelbl").textContent;
+      renderAllied([{ guildId: "90000000000000002", name: "Blue Fleet", accounts: 3 }, { guildId: "90000000000000001", name: "Seeded Squadron", accounts: 0 }]);
+      acctClosed = new Set();                                /* every group open for the checks */
+      const B = "90000000000000002", S = "90000000000000001", F = "80000000000000001";
+      const fixture = { fleetGuild: F, relaySync: null, accounts: [
+        { discordId: "424250", discordName: "Blue One", callsign: "Blue One", role: "allied", org: "Blue Fleet", orgGuild: B, alliedIn: [B] },
+        { discordId: "424251", discordName: "Blue Lead", callsign: "Blue Lead", role: "allied", org: "Blue Fleet", orgGuild: B, orgLead: true },
+        { discordId: "424270", discordName: "recruit", callsign: "Recruit", role: "pending", inFleet: true, alliedIn: [], createdAt: 1 },
+        { discordId: "424271", discordName: "liaison", callsign: "Liaison", role: "pending", inFleet: true, alliedIn: [B], createdAt: 2 },
+        { discordId: "424274", discordName: "admiral", callsign: "Admiral", role: "pending", inFleet: true, alliedIn: [B, S], createdAt: 3, guildJoined: { [B]: 1500000000000, [S]: 1600000000000, [F]: 1700000000000 } },
+        { discordId: "424275", discordName: "torn", callsign: "Torn", role: "pending", inFleet: true, alliedIn: [B, S], createdAt: 4 },
+        { discordId: "424276", discordName: "homecomer", callsign: "Homecomer", role: "pending", inFleet: true, alliedIn: [B], createdAt: 5, guildJoined: { [B]: 1500000000000, [F]: 1400000000000 } },
+        { discordId: "424272", discordName: "sailor", callsign: "Sailor", role: "member", inFleet: true, alliedIn: [] },
+        { discordId: "424273", discordName: "gone", callsign: "Gone", role: "revoked" }], access: { "COMMAND NET": "joint" } };
+      renderAccts(fixture);
       const sel = $("netAccess").querySelector('.narow[data-net="COMMAND NET"] select');
       L("acct-joint-level", !!sel && sel.value === "joint" && [...sel.options].some(o => o.value === "joint"));
-      L("acct-allied-row", label === "ALLIED · Blue Fleet" && !!row.querySelector('[data-role="member"]') && !!row.querySelector('[data-role="revoked"]') && !!row.querySelector('[data-orglead="1"]'));
-      renderAccts({ accounts: [{ discordId: "424251", discordName: "Blue Lead", callsign: "Blue Lead", role: "allied", org: "Blue Fleet", orgLead: true }], access: {} });
-      const leadRow = $("acctList").querySelector(".acctrow");
-      L("acct-org-lead-row", !!leadRow && leadRow.querySelector(".rolelbl").textContent === "ALLIED LEAD · Blue Fleet" && !!leadRow.querySelector('[data-orglead="0"]'));
-      renderAllied([{ guildId: "90000000000000002", name: "Blue Fleet", accounts: 3 }]);
-      renderAccts({ accounts: [{ discordId: "424260", discordName: "guest", callsign: "Guest", role: "member" }], access: {} });
-      const toSel = $("acctList").querySelector("[data-toallied]");
-      L("acct-to-allied-picker", !!toSel && [...toSel.options].some(o => o.value === "90000000000000002" && /Blue Fleet/.test(o.textContent)) && toSel.value === "");
-      /* the queue filter: chips count, narrow, combine with the search box; an ally in the fleet Discord is one click */
-      {
-        const fixture = { accounts: [
-          { discordId: "424270", discordName: "recruit", callsign: "Recruit", role: "pending", inFleet: true, alliedIn: [] },
-          { discordId: "424271", discordName: "liaison", callsign: "Liaison", role: "pending", inFleet: true, alliedIn: ["90000000000000002"] },
-          { discordId: "424272", discordName: "sailor", callsign: "Sailor", role: "member", inFleet: true, alliedIn: [] },
-          { discordId: "424273", discordName: "gone", callsign: "Gone", role: "revoked" }], access: {} };
-        acctChip = "all"; renderAccts(fixture);
-        const chipCount = (k) => +$("acctChips").querySelector('[data-chip="' + k + '"] .num').textContent;
-        const countsOk = chipCount("all") === 4 && chipCount("awaiting") === 2 && chipCount("awaitingAllied") === 1 && chipCount("members") === 1 && chipCount("revoked") === 1;
-        $("acctChips").querySelector('[data-chip="awaitingAllied"]').click(); renderAccts(fixture);
-        const rows = [...$("acctList").querySelectorAll(".acctrow")];
-        const narrowed = rows.length === 1 && rows[0].dataset.id === "424271" && /also in Blue Fleet/.test(rows[0].textContent) && !!rows[0].querySelector('[data-fileas="90000000000000002"]');
-        $("acctSearch").value = "zzz"; renderAccts(fixture);
-        const combined = $("acctList").querySelectorAll(".acctrow").length === 0;
-        $("acctSearch").value = ""; $("acctPending").click(); renderAccts(fixture);
-        const viaPending = acctChip === "awaiting" && $("acctList").querySelectorAll(".acctrow").length === 2;
-        acctChip = "all";
-        L("acct-queue-filter", countsOk && narrowed && combined && viaPending);
-        if (!(countsOk && narrowed && combined && viaPending)) L("acct-queue-filter-detail", JSON.stringify({ countsOk, narrowed, combined, viaPending, rows: rows.map(r => r.dataset.id) }));
-      }
+      const grp = (k) => $("acctList").querySelector('.acctgrp[data-grp="' + k + '"]');
+      const keys = [...$("acctList").querySelectorAll(".acctgrp")].map(g => g.dataset.grp);
+      const num = (k) => grp(k) && grp(k).querySelector(".grph .num").textContent;
+      const groupsOk = keys.join(",") === "awaiting,org:" + B + ",org:" + S + ",fleet,revoked" && num("awaiting") === "5" && num("org:" + B) === "2" && num("org:" + S) === "0" && num("fleet") === "1" && num("revoked") === "1" &&
+        grp("awaiting").classList.contains("hot") && /1 MEMBERS/.test(grp("fleet").querySelector(".sub").textContent) && /No operator from this organization/.test(grp("org:" + S).textContent);
+      L("acct-groups", groupsOk);
+      if (!groupsOk) L("acct-groups-detail", JSON.stringify({ keys, n: [num("awaiting"), num("org:" + B), num("fleet"), num("revoked")] }));
+      const rowOf = (id) => $("acctList").querySelector('.acctrow[data-id="' + id + '"]');
+      const optsOf = (id) => [...rowOf(id).querySelectorAll("[data-standing] option")].map(o => o.value);
+      const blue = rowOf("424250");
+      L("acct-allied-row", blue.closest(".acctgrp").dataset.grp === "org:" + B && blue.querySelector(".rolelbl").textContent === "ALLIED · Blue Fleet" &&
+        !!blue.querySelector('[data-orglead="1"]') && optsOf("424250").join(",") === ",member,element,command,allied:" + S + ",revoked" && !blue.querySelector("[data-role]") && !blue.querySelector("[data-fileas]"));
+      const leadRow = rowOf("424251");
+      L("acct-org-lead-row", !!leadRow && leadRow.querySelector(".rolelbl").textContent === "ALLIED LEAD · Blue Fleet" && !!leadRow.querySelector('[data-orglead="0"]') &&
+        grp("org:" + B).querySelector(".acctrow").dataset.id === "424251");
+      /* the queue: recruit APPROVE · one org FILE AS · dated orgs FILE AS the earliest · undated several = pick · fleet-first APPROVE */
+      const primaryOf = (id) => { const r = rowOf(id); const b = r.querySelector("[data-fileas],[data-role],.ann.dim"); return b ? b.textContent.trim() + (b.dataset.fileas ? "=" + b.dataset.fileas : "") + "|" + (b.title || "") : ""; };
+      const homeOk = /^APPROVE\|A fleet recruit/.test(primaryOf("424270")) && primaryOf("424271").startsWith("FILE AS BLUE FLEET=" + B + "|The one listed") &&
+        /^FILE AS BLUE FLEET=90000000000000002\|Joined this organization.s Discord first \(/.test(primaryOf("424274")) && primaryOf("424275").startsWith("PICK THEIR ORG") && !rowOf("424275").querySelector("[data-fileas],[data-role]") &&
+        /^APPROVE\|Joined the fleet.s Discord before any allied one/.test(primaryOf("424276")) && /in Blue Fleet since .*1500|in Blue Fleet since/.test(rowOf("424274").textContent) && /the fleet.s Discord since/.test(rowOf("424274").textContent);
+      L("acct-home-guess", homeOk);
+      if (!homeOk) L("acct-home-guess-detail", JSON.stringify(["424270", "424271", "424274", "424275", "424276"].map(primaryOf)));
+      /* the one standing control: an org they are in leads the list; REINSTATE on a revoked row; the busy note on every row */
+      L("acct-standing-picker", optsOf("424271").join(",") === ",allied:" + B + ",member,element,command,allied:" + S + ",revoked" &&
+        /in their Discord/.test(rowOf("424271").querySelector("[data-standing] option[value='allied:" + B + "']").textContent) &&
+        !!rowOf("424273").querySelector('[data-role="member"]') && rowOf("424273").querySelector('[data-role="member"]').textContent === "REINSTATE" &&
+        !!rowOf("424272").querySelector(".busynote") && !$("acctList").querySelector("[data-toallied],[data-chip]"));
+      /* fold and unfold a group; a search opens whatever it hits */
+      grp("fleet").querySelector(".grph").click(); renderAccts(fixture);   /* the handler re-renders from acctData, which the rig never fetched */
+      const folded = !!grp("fleet") && !grp("fleet").querySelector(".acctrow") && num("fleet") === "1" && acctClosedGroups().has("fleet") && !!grp("awaiting").querySelector(".acctrow");
+      grp("fleet").querySelector(".grph").click(); renderAccts(fixture);   /* the handler re-renders from acctData, which the rig never fetched */
+      const unfolded = !!grp("fleet").querySelector(".acctrow") && !acctClosedGroups().has("fleet");
+      acctClosed = new Set(["fleet"]); $("acctSearch").value = "gone"; renderAccts(fixture);
+      const searched = keys.length && [...$("acctList").querySelectorAll(".acctgrp")].map(g => g.dataset.grp).join(",") === "revoked" && !!grp("revoked").querySelector(".acctrow") && /^1 OF 9 OPERATORS/.test($("acctCount").textContent);
+      $("acctSearch").value = "sailor"; renderAccts(fixture);
+      const searchOpensFolded = !!grp("fleet") && !!grp("fleet").querySelector('.acctrow[data-id="424272"]');
+      $("acctSearch").value = ""; renderAccts(fixture);
+      L("acct-groups-fold", folded && unfolded && searched && searchOpensFolded);
+      if (!(folded && unfolded && searched && searchOpensFolded)) L("acct-groups-fold-detail", JSON.stringify({ folded, unfolded, searched, searchOpensFolded }));
+      /* the sync line */
+      renderAcctSync({ settling: true, since: Date.now() });
+      const inProgress = $("acctSync").style.display !== "none" && /RELAY SYNC IN PROGRESS/.test($("acctSync").textContent) && $("acctSync").className === "";
+      renderAcctSync({ settling: false, error: null, last: { at: Date.now(), ms: 2100, written: 14, verified: 14, rewritten: 0 } });
+      const inStep = /RELAY IN STEP .*14 nets written, 14 read back, 0 rewritten \(2\.1 s\)/.test($("acctSync").textContent) && $("acctSync").className === "ok";
+      renderAcctSync({ settling: true, error: "boom", last: null });
+      const failed = /RELAY SYNC FAILED — boom/.test($("acctSync").textContent) && $("acctSync").className === "err";
+      renderAcctSync(null); clearTimeout(acctSyncTimer);
+      L("acct-sync-line", inProgress && inStep && failed && $("acctSync").style.display === "none");
+      acctClosed = new Set(["fleet", "revoked"]);
       L("allied-org-row", /Blue Fleet/.test($("alliedList").textContent) && /3 ON THE ROLLS/.test($("alliedList").textContent) && !!$("alliedList").querySelector("[data-gremove]"));
       renderAccts({ accounts: [], access: { "COMMAND NET": "org:90000000000000002" } });
       const orgSel = $("netAccess").querySelector('.narow[data-net="COMMAND NET"] select');
       const orgOpt = orgSel && [...orgSel.options].find(o => o.value === "org:90000000000000002");
       L("acct-org-level", !!orgOpt && orgSel.value === "org:90000000000000002" && /BLUE FLEET ONLY/.test(orgOpt.textContent));
       renderAllied([]);
+    }
+    /* the relay settling: a refusal is held as PENDING, and cleared when the relay catches up */
+    {
+      const k = nets.findIndex(n => !n.tuned && !n.denied);
+      const was = relaySettling;
+      noteRelaySync({ settling: true });
+      let held = false, cleared = false;
+      if (k >= 0) {
+        nets[k].denied = "you don't have access to " + nets[k].cfg.name; nets[k].retune = true; renderNets();
+        const card = netlist.querySelector('.net[data-i="' + k + '"] .denied.wait');
+        held = relaySettling && !!card && /ACCESS PENDING/.test(card.textContent);
+        nets[k].retune = false;                                /* no real re-tune in the rig */
+        noteRelaySync({ settling: false });
+        cleared = !relaySettling && nets[k].denied === null && !!netlist.querySelector('.net[data-i="' + k + '"] [data-tune]');
+      }
+      L("relay-settling-hold", k >= 0 && held && cleared);
+      if (!(k >= 0 && held && cleared)) L("relay-settling-hold-detail", JSON.stringify({ k, held, cleared }));
+      noteRelaySync({ settling: was });
     }
     /* the allied view: only JOINT nets (and their nests) on the board, banner up */
     {
