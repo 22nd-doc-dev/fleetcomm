@@ -502,6 +502,34 @@ let ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 4
    underneath; these are the room-level trims. */
 let masterGain = ctx.createGain();
 masterGain.connect(ctx.destination);
+/* ── keep the output awake ──
+   Chromium parks a WebAudio output that has produced EXACT silence for 30 s
+   (media/base/silent_sink_suspender.cc): the real device stream is paused
+   and the render callback is driven by a 10 ms timer in the renderer
+   instead (FakeAudioWorker, one buffer per wake, late wakes skip ahead).
+   Windows 11 stops honouring a timer-resolution request for a window that
+   is fully occluded and inaudible — a game in front — so that timer ticks
+   at the default 15.625 ms and the context clock advances at 10/15.625 =
+   64% of real time. That is the field's flat 64–67% (never other values),
+   before sign-in with the mic closed, minutes after the last transmission,
+   cured by any new output stream, back after the next 30 s of quiet.
+   Two guards, both Chromium's own opt-outs, verified at 152.0.7977.54
+   (what Electron 44 ships): an AnalyserNode whose output is unconnected is
+   an "automatic pull node", and a graph that has one is never put on the
+   timer (realtime_audio_destination_handler.cc: needs_silence_detection =
+   !has_automatic_pull_nodes); and a constant source at −140 dBFS keeps the
+   destination from ever being EXACTLY zero (AreFramesZero is a literal
+   test), so the 30 s never starts even if that heuristic changes. Cost:
+   the output stream stays open while idle — it does for any game anyway.
+   Every new engine (rebuildAudioEngine) gets both again. */
+let keepAwake = null, keepAlive = null;
+function keepOutputAwake() {
+  keepAwake = ctx.createAnalyser(); masterGain.connect(keepAwake);
+  keepAlive = ctx.createConstantSource(); keepAlive.offset.value = 1e-7; keepAlive.connect(ctx.destination); keepAlive.start();
+  /* deferred: this runs at script load, before the log's helpers below are initialised */
+  setTimeout(() => addLog("sys", "", "audio engine up @ " + ctx.sampleRate + " Hz \u2014 output kept awake (pull node + \u2212140 dBFS keep-alive), never parked on a timer"), 0);
+}
+keepOutputAwake();
 let masterVol = Math.max(0, Math.min(150, Number(store.get("masterVol", 100)) || 100));
 /* 1MC clips at 100% flattened the stress test — everyone starts at 35 now.
    New store key on purpose: applyMasterVols() wrote the old default back on
@@ -753,6 +781,7 @@ function playFrame(n, session, opusBuf) {
      the delay stays bounded, a syllable is lost instead of the transmission. */
   if (d.cursor > ctx.currentTime + 0.75) { d.dropped = (d.dropped || 0) + 1; audioDrops++; return; }
   src.start(d.cursor); d.cursor += cnt / 48000 / clockFix;
+  lastFrameAt = performance.now(); framesThisTick++;
 }
 let audioDrops = 0, audioHeals = 0;
 /* ── the rate correction ──
@@ -764,6 +793,7 @@ let audioDrops = 0, audioHeals = 0;
    in 20 ms of wall time, at pitch. Set from two consecutive off-rate
    seconds, cleared by the first on-rate one. */
 let clockFix = 1;
+let lastFrameAt = 0, framesThisTick = 0, timerProbeMs = 0, rebuilding = false;   /* the off-rate line's evidence */
 /* ── audio-clock watchdog ──
    currentTime is frames RENDERED ÷ sample rate, and the output device is what
    pulls the frames — so the context clock tracks wall time exactly as long as
@@ -781,14 +811,15 @@ let clockFix = 1;
    stream to be re-created (setSinkId to the SAME sink is a spec no-op). */
 const clockWatch = { t: performance.now(), c: ctx.currentTime, drops: 0, off: 0, ok: 0, healed: 0, lastHeal: 0, said: 0, saidDrops: 0, ailing: false };
 function audioClockSample(audioMs, wallMs) {
+  if (ctx.state !== "running" || rebuilding) return null;   /* a closed or rebuilding engine is not a clock reading ("back on rate (0%)") */
   const ratio = audioMs / wallMs, pct = Math.round(ratio * 100);
-  const off = ctx.state === "running" && (ratio < 0.85 || ratio > 1.15);
+  const off = ratio < 0.85 || ratio > 1.15;
   if (!off) {
     clockWatch.off = 0;
-    if (clockFix !== 1) { clockFix = 1; for (const d of decoders.values()) d.cursor = 0; }
+    if (clockFix !== 1) clockFix = 1;                 /* queued audio keeps its place; only the step changes */
     if (clockWatch.ailing && ++clockWatch.ok >= 3) {
       clockWatch.ailing = false; clockWatch.healed = 0;
-      addLog("sys", "", "audio engine clock back on rate (" + pct + "%)");
+      addLog("sys", "", "audio engine clock back on rate (" + pct + "%; renderer 5 ms timer took " + timerProbeMs.toFixed(1) + " ms)");
     }
     return null;
   }
@@ -796,18 +827,20 @@ function audioClockSample(audioMs, wallMs) {
   clockWatch.off++;
   if (clockWatch.off >= 2) {                        /* two flat seconds: correct the rate now, heal below */
     const fix = Math.min(2, Math.max(0.5, 1 / ratio));
-    if (Math.abs(fix - clockFix) > 0.02) { clockFix = fix; for (const d of decoders.values()) d.cursor = 0; }
+    if (Math.abs(fix - clockFix) > 0.02) clockFix = fix;   /* never reset cursors here: new frames would land under queued audio */
   }
   if (clockWatch.off < 3) return null;          /* three flat seconds before a heal, not one hiccup */
   const now = Date.now();
   if (!clockWatch.ailing) {
     clockWatch.ailing = true;
-    addLog("sys", "", "audio engine clock off rate \u2014 advanced " + Math.round(audioMs) + " ms in " + Math.round(wallMs) + " ms (" + pct + "%): the output device is taking audio " +
-      (ratio < 1 ? "slower" : "faster") + " than the engine renders it, so voice sounds " + (ratio < 1 ? "stretched" : "rushed") +
-      " (a headset that changed format \u2014 Bluetooth switching to its headset profile is the classic) \u2014 playback rate-corrected \u00d7" + clockFix.toFixed(2) + ", re-opening the output");
-    outputLabel().then(l => addLog("sys", "", "audio output in use: " + l + " \u2014 engine @ " + ctx.sampleRate + " Hz, output latency " +
-      Math.round((ctx.outputLatency || ctx.baseLatency || 0) * 1000) + " ms" + (capNode ? ", mic open" : ", mic closed") +
-      "; window " + document.visibilityState + (document.hasFocus() ? ", focused" : ", unfocused")));   /* is a game in front? */
+    addLog("sys", "", "audio engine clock off rate \u2014 advanced " + Math.round(audioMs) + " ms in " + Math.round(wallMs) + " ms (" + pct + "%): the engine is being clocked " +
+      (ratio < 1 ? "slower" : "faster") + " than real time, so voice sounds " + (ratio < 1 ? "stretched" : "rushed") +
+      " \u2014 playback rate-corrected \u00d7" + clockFix.toFixed(2) + ", re-opening the output (a 64% clock with the window behind a game is Chromium's parked output on a slowed timer; FleetComm keeps the output awake since 1.4.12 \u2014 if this line appears on 1.4.12+, copy the SYSTEM LOG for Andy)");
+    const since = lastFrameAt ? Math.round((performance.now() - lastFrameAt) / 1000) + " s ago" : "never";
+    const frames = framesThisTick, probe = timerProbeMs.toFixed(1), focused = document.hasFocus();
+    outputLabel().then(l => addLog("sys", "", "audio diag: last frame " + since + ", " + frames + " frames in the last second, renderer 5 ms timer took " + probe + " ms" +
+      (Number(probe) > 12 ? " (Windows has slowed this window's timers)" : "") + ", window " + (focused ? "focused" : "unfocused") +
+      "; output " + l + " @ " + ctx.sampleRate + " Hz, latency " + Math.round((ctx.outputLatency || ctx.baseLatency || 0) * 1000) + " ms" + (capNode ? ", mic open" : ", mic closed")));
   }
   if (now - clockWatch.lastHeal < 20000) return null;
   clockWatch.lastHeal = now; clockWatch.healed++; clockWatch.heals = (clockWatch.heals || 0) + 1; clockWatch.off = 0;
@@ -817,13 +850,12 @@ function audioClockSample(audioMs, wallMs) {
      rate-corrected, so an episode costs a few seconds of stretched voice. */
   if (clockWatch.heals >= 3 && now - clockWatch.said > 600000) {
     clockWatch.said = now;
-    addLog("sys", "", "the audio output keeps falling off rate (" + clockWatch.heals + " heals this session) \u2014 playback is rate-corrected between heals; say which headset in the report: if it is Bluetooth, set Windows to use it as headphones only (disable its Hands-Free Telephony service), or use a wired headset");
+    addLog("sys", "", "the audio output keeps falling off rate (" + clockWatch.heals + " heals this session) \u2014 playback is rate-corrected between heals; copy the SYSTEM LOG for Andy (the \"audio diag\" lines say whether the window's timers were slowed)");
   }
-  /* the cheap detour first (a new output stream, no silence); if the clock
-     falls off again inside the same episode, the device parameters Chromium
-     holds are stale and only a NEW engine re-asks the device — rebuild; then
-     alternate for as long as it takes */
-  return clockWatch.healed % 2 === 1 ? healAudioClock(pct) : rebuildAudioEngine("clock at " + pct + "%");
+  /* a new output stream starts on the device, never on the timer — the
+     re-open is the cure; a whole new engine only if three re-opens in one
+     episode did not hold (a sink that will not come back at all) */
+  return clockWatch.healed % 4 === 0 ? rebuildAudioEngine("clock at " + pct + "% after three re-opens") : healAudioClock(pct);
 }
 /* which output the engine is on, for the log — the report needs the headset's name */
 async function outputLabel() {
@@ -843,10 +875,10 @@ async function outputLabel() {
    engine re-asks the device. Everything that hung off the old context is
    rebuilt: master bus, every tuned net's chain, the capture worklet, the
    noise bed; decoder cursors restart against the new clock. */
-let REBUILD_PAUSE_MS = 6000;                       /* the rig shortens it */
+let REBUILD_PAUSE_MS = 1500;                       /* the old context must be closed before the new one opens the device; the rig shortens it */
 let audioRebuilds = 0;
 async function rebuildAudioEngine(reason) {
-  audioRebuilds++;
+  audioRebuilds++; rebuilding = true;
   const micWasOpen = !!capNode;
   addLog("sys", "", "audio engine rebuild \u2014 " + reason + "; " + (REBUILD_PAUSE_MS / 1000) + " s of silence while the device is re-asked for its format");
   const old = ctx;
@@ -860,6 +892,7 @@ async function rebuildAudioEngine(reason) {
   await new Promise(r => setTimeout(r, REBUILD_PAUSE_MS));
   ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
   masterGain = ctx.createGain(); masterGain.connect(ctx.destination); masterGain.gain.value = masterVol / 100;
+  keepOutputAwake();
   noiseBuf = null;
   for (const n of nets) if (n.gainNode) makeChain(n);   /* a tuned net's chain, on the new engine */
   for (const d of decoders.values()) d.cursor = 0;
@@ -868,7 +901,7 @@ async function rebuildAudioEngine(reason) {
   if (outDevice) { try { await applyOutputDevice(); } catch (e) {} }
   if (ctx.state !== "running") { try { await ctx.resume(); } catch (e) {} }
   if (micWasOpen) await ensureMic();
-  clockWatch.t = performance.now(); clockWatch.c = ctx.currentTime;
+  clockWatch.t = performance.now(); clockWatch.c = ctx.currentTime; rebuilding = false;
   addLog("sys", "", "audio engine rebuilt \u2014 " + ctx.state + " @ " + ctx.sampleRate + " Hz, output latency " +
     Math.round((ctx.outputLatency || ctx.baseLatency || 0) * 1000) + " ms" + (micWasOpen ? ", microphone re-opened" : "") + "; watching");
 }
@@ -881,7 +914,9 @@ async function healAudioClock(pct) {
     } else { await ctx.suspend(); }
     if (ctx.state !== "running") await ctx.resume();
   } catch (e) { addLog("sys", "", "couldn't re-open the audio output: " + e.message); try { await ctx.resume(); } catch (e2) {} }
-  for (const d of decoders.values()) d.cursor = 0;  /* schedule fresh against the healed clock */
+  /* the context clock is continuous across a sink swap: what is queued keeps
+     playing where it was scheduled — a cursor reset here put new frames under
+     it (the "plays over itself" garble). Only a NEW context resets cursors. */
   clockFix = 1;
   if (capNode) {                                    /* re-pair echo cancellation with the new output stream */
     try { capNode.disconnect(); } catch (e) {}
@@ -897,6 +932,10 @@ setInterval(() => {
   clockWatch.t = nowT; clockWatch.c = nowC;
   const newDrops = audioDrops - clockWatch.drops; clockWatch.drops = audioDrops;
   if (wall > 900 && wall < 3000) audioClockSample(audio, wall);   /* a late tick is not a slow clock */
+  framesThisTick = 0;
+  /* the renderer's timer resolution, measured: ~5 ms when Windows honours our
+     1 ms request, ~15.6 ms when it has stopped (window behind a game) */
+  const p0 = performance.now(); setTimeout(() => { timerProbeMs = performance.now() - p0; }, 5);
   if (newDrops > 10 && Date.now() - clockWatch.saidDrops > 300000) {
     clockWatch.saidDrops = Date.now();
     addLog("sys", "", "audio backlog \u2014 dropped " + newDrops + " frames in the last second (they arrived faster than the engine played them: a network burst, or the machine busy)");
@@ -4348,22 +4387,30 @@ if (bridge.autotestHost) {
       L("audio-clock-heal-logged", sysLines.length >= logs0 + 2 && /re-opened/.test(sysLines.join("\n")));
       audioClockSample(1000, 1000); audioClockSample(1000, 1000); audioClockSample(1000, 1000);
       L("audio-clock-recovers", !clockWatch.ailing && /back on rate/.test(sysLines.join("\n")));
-      /* rate correction: two off-rate seconds set the playback fix (sources 1.5x, frames 13 ms apart); one on-rate second clears it */
+      /* rate correction: two off-rate seconds set the playback fix (sources 1.5x, frames 13 ms apart); one on-rate second clears it;
+         and the cursor never moves backwards when the fix changes (new frames must not land under queued audio) */
       {
+        const k = nets.findIndex(n => n.tuned && n.gainNode);
+        let step = null, kept = true, c0 = null;
+        const dk0 = k >= 0 ? (playFrame(nets[k], 434344, silentOpus()), decoders.get(nets[k].cfg.freq + ":434344")) : null;
+        if (dk0) c0 = dk0.cursor;
         audioClockSample(667, 1000); audioClockSample(667, 1000);
         const fixed = Math.abs(clockFix - 1.5) < 0.05 && !clockWatch.ailing;
-        const k = nets.findIndex(n => n.tuned && n.gainNode);
-        let step = null;
-        if (k >= 0) {
+        if (dk0) {
+          kept = dk0.cursor === c0;
           playFrame(nets[k], 434344, silentOpus());
-          const dk = decoders.get(nets[k].cfg.freq + ":434344"), c1 = dk.cursor;
-          playFrame(nets[k], 434344, silentOpus()); step = dk.cursor - c1;
-        }
-        audioClockSample(1000, 1000);
-        const compOk = fixed && clockFix === 1 && (k < 0 || Math.abs(step - FRAME / 48000 / 1.5) < 0.0005);
+          const c1 = dk0.cursor;
+          playFrame(nets[k], 434344, silentOpus()); step = dk0.cursor - c1;
+          audioClockSample(1000, 1000);
+          kept = kept && dk0.cursor === c1 + step;
+        } else audioClockSample(1000, 1000);
+        const compOk = fixed && clockFix === 1 && kept && (k < 0 || Math.abs(step - FRAME / 48000 / 1.5) < 0.0005);
         L("audio-clock-compensates", compOk);
-        if (!compOk) L("audio-clock-compensates-detail", JSON.stringify({ fixed, clockFix, step, k, expect: FRAME / 48000 / 1.5 }));
+        if (!compOk) L("audio-clock-compensates-detail", JSON.stringify({ fixed, clockFix, step, kept, k, expect: FRAME / 48000 / 1.5 }));
       }
+      /* the output is kept awake: a pull node and a keep-alive on THIS context, said so at boot; the re-open keeps them; a rebuild makes new ones */
+      L("audio-keep-awake", keepAwake instanceof AnalyserNode && keepAwake.context === ctx && keepAlive instanceof ConstantSourceNode && keepAlive.context === ctx &&
+        keepAlive.offset.value > 0 && keepAlive.offset.value < 1e-6 && sysLines.some(l => /output kept awake/.test(l)));
       /* no cap on heals: a fifth episode still heals */
       {
         const h5 = audioHeals + audioRebuilds;
@@ -4392,6 +4439,7 @@ if (bridge.autotestHost) {
         /* a stale cursor from the OLD clock would sit far in the new clock's future; played frames may be in the past */
         const decodersOk = [...decoders.values()].every(d => d.cursor < ctx.currentTime + 2);
         L("audio-rebuild-cursors", decodersOk);
+        L("audio-keep-awake-rebuilt", keepAwake.context === ctx && keepAlive.context === ctx && !rebuilding);
         L("cam-lead-may-watch", camMayWatch(true, { account: { role: "allied", orgLead: true } }) === true && camMayWatch(true, { account: { role: "allied", orgLead: false } }) === false);
       }
     }

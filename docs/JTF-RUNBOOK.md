@@ -107,9 +107,10 @@ count 30–80.
 - **Someone must go**: roster ▸ REVOKE. Off the relay at once; REINSTATE brings them back.
 - **An org lead cannot create a net**: they are creating it outside their organization's nets
   (the relay refuses) — a new net goes under their own command net, or a 22nd COMMAND creates it.
-- **Voice stretched or doubled for one person**: their headset changed format (Bluetooth is
-  the classic). The app re-opens its audio within seconds and says so under SETTINGS ▸ SYSTEM
-  LOG; if it keeps happening, restart the app.
+- **Voice stretched or doubled for one person**: on 1.4.11 and older this was Chromium parking
+  the app's audio on a timer after 30 s of quiet while the game was in front; 1.4.12 keeps the
+  output awake. Make sure they are on 1.4.12+. If it still happens there, SETTINGS ▸ SYSTEM LOG
+  ▸ COPY and send it to Andy — the "audio diag" line says why.
 - **"The relay is rate-limiting connections"**: several people behind one router or VPN. It
   clears in five minutes; don't mash CONNECT. The relay is configured to tolerate shared
   addresses for the op, so it should not happen.

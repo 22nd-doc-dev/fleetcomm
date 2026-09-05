@@ -47,6 +47,7 @@ const MUMBLE_PORT = Number(process.env.MUMBLE_PORT) || 64738;
 const RELAY_MSG_LIMIT = Math.max(0.2, Number(process.env.RELAY_MSG_LIMIT) || 1);
 const RELAY_MSG_BURST = Math.max(1, Math.floor(Number(process.env.RELAY_MSG_BURST) || 5));
 const ACL_QUERY_TIMEOUT_MS = Math.max(300, Number(process.env.ACL_QUERY_TIMEOUT_MS) || 5000);
+const ACL_DEBUG = process.env.ACL_DEBUG === "1";      /* every relay frame and query timing in the journal */
 const RELAY_PASSWORD = process.env.RELAY_PASSWORD || "";
 const ROOT_CHANNEL = process.env.ROOT_CHANNEL || "22ND EXPEDITIONARY FLEET";
 const BOOTSTRAP_TOKEN = process.env.BOOTSTRAP_TOKEN || "";
@@ -340,6 +341,15 @@ class MessageBudget {
     relayBudget.rate = Math.max(0.5, relayBudget.rate / 2); relayBudget.burst = 1; relayBudget.slowed++;
     console.error("[acl] the relay dropped a query — pacing down to " + relayBudget.rate.toFixed(2) + " msg/s (RELAY_MSG_LIMIT/RELAY_MSG_BURST should match the relay's messagelimit/messageburst)");
   }
+  /* a run with every query answered earns the budget back, a step at a time,
+     up to what the env says — a transient stall no longer costs the process
+     its speed for good */
+  static recover() {
+    if (relayBudget.rate >= RELAY_MSG_LIMIT && relayBudget.burst >= RELAY_MSG_BURST) return;
+    relayBudget.rate = Math.min(RELAY_MSG_LIMIT, relayBudget.rate * 2);
+    if (relayBudget.rate >= RELAY_MSG_LIMIT) relayBudget.burst = RELAY_MSG_BURST;
+    console.log("[acl] every query answered — pacing back up to " + relayBudget.rate.toFixed(2) + " msg/s, burst " + relayBudget.burst);
+  }
 }
 async function withSuperUser(work) {
   if (ACL_SYNC_DISABLED) return;
@@ -354,13 +364,34 @@ async function writeAcl(c, channelId, acls) {
   c.send("ACL", { channelId, inheritAcls: true, groups: [], acls, query: false });
 }
 /* murmur answers an ACL query with the channel's list — its own entries plus
-   the inherited ones flagged as such. No answer inside the timeout means the
-   query itself was dropped (or the relay is a stand-in that ignores ACLs). */
-function queryAcl(c, channelId) {
+   the inherited ones flagged as such — after it has worked through whatever
+   the session sent before (one thread, strictly in order: a query queued
+   behind a burst of big writes is answered late, never lost). Replies are
+   keyed by channel for the session: a late one still resolves its waiter, or
+   is kept for the next query on that channel. No answer at all, twice, means
+   the relay dropped the query (its message budget) — or it is a stand-in that
+   ignores ACLs. */
+function aclReplies(c) {
+  if (c._acl) return c._acl;
+  const st = c._acl = { waiting: new Map(), late: new Map(), rx: 0 };
+  c.on("ACL", (m) => {
+    const id = Number(m.channelId || 0); st.rx++;
+    const w = st.waiting.get(id);
+    if (w) { st.waiting.delete(id); w(m); }
+    else { st.late.set(id, m); if (ACL_DEBUG) console.log("[acl] late reply for channel " + id + " (" + (m.acls || []).length + " entries) — kept"); }
+  });
+  if (ACL_DEBUG) c.on("message", (name, m) => { if (!["Ping", "UserState", "ACL"].includes(name)) console.log("[acl] rx " + name + (m && m.channelId != null ? " ch=" + m.channelId : "")); });
+  return st;
+}
+function queryAcl(c, channelId, timeoutMs) {
+  const st = aclReplies(c);
+  const kept = st.late.get(channelId);
+  if (kept) { st.late.delete(channelId); return Promise.resolve(kept); }
   return new Promise((resolve) => {
-    const t = setTimeout(() => { c.off("ACL", on); resolve(null); }, ACL_QUERY_TIMEOUT_MS);
-    const on = (m) => { if (Number(m.channelId || 0) === Number(channelId)) { clearTimeout(t); c.off("ACL", on); resolve(m); } };
-    c.on("ACL", on);
+    const t0 = Date.now();
+    const t = setTimeout(() => { if (st.waiting.get(channelId) === done) st.waiting.delete(channelId); if (ACL_DEBUG) console.log("[acl] no reply for channel " + channelId + " in " + (Date.now() - t0) + " ms"); resolve(null); }, timeoutMs || ACL_QUERY_TIMEOUT_MS);
+    const done = (m) => { clearTimeout(t); if (ACL_DEBUG) console.log("[acl] channel " + channelId + " answered in " + (Date.now() - t0) + " ms (" + (m.acls || []).length + " entries)"); resolve(m); };
+    st.waiting.set(channelId, done);
     c.budget.take().then(() => c.send("ACL", { channelId, query: true }));
   });
 }
@@ -406,16 +437,19 @@ async function syncRelayAcls() {
       if (acls.length) { await writeAcl(c, id, acls); report.written++; }
       pending.push([id, acls]);
     }
-    /* read-back rounds */
-    let timeouts = 0;
+    /* read-back rounds. A first silence gets one more try with a long window
+       (the relay may still be applying the writes); only a second silence is
+       a dropped query and slows the budget. */
+    let timeouts = 0, dropped = 0;
     for (let round = 0; round < 3 && pending.length && relayAnswersQueries; round++) {
       const next = [];
       for (const [id, acls] of pending) {
         if (!relayAnswersQueries) { next.push([id, acls]); continue; }
-        const reply = await queryAcl(c, id);
+        let reply = await queryAcl(c, id);
+        if (!reply) { timeouts++; reply = await queryAcl(c, id, Math.max(ACL_QUERY_TIMEOUT_MS * 3, 15000)); }
         if (!reply) {
-          timeouts++;
-          if (report.verified === 0 && timeouts >= 4) { relayAnswersQueries = false; console.error("[acl] the relay does not answer ACL queries — writes go unverified"); }
+          dropped++;
+          if (report.verified === 0 && dropped >= 3) { relayAnswersQueries = false; console.error("[acl] the relay does not answer ACL queries — writes go unverified"); }
           else MessageBudget.slow();
           next.push([id, acls]); continue;
         }
@@ -433,6 +467,8 @@ async function syncRelayAcls() {
     } else if (pending.length) {
       throw new Error("the relay kept dropping ACL writes on " + pending.map(([id]) => nameOf(id)).join(", "));
     }
+    report.lateReplies = timeouts; report.dropped = dropped;
+    if (!dropped && report.verified > 0) MessageBudget.recover();
   });
   return report;
 }

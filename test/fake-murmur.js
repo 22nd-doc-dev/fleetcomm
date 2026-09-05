@@ -14,6 +14,8 @@
  *
  *   FAKEMURMUR_ACL=1                 store ACL writes per channel, answer ACL queries
  *   FAKEMURMUR_ACL_DUMP=<file>       write the stored ACLs as JSON after every change
+ *   FAKEMURMUR_ACL_REPLY_DELAY="ms,count" answer the first `count` ACL queries `ms` late
+ *                                    (murmur answers in order, after the writes queued before)
  *   FAKEMURMUR_MSGLIMIT="limit,burst" murmur's leaky bucket: `burst` messages at once,
  *                                    then `limit` per second — the rest are DROPPED
  *                                    silently, exactly as murmur 1.5 does (its
@@ -97,6 +99,16 @@ function dumpAcls() {
   for (const [id, acls] of aclStore) { const c = channels.find(x => x.id === id); out[c ? c.name : "#" + id] = acls; }
   fs.writeFileSync(process.env.FAKEMURMUR_ACL_DUMP, JSON.stringify(out, null, 1));
 }
+const RD = (process.env.FAKEMURMUR_ACL_REPLY_DELAY || "").split(",").map(Number);
+const replyDelay = RD.length === 2 && RD[0] > 0 ? { ms: RD[0], left: RD[1] } : null;
+/* murmur's reply lists the channel's own entries and, flagged inherited, every ancestor's */
+function aclReply(id) {
+  const own = (aclStore.get(id) || []).map(e => Object.assign({ inherited: false }, e));
+  const inherited = [];
+  let c = channels.find(x => x.id === id);
+  while (c && c.parent != null) { c = channels.find(x => x.id === c.parent); if (c) inherited.unshift(...(aclStore.get(c.id) || []).map(e => Object.assign({ inherited: true }, e))); }
+  return inherited.concat(own);
+}
 const ML = (process.env.FAKEMURMUR_MSGLIMIT || "").split(",").map(Number);
 const msgLimit = ML.length === 2 && ML.every(n => n > 0) ? { perSec: ML[0], burst: ML[1] } : null;
 let dropped = 0;
@@ -158,12 +170,15 @@ const clients = new Set();
             const m = T("ACL").toObject(T("ACL").decode(body));
             const id = Number(m.channelId || 0);
             if (m.query) {
-              s.write(frame(MSG.ACL, "ACL", { channelId: id, inheritAcls: true, groups: [],
-                acls: (aclStore.get(id) || []).map(e => Object.assign({ inherited: false }, e)) }));
+              const reply = frame(MSG.ACL, "ACL", { channelId: id, inheritAcls: true, groups: [], acls: aclReply(id) });
+              if (replyDelay && replyDelay.left > 0) { replyDelay.left--; setTimeout(() => { if (!s.destroyed) s.write(reply); }, replyDelay.ms); }
+              else s.write(reply);
             } else {
               aclStore.set(id, (m.acls || []).map(e => ({ applyHere: e.applyHere !== false, applySubs: e.applySubs !== false,
                 group: String(e.group || ""), grant: Number(e.grant || 0), deny: Number(e.deny || 0) })));
               dumpAcls();
+              /* 1.5.517 tells the WRITER once per connected user that the channel changed */
+              for (let k = 0; k < clients.size; k++) s.write(frame(MSG.ChannelState, "ChannelState", { channelId: id, isEnterRestricted: false, canEnter: true }));
             }
           } else if (type === MSG.UserState) {
             const m = T("UserState").toObject(T("UserState").decode(body));

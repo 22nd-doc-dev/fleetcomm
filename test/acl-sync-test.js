@@ -38,10 +38,10 @@ let passed = 0, failed = 0;
 function ok(cond, what) { if (cond) { passed++; console.log("  ok   " + what); } else { failed++; console.log("  FAIL " + what); } }
 
 let relay = null, service = null, relayPort = 0, port = 0;
-function startRelay(limit) {
+function startRelay(limit, replyDelay) {
   return new Promise((resolve, reject) => {
     relay = spawn(process.execPath, [path.join(__dirname, "fake-murmur.js")], {
-      env: Object.assign({}, process.env, { FAKEMURMUR_PORT: "0", FAKEMURMUR_ACL: "1", FAKEMURMUR_ACL_DUMP: dump, FAKEMURMUR_MSGLIMIT: limit }),
+      env: Object.assign({}, process.env, { FAKEMURMUR_PORT: "0", FAKEMURMUR_ACL: "1", FAKEMURMUR_ACL_DUMP: dump, FAKEMURMUR_MSGLIMIT: limit }, replyDelay ? { FAKEMURMUR_ACL_REPLY_DELAY: replyDelay } : {}),
       stdio: ["ignore", "pipe", "inherit"]
     });
     let out = "";
@@ -141,12 +141,23 @@ const denies = (name) => { const d = JSON.parse(fs.readFileSync(dump, "utf8")); 
   await startService(50, 50);
   st = await settled(120000);
   ok(st.error === null, "the sync still settles (" + st.last.ms + " ms, rewritten " + st.last.rewritten + ", paced down " + st.budget.slowed + "x to " + st.budget.limit.toFixed(2) + "/s)");
-  ok(st.budget.slowed > 0 && st.budget.limit < 50, "dropped queries made the service pace itself down");
+  ok(st.last.rewritten > 0 || st.budget.slowed > 0, "the drops were detected — writes rewritten " + st.last.rewritten + ", budget paced down " + st.budget.slowed + "x");
   g = grants("EMERGENCY NET");
   ok(g["#" + TOK.sailor] === CA && g["#" + TOK.blue] === CA, "every gated net ends up right despite the drops (JOINT)");
   g = grants("UEES TIBER");
   ok(g["#" + TOK.blue] === CA && !("#" + TOK.sailor in g), "every gated net ends up right despite the drops (org)");
   ok(grants("22ND EXPEDITIONARY FLEET")["#" + TOK.blue] === 0x2, "root ends up right despite the drops");
+  await stop(service); await stop(relay);
+
+  console.log("acl-sync: a relay that answers the first queries late (still applying the writes) — late is not dropped");
+  fs.unlinkSync(dump);
+  await startRelay("10,50", "2500,3");
+  await startService(10, 50);
+  st = await settled(90000);
+  ok(st.error === null && st.last.verified >= 45, "the sync settles with every gated net read back (" + st.last.ms + " ms)");
+  ok(st.budget.slowed === 0 && st.budget.limit === 10 && st.budget.burst === 50, "three late replies did not slow the budget (" + JSON.stringify(st.budget) + ")");
+  ok(st.last.lateReplies >= 1 && st.last.dropped === 0, "the late replies were waited for, not counted as drops (" + JSON.stringify({ late: st.last.lateReplies, dropped: st.last.dropped }) + ")");
+  ok(grants("EMERGENCY NET")["#" + TOK.blue] === CA && grants("UEES TIBER")["#" + TOK.blue] === CA, "and the gated nets are right");
   await stop(service); await stop(relay);
 
   console.log("\nacl-sync: " + passed + " passed, " + failed + " failed");
