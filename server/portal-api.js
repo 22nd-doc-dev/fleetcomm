@@ -51,8 +51,11 @@ module.exports = function createPortalApi(deps) {
     docs: record(load("docs.json", {}), "docs.json"),                    // {files:[{id,name,ext,size,tag,ref,rate,by,at}]} — bytes under DATA/docs
     content: record(load("content.json", {}), "content.json"),           // the public site's editable copy: {blocks{key:{html,page,orig,at,by,v}}, history[]}
     activity: record(load("activity.json", {}), "activity.json"),        // the activity tracker: {reports[]}
-    policy: record(load("policy.json", {}), "policy.json")               // who may do what: {eventMinRank}
+    policy: record(load("policy.json", {}), "policy.json"),              // who may do what: {eventMinRank}
+    feedback: record(load("feedback.json", {}), "feedback.json")         // the site's own snag list: {items[], seq}
   };
+  if (!Array.isArray(pdb.feedback.items)) pdb.feedback.items = [];
+  if (!Number.isFinite(pdb.feedback.seq)) pdb.feedback.seq = pdb.feedback.items.length;
   /* the fleet's standing policy — the ranks at which a privilege opens */
   if (typeof pdb.policy.eventMinRank !== "string") pdb.policy.eventMinRank = "PO3";
   if (!Array.isArray(pdb.activity.reports)) pdb.activity.reports = [];
@@ -1030,7 +1033,7 @@ module.exports = function createPortalApi(deps) {
     /* everything below needs an operator session or the bot secret */
     const actor = actorOf(req);
     const need = (ok, code, msg) => { if (!ok) { send(res, code, { ok: false, error: msg }); return true; } return false; };
-    if (!/^\/api\/(catalog|personnel|coc|availability|events|sso|activity|loa|roster|squadrons|record|export|bot|cam-viewers|audit|fleet|mast|logistics|uex|docs|rsi|backups|content|admin|policy|me\/permissions)/.test(p)) return false;
+    if (!/^\/api\/(catalog|personnel|coc|availability|events|sso|activity|loa|roster|squadrons|record|export|bot|cam-viewers|audit|fleet|mast|logistics|uex|docs|rsi|backups|content|admin|policy|feedback|me\/permissions)/.test(p)) return false;
     if (need(actor, 401, "unauthorized")) return true;
     /* One reading is open to an allied operator, and only this one: the cleared
        helmet-cam viewer list. The caller is the STREAMER, not the viewer —
@@ -1331,7 +1334,10 @@ module.exports = function createPortalApi(deps) {
     }
     if (p === "/api/mast" && req.method === "GET" && !actor.bot) {
       const mine = pdb.mast.cases.filter(c => c.by === actor.id).map(mastView).reverse();
-      const inbox = pdb.mast.cases.filter(c => c.to === actor.id || (isAdmin(actor) && c.status !== "resolved" && false)).map(mastView).reverse();
+      /* a case is between the member and the leader it was routed to. COMMAND
+         does not get a general view of the mast — a grievance about a leader
+         must not land in that leader's own queue. */
+      const inbox = pdb.mast.cases.filter(c => c.to === actor.id).map(mastView).reverse();
       send(res, 200, { ok: true, mine, inbox, chain: chainAssignees(), nextUp: nextUp(actor.id) });
       return true;
     }
@@ -1365,6 +1371,69 @@ module.exports = function createPortalApi(deps) {
       persist("mast");
       audit("mast", m[2] + ": " + c.subject);
       send(res, 200, { ok: true, case: mastView(c) });
+      return true;
+    }
+
+    /* ── Feedback ── the site's own snag list. Anyone aboard files; COMMAND
+       and IT work it. Deliberately NO Discord tie-in: this is about the site,
+       it stays on the site, and nobody's channel fills up with it. ── */
+    const FB_STATUS = ["new", "triaged", "fixed", "declined", "duplicate"];
+    const fbView = (f) => Object.assign({}, f, { byName: displayName(f.by), fleetDate: fleetDate(f.at),
+      log: (f.log || []).map(l => Object.assign({}, l, { byName: displayName(l.by) })) });
+    if (p === "/api/feedback" && req.method === "POST" && !actor.bot) {
+      const b = await body(req);
+      const title = String(b.title || "").trim().slice(0, 140);
+      const text = String(b.body || "").trim().slice(0, 4000);
+      if (need(title && text, 400, "a title and what happened, please")) return true;
+      const c = b.context && typeof b.context === "object" ? b.context : {};
+      const str = (v, n) => String(v == null ? "" : v).slice(0, n);
+      const item = {
+        id: crypto.randomBytes(6).toString("hex"),
+        no: "FB-" + String(++pdb.feedback.seq).padStart(4, "0"),
+        at: Date.now(), by: actor.id,
+        kind: ["bug", "idea", "copy"].includes(b.kind) ? b.kind : "bug",
+        title, body: text, expected: String(b.expected || "").trim().slice(0, 1000),
+        /* what the reporter should never have to type out by hand */
+        context: { page: str(c.page, 200), viewport: str(c.viewport, 40), ua: str(c.ua, 300),
+          assets: str(c.assets, 60), lastError: str(c.lastError, 600) },
+        status: "new", log: [],
+      };
+      pdb.feedback.items.push(item);
+      if (pdb.feedback.items.length > 2000) pdb.feedback.items.splice(0, pdb.feedback.items.length - 2000);
+      persist("feedback");
+      audit("feedback", item.no + " " + item.kind + ": " + title);
+      send(res, 200, { ok: true, item: fbView(item) });
+      return true;
+    }
+    if (p === "/api/feedback" && req.method === "GET" && !actor.bot) {
+      const adm = isAdmin(actor);
+      const mine = pdb.feedback.items.filter(f => f.by === actor.id).map(fbView).reverse();
+      const queue = adm ? pdb.feedback.items.map(fbView).reverse() : [];
+      const counts = pdb.feedback.items.reduce((m, f) => { m[f.status] = (m[f.status] || 0) + 1; return m; }, {});
+      send(res, 200, { ok: true, mine, queue, counts, open: (counts.new || 0) + (counts.triaged || 0), may: adm });
+      return true;
+    }
+    if ((m = /^\/api\/feedback\/([a-f0-9]{12})$/.exec(p)) && req.method === "POST" && !actor.bot) {
+      const f = pdb.feedback.items.find(x => x.id === m[1]);
+      if (need(f, 404, "no such report")) return true;
+      const adm = isAdmin(actor);
+      if (need(adm || f.by === actor.id, 403, "not your report")) return true;
+      const b = await body(req);
+      const text = String(b.text || "").trim().slice(0, 2000);
+      if (b.status !== undefined) {
+        if (need(adm, 403, "management access required to set a status")) return true;
+        if (need(FB_STATUS.includes(b.status), 400, "status must be one of " + FB_STATUS.join(", "))) return true;
+        if (f.status !== b.status) {
+          f.log.push({ at: Date.now(), by: actor.id, text: "Marked " + b.status + (text ? " — " + text : ""), status: b.status });
+          f.status = b.status;
+        } else if (text) f.log.push({ at: Date.now(), by: actor.id, text });
+      } else {
+        if (need(text, 400, "empty reply")) return true;
+        f.log.push({ at: Date.now(), by: actor.id, text });
+      }
+      persist("feedback");
+      audit("feedback", (f.no || f.id) + " " + (b.status ? "→ " + b.status : "reply"));
+      send(res, 200, { ok: true, item: fbView(f) });
       return true;
     }
 
@@ -3084,6 +3153,7 @@ module.exports = function createPortalApi(deps) {
         logistics: { orders: LG.orders.length, contributions: LG.contributions.length, claims: LG.claims.length,
           inventory: LG.inventory.length, catalog: LG.catalog.length, blueprints: LG.blueprints.length },
         mast: pdb.mast.cases.length,
+        feedback: pdb.feedback.items.length,
         activity: pdb.activity.reports.length,
         outbox: pdb.discord.outbox.length,
         scopes: fleetEntries().filter(([, a]) => Array.isArray(a.scopes) && a.scopes.length)
@@ -3110,6 +3180,7 @@ module.exports = function createPortalApi(deps) {
         await serializeMutation(async () => {
           for (const k of ["orders", "contributions", "claims", "inventory", "catalog", "blueprints"]) LG[k] = [];
           pdb.mast.cases = []; pdb.discord.outbox = []; pdb.activity.reports = [];
+          pdb.feedback.items = []; pdb.feedback.seq = 0;
           for (const a of Object.values(db.accounts)) if (Array.isArray(a.scopes) && a.scopes.length) a.scopes = [];
           for (const rec of Object.values(pdb.personnel)) {
             rec.record = (rec.record || []).filter(x => x.kind === "enlist" || kept(x));
@@ -3122,7 +3193,7 @@ module.exports = function createPortalApi(deps) {
           for (const k of Object.keys(pdb.availability)) delete pdb.availability[k];
           if (withEvents) for (const k of Object.keys(pdb.events)) delete pdb.events[k];
           if (withChain) for (const n of (pdb.coc.nodes || [])) n.assignee = null;
-          for (const s of ["logistics", "mast", "discord", "activity", "personnel", "roster", "squadrons", "availability", "events", "coc"]) persist(s);
+          for (const s of ["logistics", "mast", "discord", "activity", "feedback", "personnel", "roster", "squadrons", "availability", "events", "coc"]) persist(s);
           deps.persist();
         });
         audit("reset-baseline", "logistics " + Object.values(inv.logistics).reduce((s, n) => s + n, 0) + ", mast " + inv.mast +

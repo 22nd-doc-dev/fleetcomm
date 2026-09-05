@@ -1138,6 +1138,41 @@ const rsiServer = http.createServer((req, res) => {
   r = await api("POST", "/api/personnel/bulk", { ids: ["2002"], action: { type: "cert-remove", certId: "nonesuch" } }, doc);
   ok(r.body.results["2002"].ok === false, "striking something not on the record is refused per-member");
 
+  /* ── the snag list: anyone aboard files, COMMAND works it, no Discord ── */
+  {
+    const outboxBefore = (await api("GET", "/api/bot/outbox", null, "Bot bot-secret-test")).body.jobs.length;
+    r = await api("POST", "/api/feedback", { kind: "bug", title: "Nav menu eats taps on a phone",
+      body: "Opening the menu dims the screen and tapping an entry just closes it.",
+      expected: "It should follow the link.",
+      context: { page: "/portal/index.html", viewport: "385x812", ua: "Mobile Safari", assets: "css v2 / js v12",
+        lastError: "TypeError: x is null" } }, plain);
+    ok(r.status === 200 && /^FB-\d{4}$/.test(r.body.item.no) && r.body.item.status === "new",
+       "anyone aboard files a snag and it takes a ticket number");
+    const fb = r.body.item.id, fbNo = r.body.item.no;
+    ok(r.body.item.context.viewport === "385x812" && /TypeError/.test(r.body.item.context.lastError),
+       "…carrying the context the reporter never has to type");
+    const outboxAfter = (await api("GET", "/api/bot/outbox", null, "Bot bot-secret-test")).body.jobs.length;
+    ok(outboxAfter === outboxBefore, "…and nothing goes to Discord — the snag list stays on the site");
+    r = await api("POST", "/api/feedback", { title: "x" }, plain);
+    ok(r.status === 400, "a report needs a title and what happened");
+    r = await api("GET", "/api/feedback", null, plain);
+    ok(r.body.mine.length === 1 && r.body.queue.length === 0 && r.body.may === false, "a member sees their own reports and no queue");
+    r = await api("GET", "/api/feedback", null, doc);
+    ok(r.body.queue.some(x => x.no === fbNo) && r.body.may === true && r.body.open >= 1, "COMMAND sees the whole queue");
+    r = await api("POST", "/api/feedback/" + fb, { status: "nonesuch" }, doc);
+    ok(r.status === 400, "an unknown status is refused");
+    r = await api("POST", "/api/feedback/" + fb, { status: "triaged", text: "Reproduced on a 385px screen." }, doc);
+    ok(r.body.item.status === "triaged" && /Marked triaged/.test(r.body.item.log[0].text), "COMMAND triages it on the record");
+    r = await api("POST", "/api/feedback/" + fb, { status: "fixed" }, plain);
+    ok(r.status === 403, "a reporter cannot set the status");
+    r = await api("POST", "/api/feedback/" + fb, { text: "Still happening on my end." }, plain);
+    ok(r.status === 200 && r.body.item.log.length === 2, "…but they can answer on their own report");
+    r = await api("POST", "/api/feedback/" + fb, { text: "hi" }, oak);
+    ok(r.status === 403, "…and a bystander cannot");
+    r = await api("POST", "/api/feedback/" + fb, { status: "fixed", text: "Shipped." }, doc);
+    ok(r.body.item.status === "fixed", "COMMAND closes it out");
+  }
+
   /* the treasury ledger as a spreadsheet */
   r = await api("POST", "/api/logistics/contributions", { kind: "auec", amount: 40000, proof: "shot-9" }, doc);
   await api("POST", "/api/logistics/contributions/" + r.body.contribution.id + "/verify", {}, doc);
